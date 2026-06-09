@@ -3,7 +3,10 @@ import type { FastifyInstance } from "fastify";
 import type { TagController } from "../library/tag-controller.js";
 import { toLibraryErrorResponse } from "../library/library-errors.js";
 
-export async function registerTagRoutes(app: FastifyInstance, tagController: TagController): Promise<void> {
+export async function registerTagRoutes(
+  app: FastifyInstance,
+  tagController: TagController,
+): Promise<void> {
   const wrap = (handler: (request: any, reply: any) => Promise<void>) => {
     return async (request: any, reply: any) => {
       try {
@@ -18,11 +21,28 @@ export async function registerTagRoutes(app: FastifyInstance, tagController: Tag
   app.get("/api/library/tags", wrap(tagController.listTags));
   app.post("/api/library/tags", wrap(tagController.createTag));
   app.post("/api/library/tags/ensure", wrap(tagController.ensureTag));
+  app.post(
+    "/api/library/tags/recompute",
+    wrap(tagController.requestFullRecompute),
+  );
+  app.get(
+    "/api/library/tags/recompute-task",
+    wrap(tagController.getRecomputeTask),
+  );
   app.get("/api/library/tags/:tagId", wrap(tagController.getTagDetail));
   app.put("/api/library/tags/:tagId", wrap(tagController.updateTag));
   app.delete("/api/library/tags/:tagId", wrap(tagController.deleteTag));
-  app.get("/api/library/documents/:documentId/tag-details", wrap(tagController.getDocumentTagDetails));
-  app.put("/api/library/documents/:documentId/tags", wrap(tagController.saveDocumentTags));
-  app.get("/api/library/folders/tag-details", wrap(tagController.getFolderTagDetails));
+  app.get(
+    "/api/library/documents/:documentId/tag-details",
+    wrap(tagController.getDocumentTagDetails),
+  );
+  app.put(
+    "/api/library/documents/:documentId/tags",
+    wrap(tagController.saveDocumentTags),
+  );
+  app.get(
+    "/api/library/folders/tag-details",
+    wrap(tagController.getFolderTagDetails),
+  );
   app.put("/api/library/folders/tags", wrap(tagController.saveFolderTags));
 }

@@ -9,6 +9,8 @@ import { LibraryIndexService } from "./index-service.js";
 import { LibraryBindingStore } from "../storage/library-binding-store.js";
 import { LibraryExportReader } from "../storage/library-export-reader.js";
 import { IndexRuntimeStore } from "../storage/index-runtime-store.js";
+import { LibraryConfigStore } from "../storage/library-config-store.js";
+import { LibraryFavoritesStore } from "../storage/library-favorites-store.js";
 import { TaskManager } from "../tasks/task-manager.js";
 import { LibraryError } from "./library-errors.js";
 
@@ -116,6 +118,34 @@ test("读快照和列表只读取 export，不触发索引刷新", () => {
 
   assert.equal(service.getSnapshot().documentCount, 2);
   assert.equal(service.listDocuments({ browseMode: "folder", selectedFolderPath: "docs" }).items.length, 1);
+});
+
+test("收藏会持久化并参与列表筛选", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "x-file-library-favorites-"));
+  const dataDir = path.join(tempDir, "data");
+  const rootDir = path.join(tempDir, "library");
+  writeExportFixture(rootDir);
+
+  const bindingStore = new LibraryBindingStore({ dataDir });
+  const createService = () => new LibraryService(
+    bindingStore,
+    new LibraryExportReader(),
+    null,
+    new LibraryConfigStore(),
+    new LibraryFavoritesStore({ dataDir })
+  );
+
+  const service = createService();
+  service.saveBinding({ rootDir, completeInitialization: true });
+  service.updateFavorites({
+    favorites: [{ kind: "tag", path: "主题/后端", label: "后端" }]
+  });
+
+  assert.equal(service.getSnapshot().favorites.length, 1);
+  assert.equal(service.listDocuments({ browseMode: "tag", selectedFavoriteId: "主题/后端" }).items.length, 1);
+
+  const reloaded = createService();
+  assert.equal(reloaded.getSnapshot().favorites[0]?.path, "主题/后端");
 });
 
 test("刷新任务按同 rootDir 同类任务去重", () => {

@@ -29,10 +29,26 @@ export interface StoredFolderTagBinding {
   updatedAt: string;
 }
 
+export interface StoredTagRule {
+  id: string;
+  tagId: string;
+  relation: "and" | "or" | "not";
+  ruleType:
+    | "file_name_contains"
+    | "file_content_contains"
+    | "file_extension_in"
+    | "modified_time_between"
+    | "document_path_in_folder";
+  matcher: Record<string, unknown>;
+  enabled: boolean;
+  priority: number;
+}
+
 export interface StoredLibraryTags {
   libraryId: string;
   rootDir: string;
   tags: StoredTagDefinition[];
+  tagRules: StoredTagRule[];
   documentTags: StoredDocumentTagBinding[];
   folderTags: StoredFolderTagBinding[];
   updatedAt: string;
@@ -53,17 +69,25 @@ export class TagStore {
 
   read(libraryId: string, rootDir: string): StoredLibraryTags {
     const all = this.readAll();
-    return all[storeKey(libraryId, rootDir)] ?? createEmptyStore(libraryId, rootDir);
+    return normalizeStore(
+      all[storeKey(libraryId, rootDir)] ?? createEmptyStore(libraryId, rootDir),
+      libraryId,
+      rootDir,
+    );
   }
 
   write(data: StoredLibraryTags): StoredLibraryTags {
     const all = this.readAll();
     all[storeKey(data.libraryId, data.rootDir)] = {
       ...data,
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
     };
     fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
-    fs.writeFileSync(this.filePath, `${JSON.stringify(all, null, 2)}\n`, "utf8");
+    fs.writeFileSync(
+      this.filePath,
+      `${JSON.stringify(all, null, 2)}\n`,
+      "utf8",
+    );
     return all[storeKey(data.libraryId, data.rootDir)];
   }
 
@@ -72,18 +96,41 @@ export class TagStore {
       return {};
     }
 
-    return JSON.parse(fs.readFileSync(this.filePath, "utf8")) as Record<string, StoredLibraryTags>;
+    return JSON.parse(fs.readFileSync(this.filePath, "utf8")) as Record<
+      string,
+      StoredLibraryTags
+    >;
   }
 }
 
-function createEmptyStore(libraryId: string, rootDir: string): StoredLibraryTags {
+function normalizeStore(
+  data: StoredLibraryTags,
+  libraryId: string,
+  rootDir: string,
+): StoredLibraryTags {
+  return {
+    libraryId,
+    rootDir,
+    tags: Array.isArray(data.tags) ? data.tags : [],
+    tagRules: Array.isArray(data.tagRules) ? data.tagRules : [],
+    documentTags: Array.isArray(data.documentTags) ? data.documentTags : [],
+    folderTags: Array.isArray(data.folderTags) ? data.folderTags : [],
+    updatedAt: data.updatedAt ?? new Date().toISOString(),
+  };
+}
+
+function createEmptyStore(
+  libraryId: string,
+  rootDir: string,
+): StoredLibraryTags {
   return {
     libraryId,
     rootDir,
     tags: [],
+    tagRules: [],
     documentTags: [],
     folderTags: [],
-    updatedAt: new Date().toISOString()
+    updatedAt: new Date().toISOString(),
   };
 }
 
