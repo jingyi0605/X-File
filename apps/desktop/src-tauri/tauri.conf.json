@@ -1,0 +1,54 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "X-File",
+  "version": "0.1.0",
+  "identifier": "top.codingns.xfile",
+  "build": {
+    "beforeDevCommand": "pnpm --filter @x-file/web dev",
+    "devUrl": "http://127.0.0.1:17320",
+    "beforeBuildCommand": "pnpm --filter @x-file/web build && pnpm --filter @x-file/shared build && pnpm --filter @x-file/indexer build && pnpm --filter @x-file/server build && node ../../scripts/prepare-bundled-server.mjs",
+    "frontendDist": "../../web/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "X-File",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 960,
+        "minHeight": 640
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "app",
+      "dmg",
+      "msi"
+    ],
+    "category": "Productivity",
+    "icon": [
+      "icons/icon.icns",
+      "icons/icon.png"
+    ],
+    "shortDescription": "X-File 文档库独立应用",
+    "longDescription": "X-File 是从 CodingNS 拆出的本机文档库应用。签名和自动更新配置已预留，发布前必须替换真实 secrets 并在实机 runner 验证。",
+    "createUpdaterArtifacts": true,
+    "resources": {
+      "resources/x-file-server": "x-file-server",
+      "resources/x-file-runtime": "x-file-runtime"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI4N0ExMDM3REVDNkIwMDQKUldRRXNNYmVOeEI2S096UlU1cXlJUlBIYXJZcXlUVWVzM3gvRi9FckRjZHJzRHd5RmtGdkdMMW4K",
+      "endpoints": [
+        "https://updates.codingns.top/x-file/{{target}}/{{arch}}/{{current_version}}"
+      ]
+    }
+  }
+}
