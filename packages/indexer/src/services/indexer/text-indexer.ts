@@ -1,0 +1,621 @@
+import { AppError } from "../../errors/app-error.js";
+import { APP_ERROR_CODES } from "../../errors/error-codes.js";
+import type { RuntimeConfig } from "../../types/runtime-config.js";
+import fs from "node:fs";
+import path from "node:path";
+import { performance } from "node:perf_hooks";
+import { DocumentParser } from "../../parser/document-parser.js";
+import { ParserSkipRepository } from "../../parser/parser-skip-repository.js";
+import { CatalogRepository } from "../../repositories/catalog-repository.js";
+import {
+  type ActiveIndexedFileState,
+  CatalogWriteRepository,
+  type IndexedDocumentBatchEntry,
+} from "../../repositories/catalog-write-repository.js";
+import { FileScanner, type FileScanResult } from "../../scanner/file-scanner.js";
+import { SimpleTagInferenceEngine } from "../../tagging/simple-tag-inference.js";
+import type { ReconcileScope } from "../../repositories/catalog-write-repository.js";
+import type { ParsedDocument } from "../../parser/plain-text-parser.js";
+import type { TagAssignment } from "../../tagging/simple-tag-inference.js";
+import { DirtyScopeResolver, type DirtyScope } from "../dirty/dirty-scope-resolver.js";
+import { logLibraryIndexerRss } from "../../utils/rss-log.js";
+import { throwIfAborted, yieldToEventLoop } from "../../utils/abort.js";
+
+export interface TextIndexResult {
+  scannedCount: number;
+  indexedCount: number;
+  unchangedCount: number;
+  indexedPaths: string[];
+  skippedPaths: string[];
+  failedPaths: string[];
+  failedCount: number;
+  failures: Array<{
+    path: string;
+    errorCode: string;
+    message: string;
+  }>;
+  failureOverflowCount: number;
+  deletedCount: number;
+  deletedPaths: string[];
+  dirtyScope: DirtyScope;
+  timingsMs: {
+    scanFs: number;
+    parse: number;
+    tagInference: number;
+    skipCatalog: number;
+    writeIndexed: number;
+    writeSkipped: number;
+    scanAndParse: number;
+    writeSuccess: number;
+    writeFailure: number;
+    scanLoop: number;
+    cleanup: number;
+    reconcile: number;
+    dirtyScope: number;
+    total: number;
+  };
+  batchStats: {
+    writeBatchSize: number;
+    successBatchCount: number;
+    failureBatchCount: number;
+  };
+  tagStats: {
+    directAssignedCount: number;
+    derivedAssignedCount: number;
+    avgDirectPerIndexedDocument: number;
+    avgDerivedPerIndexedDocument: number;
+  };
+  skipStats: {
+    skippedCount: number;
+    skippedByExtension: Record<string, number>;
+    skipCatalogRecords: number;
+  };
+}
+
+export interface TextIndexProgress {
+  scannedCount: number;
+  indexedCount: number;
+  skippedCount: number;
+  failedCount: number;
+  unchangedCount: number;
+  totalCount: number | null;
+  maxConcurrency: number;
+}
+
+const RSS_PROGRESS_DOCUMENT_INTERVAL = 2000;
+const RSS_PROGRESS_BATCH_INTERVAL = 10;
+
+function normalizeRelativePath(relativePath: string): string {
+  return relativePath.split(path.sep).join("/");
+}
+
+function resolveReconcileScope(rootDir: string, targetPath?: string): ReconcileScope {
+  if (!targetPath) {
+    return { kind: "all" };
+  }
+
+  const absoluteTargetPath = path.resolve(rootDir, targetPath);
+  if (fs.existsSync(absoluteTargetPath)) {
+    const stat = fs.statSync(absoluteTargetPath);
+    const relativeTargetPath = normalizeRelativePath(path.relative(rootDir, absoluteTargetPath));
+    if (stat.isFile()) {
+      return { kind: "exact", value: relativeTargetPath };
+    }
+    return relativeTargetPath && relativeTargetPath !== "."
+      ? { kind: "prefix", value: relativeTargetPath }
+      : { kind: "all" };
+  }
+
+  const normalizedTargetPath = normalizeRelativePath(targetPath).replace(/\/+$/, "");
+  if (!normalizedTargetPath || normalizedTargetPath === ".") {
+    return { kind: "all" };
+  }
+  if (path.extname(normalizedTargetPath)) {
+    return { kind: "exact", value: normalizedTargetPath };
+  }
+  return { kind: "prefix", value: normalizedTargetPath };
+}
+
+/**
+ * 最小文本索引服务。
+ * 第二阶段补上 Dirty Scope 计算，为 watcher 和增量 export 打地基。
+ */
+export class TextIndexer {
+  constructor(private readonly config: RuntimeConfig) {}
+
+  async index(
+    targetPath?: string,
+    options: {
+      allowedExtensionsOverride?: string[];
+      reconcileMode?: "scope" | "none";
+      collectChangedPaths?: boolean;
+      dirtyScopeTrigger?: "full" | "incremental";
+      signal?: AbortSignal;
+      onProgress?: (progress: TextIndexProgress) => void;
+    } = {},
+  ): Promise<TextIndexResult> {
+    const startedAt = performance.now();
+    const scanner = new FileScanner(this.config.rootDir, {
+      allowedExtensions: options.allowedExtensionsOverride ?? this.config.allowedExtensions,
+      includedHiddenPaths: this.config.includedHiddenPaths,
+    });
+    const parser = new DocumentParser({ config: this.config });
+    const tagger = new SimpleTagInferenceEngine();
+    const writer = new CatalogWriteRepository(this.config.dbPath);
+    const repository = new CatalogRepository(this.config.dbPath);
+    const skipRepository = new ParserSkipRepository(this.config.dbPath);
+    const estimatedTotalCount = targetPath
+      ? null
+      : (() => {
+        const value = writer.countActiveFiles();
+        return value > 0 ? value : null;
+      })();
+    const runObservedAt = new Date().toISOString();
+    const maxIndexConcurrency = Math.max(1, Math.floor(this.config.maxIndexConcurrency));
+    const collectChangedPaths = options.collectChangedPaths ?? Boolean(targetPath);
+    const maxReportedFailures = 200;
+    const indexedPaths: string[] = collectChangedPaths ? [] : [];
+    const skippedPaths: string[] = collectChangedPaths ? [] : [];
+    const failedPaths: string[] = collectChangedPaths ? [] : [];
+    const failures: Array<{
+      path: string;
+      errorCode: string;
+      message: string;
+    }> = [];
+    const seenPaths = options.reconcileMode === "none" ? null : new Set<string>();
+    const successEntries: IndexedDocumentBatchEntry[] = [];
+    const skippedEntries: Array<{
+      file: FileScanResult;
+      adapter: string;
+      reasonCode: string;
+      message: string;
+    }> = [];
+    const failureEntries: Array<{
+      file: FileScanResult;
+      error: Error;
+    }> = [];
+    let scannedCount = 0;
+    let indexedCount = 0;
+    let unchangedCount = 0;
+    let failedCount = 0;
+    let failureOverflowCount = 0;
+    let scanFsMs = 0;
+    let parseMs = 0;
+    let tagInferenceMs = 0;
+    let skipCatalogMs = 0;
+    let writeIndexedMs = 0;
+    let writeSkippedMs = 0;
+    let writeFailureMs = 0;
+    let cleanupMs = 0;
+    let successBatchCount = 0;
+    let skipBatchCount = 0;
+    let failureBatchCount = 0;
+    let skippedCount = 0;
+    let directAssignedCount = 0;
+    let derivedAssignedCount = 0;
+    const skippedByExtension = new Map<string, number>();
+    const skipCatalogKeys = new Set<string>();
+    const emitProgress = (): void => {
+      const totalCount = estimatedTotalCount === null
+        ? null
+        : Math.max(estimatedTotalCount, scannedCount);
+      options.onProgress?.({
+        scannedCount,
+        indexedCount,
+        skippedCount,
+        failedCount,
+        unchangedCount,
+        totalCount,
+        maxConcurrency: maxIndexConcurrency,
+      });
+    };
+
+    const maybeLogParseProgress = (): void => {
+      if (scannedCount === 0 || scannedCount % RSS_PROGRESS_DOCUMENT_INTERVAL !== 0) {
+        return;
+      }
+
+      logLibraryIndexerRss(this.config, "index.parse_progress", {
+        rootDir: this.config.rootDir,
+        scannedCount,
+        indexedCount,
+        skippedCount,
+        unchangedCount,
+        failedCount,
+        pendingSuccessEntries: successEntries.length,
+        pendingSkippedEntries: skippedEntries.length,
+        pendingFailureEntries: failureEntries.length,
+        pendingUnchangedEntries: 0,
+        maxIndexConcurrency,
+      });
+    };
+
+    const maybeLogWriteProgress = (kind: "success" | "skip" | "failure"): void => {
+      const batchCount = successBatchCount + skipBatchCount + failureBatchCount;
+      if (batchCount === 0 || batchCount % RSS_PROGRESS_BATCH_INTERVAL !== 0) {
+        return;
+      }
+
+      logLibraryIndexerRss(this.config, "index.write_progress", {
+        rootDir: this.config.rootDir,
+        kind,
+        scannedCount,
+        indexedCount,
+        skippedCount,
+        unchangedCount,
+        failedCount,
+        successBatchCount,
+        skipBatchCount,
+        failureBatchCount
+      });
+    };
+
+    const flushSuccess = (): void => {
+      if (successEntries.length === 0) {
+        return;
+      }
+      const t0 = performance.now();
+      writer.batchUpsertDocuments(successEntries, runObservedAt);
+      writeIndexedMs += performance.now() - t0;
+      successBatchCount += 1;
+      successEntries.length = 0;
+      maybeLogWriteProgress("success");
+    };
+
+    const flushFailures = (): void => {
+      if (failureEntries.length === 0) {
+        return;
+      }
+      const t0 = performance.now();
+      writer.batchUpsertParseFailures(failureEntries, runObservedAt);
+      writeFailureMs += performance.now() - t0;
+      failureBatchCount += 1;
+      failureEntries.length = 0;
+      maybeLogWriteProgress("failure");
+    };
+
+    const flushSkipped = (): void => {
+      if (skippedEntries.length === 0) {
+        return;
+      }
+      const t0 = performance.now();
+      writer.batchMarkSkippedDocuments(skippedEntries, runObservedAt);
+      writeSkippedMs += performance.now() - t0;
+      skipBatchCount += 1;
+      skippedEntries.length = 0;
+      maybeLogWriteProgress("skip");
+    };
+
+    const isUnchangedFile = (
+      file: FileScanResult,
+      existing: ActiveIndexedFileState | null,
+    ): boolean => {
+      if (!existing) {
+        return false;
+      }
+      return existing.extension === file.extension
+        && existing.size === file.size
+        && existing.mtime === file.mtime;
+    };
+
+    type FileProcessResult =
+      | {
+          kind: "success";
+          file: FileScanResult;
+          document: IndexedDocumentBatchEntry["document"];
+          tags: TagAssignment[];
+          derivedTags: TagAssignment[];
+          parseDurationMs: number;
+          tagInferenceDurationMs: number;
+        }
+      | {
+          kind: "skip";
+          file: FileScanResult;
+          adapter: string;
+          reasonCode: string;
+          message: string;
+          parseDurationMs: number;
+        }
+      | {
+          kind: "failure";
+          file: FileScanResult;
+          error: Error;
+          parseDurationMs: number;
+        };
+
+    const processFile = async (file: FileScanResult): Promise<FileProcessResult> => {
+      try {
+        const parseStartedAt = performance.now();
+        const parseResult = await parser.parseWithOutcome(file.fullPath, options.signal);
+        const parseDurationMs = performance.now() - parseStartedAt;
+        if ("kind" in parseResult && parseResult.kind === "skip") {
+          return {
+            kind: "skip",
+            file,
+            adapter: parseResult.adapter,
+            reasonCode: parseResult.reasonCode,
+            message: parseResult.message,
+            parseDurationMs,
+          };
+        }
+
+        const parsed = parseResult as ParsedDocument;
+        const inferStartedAt = performance.now();
+        const inferred = tagger.infer(file, parsed);
+        const tagInferenceDurationMs = performance.now() - inferStartedAt;
+        return {
+          kind: "success",
+          file,
+          document: {
+            title: parsed.title,
+            summary: parsed.summary,
+            text: parsed.text,
+          },
+          tags: inferred.tags,
+          derivedTags: inferred.derivedTags,
+          parseDurationMs,
+          tagInferenceDurationMs,
+        };
+      } catch (error) {
+        throwIfAborted(options.signal, "事务文档库索引已取消");
+        const appError = error instanceof AppError
+          ? error
+          : new AppError(
+            error instanceof Error ? error.message : "未知解析错误",
+            APP_ERROR_CODES.PARSER_UNKNOWN_ERROR,
+            {
+              details: {
+                path: file.relativePath,
+              },
+              cause: error,
+            },
+          );
+        return {
+          kind: "failure",
+          file,
+          error: appError,
+          parseDurationMs: 0,
+        };
+      }
+    };
+
+    const handleProcessResult = (result: FileProcessResult): void => {
+      parseMs += result.parseDurationMs;
+      if (result.kind === "success") {
+        tagInferenceMs += result.tagInferenceDurationMs;
+        directAssignedCount += result.tags.length;
+        derivedAssignedCount += result.derivedTags.length;
+        successEntries.push({
+          file: result.file,
+          document: result.document,
+          tags: result.tags,
+          derivedTags: result.derivedTags,
+        });
+        indexedCount += 1;
+        if (collectChangedPaths) {
+          indexedPaths.push(result.file.relativePath);
+        }
+        if (successEntries.length >= this.config.writeBatchSize) {
+          flushSuccess();
+        }
+        return;
+      }
+
+      if (result.kind === "skip") {
+        skippedCount += 1;
+        skippedByExtension.set(
+          result.file.extension,
+          (skippedByExtension.get(result.file.extension) ?? 0) + 1,
+        );
+        if (collectChangedPaths) {
+          skippedPaths.push(result.file.relativePath);
+        }
+        skippedEntries.push({
+          file: result.file,
+          adapter: result.adapter,
+          reasonCode: result.reasonCode,
+          message: result.message,
+        });
+        const skipCatalogStartedAt = performance.now();
+        const skipRecord = skipRepository.record({
+          adapter: result.adapter,
+          reasonCode: result.reasonCode,
+          extension: result.file.extension,
+          path: result.file.relativePath,
+          message: result.message,
+          observedAt: runObservedAt,
+        });
+        skipCatalogMs += performance.now() - skipCatalogStartedAt;
+        skipCatalogKeys.add(skipRecord.skipKey);
+        if (skippedEntries.length >= this.config.writeBatchSize) {
+          flushSkipped();
+        }
+        return;
+      }
+
+      failureEntries.push({
+        file: result.file,
+        error: result.error,
+      });
+      failedCount += 1;
+      if (collectChangedPaths) {
+        failedPaths.push(result.file.relativePath);
+      }
+      if (failures.length < maxReportedFailures) {
+        failures.push({
+          path: result.file.relativePath,
+          errorCode: result.error instanceof AppError ? result.error.errorCode : APP_ERROR_CODES.PARSER_UNKNOWN_ERROR,
+          message: result.error.message,
+        });
+      } else {
+        failureOverflowCount += 1;
+      }
+      if (failureEntries.length >= this.config.writeBatchSize) {
+        flushFailures();
+      }
+    };
+
+    const inFlight = new Set<Promise<FileProcessResult>>();
+    const trackInFlight = (task: Promise<FileProcessResult>): void => {
+      inFlight.add(task);
+      task.finally(() => {
+        inFlight.delete(task);
+      });
+    };
+
+    const drainOne = async (): Promise<void> => {
+      if (inFlight.size === 0) {
+        return;
+      }
+      const result = await Promise.race([...inFlight]);
+      handleProcessResult(result);
+      emitProgress();
+    };
+
+    const scanStartedAt = performance.now();
+    writer.beginSession();
+    skipRepository.beginSession();
+    try {
+      const iterator = scanner.scanIterator(targetPath, options.signal);
+      while (true) {
+        throwIfAborted(options.signal, "事务文档库索引已取消");
+        const scanT0 = performance.now();
+        const next = iterator.next();
+        scanFsMs += performance.now() - scanT0;
+        if (next.done) {
+          break;
+        }
+        const file = next.value;
+        scannedCount += 1;
+        seenPaths?.add(normalizeRelativePath(file.relativePath));
+        maybeLogParseProgress();
+        const existing = writer.getActiveIndexedFileState(file.relativePath);
+        if (isUnchangedFile(file, existing)) {
+          unchangedCount += 1;
+          emitProgress();
+          continue;
+        }
+
+        trackInFlight(processFile(file));
+        if (inFlight.size >= maxIndexConcurrency) {
+          await drainOne();
+        }
+
+        if (scannedCount % Math.max(1, this.config.writeBatchSize) === 0) {
+          await yieldToEventLoop(options.signal, "事务文档库索引已取消");
+        }
+      }
+      while (inFlight.size > 0) {
+        await drainOne();
+      }
+      flushSuccess();
+      flushSkipped();
+      flushFailures();
+      emitProgress();
+    } finally {
+      skipRepository.endSession();
+      writer.endSession();
+    }
+    cleanupMs = 0;
+    const scanAndParseMs = performance.now() - scanStartedAt;
+    logLibraryIndexerRss(this.config, "index.parse_complete", {
+      rootDir: this.config.rootDir,
+      scannedCount,
+      indexedCount,
+      skippedCount,
+      unchangedCount,
+      failedCount,
+      successBatchCount,
+      skipBatchCount,
+      failureBatchCount
+    });
+
+    let reconcile = { deletedCount: 0, deletedPaths: [] as string[] };
+    let reconcileMs = 0;
+    if ((options.reconcileMode ?? "scope") !== "none") {
+      throwIfAborted(options.signal, "事务文档库索引已取消");
+      const reconcileStartedAt = performance.now();
+      reconcile = writer.reconcileScope(
+        resolveReconcileScope(this.config.rootDir, targetPath),
+        runObservedAt,
+        { seenPaths: seenPaths ?? undefined }
+      );
+      reconcileMs = performance.now() - reconcileStartedAt;
+    }
+
+    throwIfAborted(options.signal, "事务文档库索引已取消");
+    const dirtyScopeStartedAt = performance.now();
+    const dirtyScope = new DirtyScopeResolver(repository).resolve({
+      targetPath,
+      indexedPaths: collectChangedPaths ? indexedPaths : [],
+      skippedPaths: collectChangedPaths ? skippedPaths : [],
+      deletedPaths: reconcile.deletedPaths,
+      failedPaths: collectChangedPaths ? failedPaths : [],
+      triggerOverride: options.dirtyScopeTrigger,
+    });
+    const dirtyScopeMs = performance.now() - dirtyScopeStartedAt;
+    const scanLoopMs = performance.now() - scanStartedAt - cleanupMs - reconcileMs - dirtyScopeMs;
+    const writeSuccessMs = writeIndexedMs + writeSkippedMs;
+    logLibraryIndexerRss(this.config, "index.write_complete", {
+      rootDir: this.config.rootDir,
+      scannedCount,
+      indexedCount,
+      skippedCount,
+      unchangedCount,
+      failedCount,
+      deletedCount: reconcile.deletedCount,
+      successBatchCount,
+      skipBatchCount,
+      failureBatchCount
+    });
+
+    return {
+      scannedCount,
+      indexedCount: collectChangedPaths ? indexedPaths.length : indexedCount,
+      unchangedCount,
+      indexedPaths: collectChangedPaths ? indexedPaths : [],
+      skippedPaths: collectChangedPaths ? skippedPaths : [],
+      failedPaths: collectChangedPaths ? failedPaths : [],
+      failedCount,
+      failures,
+      failureOverflowCount,
+      deletedCount: reconcile.deletedCount,
+      deletedPaths: reconcile.deletedPaths,
+      dirtyScope,
+      timingsMs: {
+        scanFs: Number(scanFsMs.toFixed(2)),
+        parse: Number(parseMs.toFixed(2)),
+        tagInference: Number(tagInferenceMs.toFixed(2)),
+        skipCatalog: Number(skipCatalogMs.toFixed(2)),
+        writeIndexed: Number(writeIndexedMs.toFixed(2)),
+        writeSkipped: Number(writeSkippedMs.toFixed(2)),
+        scanAndParse: Number(scanAndParseMs.toFixed(2)),
+        writeSuccess: Number(writeSuccessMs.toFixed(2)),
+        writeFailure: Number(writeFailureMs.toFixed(2)),
+        scanLoop: Number(scanLoopMs.toFixed(2)),
+        cleanup: Number(cleanupMs.toFixed(2)),
+        reconcile: Number(reconcileMs.toFixed(2)),
+        dirtyScope: Number(dirtyScopeMs.toFixed(2)),
+        total: Number((performance.now() - startedAt).toFixed(2)),
+      },
+      batchStats: {
+        writeBatchSize: this.config.writeBatchSize,
+        successBatchCount: successBatchCount + skipBatchCount,
+        failureBatchCount,
+      },
+      tagStats: {
+        directAssignedCount,
+        derivedAssignedCount,
+        avgDirectPerIndexedDocument: Number((indexedCount > 0 ? directAssignedCount / indexedCount : 0).toFixed(2)),
+        avgDerivedPerIndexedDocument: Number((indexedCount > 0 ? derivedAssignedCount / indexedCount : 0).toFixed(2)),
+      },
+      skipStats: {
+        skippedCount,
+        skippedByExtension: Object.fromEntries(
+          [...skippedByExtension.entries()].sort((a, b) => a[0].localeCompare(b[0], "zh-Hans-CN")),
+        ),
+        skipCatalogRecords: skipCatalogKeys.size,
+      },
+    };
+  }
+}
