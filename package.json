@@ -15,7 +15,9 @@
     "benchmark:large-library": "node scripts/benchmark-large-library.mjs",
     "build:macos": "bash scripts/build-macos.sh",
     "build:windows": "bash scripts/build-windows.sh",
-    "prepare:bundled-server": "node scripts/prepare-bundled-server.mjs"
+    "prepare:bundled-server": "node scripts/prepare-bundled-server.mjs",
+    "dev": "bash scripts/dev-all.sh",
+    "dev:debug": "bash scripts/dev-all.sh"
   },
   "engines": {
     "node": ">=20.11.0",

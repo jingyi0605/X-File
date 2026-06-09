@@ -6,6 +6,7 @@ import type { FastifyInstance } from "fastify";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 17321;
+const DEBUG_PUBLIC_HOST = "0.0.0.0";
 
 export type HttpServerLifecycleState = "disabled" | "starting" | "running" | "failed" | "stopping";
 
@@ -247,6 +248,10 @@ export class HttpServerManager {
 }
 
 export function resolveDefaultStateFilePath(): string {
+  const explicitPath = process.env.X_FILE_SERVER_STATE_PATH?.trim();
+  if (explicitPath) {
+    return path.resolve(explicitPath);
+  }
   return path.join(os.homedir(), ".x-file", "http-server-state.json");
 }
 
@@ -291,10 +296,15 @@ function toSavedState(state: HttpServerState): Omit<HttpServerState, "running" |
 
 function normalizeHost(value: string): string {
   const host = value.trim();
-  if (host !== DEFAULT_HOST) {
-    throw new Error("第一版 HTTP 服务只允许绑定 127.0.0.1");
+  if (host === DEFAULT_HOST) {
+    return host;
   }
-  return host;
+
+  if (host === DEBUG_PUBLIC_HOST && process.env.X_FILE_ALLOW_PUBLIC_HOST === "1") {
+    return host;
+  }
+
+  throw new Error("HTTP 服务默认只允许绑定 127.0.0.1；调试时如需 0.0.0.0，必须显式设置 X_FILE_ALLOW_PUBLIC_HOST=1");
 }
 
 function normalizePort(value: number): number {
