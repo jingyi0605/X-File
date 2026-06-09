@@ -8,8 +8,8 @@
   "scripts": {
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
-    "dev:web": "pnpm --filter @x-file/web dev",
-    "dev:server": "pnpm --filter @x-file/server dev",
+    "dev:web": "bash scripts/dev-web.sh",
+    "dev:server": "bash scripts/dev-server.sh",
     "dev:desktop": "pnpm --filter @x-file/desktop dev",
     "start:server": "pnpm --filter @x-file/server start",
     "benchmark:large-library": "node scripts/benchmark-large-library.mjs",
@@ -17,7 +17,8 @@
     "build:windows": "bash scripts/build-windows.sh",
     "prepare:bundled-server": "node scripts/prepare-bundled-server.mjs",
     "dev": "bash scripts/dev-all.sh",
-    "dev:debug": "bash scripts/dev-all.sh"
+    "dev:debug": "bash scripts/dev-all.sh",
+    "dev:all": "bash scripts/dev-all.sh"
   },
   "engines": {
     "node": ">=20.11.0",

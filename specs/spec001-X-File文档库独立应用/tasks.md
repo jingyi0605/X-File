@@ -243,8 +243,8 @@
 
 - [x] 3.1 迁入文档库页面和组件
   - 状态：DONE
-  - 本次完成结果：已建立 X-File 文档库主页面，包含浏览、收藏、标签、详情、预览、下载、状态条、面包屑、网格/列表、排序、空态和文件操作入口；样式集中在 `apps/web/src/styles.css`，用户展示文案集中在 `apps/web/src/i18n.ts`。
-  - 剩余缺口：没有启动长期 dev server 做人工 UI 对照；标签编辑和文件操作弹窗当前是第一版轻交互，不是完整设计系统弹窗。
+  - 本次完成结果：本轮已纠偏为 CodingNS 文档库工作台样式：移除 X-File 自造的大 Hero、胶囊导航、网页卡片和旧样式变量，改用 CodingNS 同名 `affairs-*` 工作台结构；主界面现在是左侧事务模式侧栏、中间 Finder/网格文档区、右侧对象详情面板，文件夹和文档图标也按 CodingNS 代码级样式复刻。macOS 桌面端已对齐 CodingNS 的透明 Overlay 标题栏和原生 `NSVisualEffectView` 侧栏玻璃效果，中间内容保持不透明。用户展示文案集中在 `apps/web/src/i18n.ts`。
+  - 剩余缺口：本轮已启动临时 dev server 做人工截图对照，使用临时资料库看到主界面、右键菜单和标签弹窗；右键菜单已按 CodingNS 的 `document / folder / blank` 目标和 `copy / new` 子菜单补齐，复杂弹窗已补新建、重命名、删除、标签分配；虚拟网格/列表已补接近底部自动加载，列表行高和网格密度继续向 CodingNS 收口。剩余缺口是像素级细节还要继续压：中间网格列距、右侧空态尺寸、macOS Tauri 实机玻璃截图还未最终复核。
   - 这一步到底做什么：把 CodingNS 当前文档库页面、浏览、收藏、标签、详情组件复刻到 X-File 前端。
   - 做完你能看到什么：X-File 前端能看到和 CodingNS 当前文档库一致的主页面结构。
   - 先依赖什么：2.5
@@ -319,8 +319,8 @@
 
 - [x] 3.4 阶段检查：前后端主链路跑通
   - 状态：DONE
-  - 本次完成结果：前端已经能通过 X-File API 绑定资料库、读取快照、浏览文档/目录/标签/收藏、刷新、预览、下载和执行基础文件操作；`pnpm --filter @x-file/web typecheck`、`pnpm --filter @x-file/web build` 通过。
-  - 剩余缺口：没有启动 dev server 做人工 UI 走查；没有浏览器端 E2E 测试。
+  - 本次完成结果：前端已经能通过 X-File API 绑定资料库、读取快照、浏览文档/目录/标签/收藏、刷新、预览、下载和执行基础文件操作；Agent F 本轮把 macOS 桌面端玻璃侧栏继续收口：Tauri 窗口不再整窗透明，仍保留 hidden titlebar、Overlay 标题栏和原生三色按钮；原生 `NSVisualEffectView` 只铺左栏和右栏，宽度对齐 Web 三栏；中间主内容强制使用不透明底色。`pnpm --filter @x-file/desktop build` 通过。
+  - 剩余缺口：本轮已启动 Tauri dev 窗口做实机复核，能看到 hidden titlebar、原生三色按钮和窗口玻璃基线；自动截图命令 `screencapture -x /tmp/xfile-current-screen.png` 在当前环境报 `could not create image from display`，所以没有自动产出截图文件。手工截图步骤：启动 `pnpm --filter @x-file/desktop tauri:dev`，等待后端监听 `127.0.0.1:17321`，绑定一个本机资料目录，按 `Cmd + Shift + 5` 选择 X-File 窗口截图；重点确认左栏和右侧详情栏有玻璃感，中间 Finder/网格内容区不透出桌面背景。右键菜单、复杂弹窗、虚拟列表基础高级交互已补齐，剩余缺口是像素级视觉继续压到 CodingNS 当前截图，尤其是网格密度和右侧详情空态。
   - 这一步到底做什么：确认用户能通过 X-File UI 完成文档库主流程。
   - 做完你能看到什么：不是只有 API，也不是只有静态页面，而是完整可操作的文档库。
   - 先依赖什么：3.1、3.2、3.3
@@ -502,8 +502,8 @@
 
 - [x] 5.3 最终检查点
   - 状态：DONE
-  - 本次完成结果：已完成第一版代码收口和任务状态回写；`pnpm install`、server test/typecheck、web typecheck、`pnpm -r build` 均通过；已检查正式代码没有引入 `node:sqlite`；已补系统托盘菜单、后端子进程托管入口、签名/自动更新配置占位、Windows runner 工作流和大目录压测脚本。
-  - 剩余缺口：这不是可发布安装包终版，仍缺真实自动更新、Windows runner 实机构建结果、安装包内置 Node runtime 或真正 sidecar、10 万文件级大目录压测结果、浏览器 UI 人工对照和 CodingNS 主仓库停用文档库联调；Windows 代码签名是可选发布增强。
+  - 本次完成结果：已完成第一版代码收口和任务状态回写；`pnpm install`、server test/typecheck、web typecheck、`pnpm -r build` 均通过；已检查正式代码没有引入 `node:sqlite`；已补系统托盘菜单、后端子进程托管入口、签名/自动更新配置占位、Windows runner 工作流和大目录压测脚本。Agent F 本轮完成 macOS Tauri 玻璃侧栏复核和分层修正，验证命令为 `pnpm --filter @x-file/desktop build`。
+  - 剩余缺口：这不是可发布安装包终版，仍缺真实自动更新、Windows runner 实机构建结果、10 万文件级大目录压测结果和 CodingNS 主仓库停用文档库联调；macOS 玻璃侧栏已做实机复核，但当前环境自动截图失败，正式验收仍建议按 3.4 的手工截图步骤补一张窗口截图；浏览器 UI 人工对照本轮已补，发现像素级细节仍需继续压；Windows 代码签名是可选发布增强。
   - 这一步到底做什么：确认这个 Spec 达到第一版交付标准。
   - 做完你能看到什么：需求、设计、任务、测试和验收结果能对上。
   - 先依赖什么：5.1、5.2
@@ -552,3 +552,33 @@
     - `pnpm benchmark:large-library -- --files 20 --dirs 4 --bytes 512 --json`
   - 对应需求：`requirements.md` 需求 4、需求 6、非功能需求 1
   - 对应设计：`design.md` §4.1、§6.1、§7
+
+- [x] 5.5 本地 UI 截图人工对照说明
+  - 状态：DONE
+  - 本次完成结果：已新增 `scripts/prepare-ui-screenshot-session.mjs`，脚本只在系统临时目录生成文档库 fixture 和截图目录，并输出绑定 API 示例；已新增 `docs/20260609-X-File本地UI截图对照说明.md`，写清如何人工启动 server、web、绑定临时资料库、触发刷新、截图检查和结束后清理 dev server。
+  - 本轮人工对照方法：先执行 `node scripts/prepare-ui-screenshot-session.mjs` 拿到 `libraryRoot` 和 `screenshotsDir`；再分别启动 `pnpm dev:server` 与 `pnpm dev:web`；用 `PUT /api/library/binding` 绑定临时资料库，并用 `POST /api/library/refresh` 触发刷新；最后按文档人工截 `01-grid-main.png`、`02-list-finder.png`、`03-context-menu.png`、`04-create-modal.png`、`05-tag-modal.png`。这些截图只作为本地对照，不提交。
+  - 仍未达像素级的点：中间网格列距和卡片密度、Finder/list 行高和文本截断、右侧详情空态尺寸、右键菜单子菜单位置、macOS Tauri 玻璃效果都还需要拿 CodingNS 当前截图继续压；本轮只补可复现的人工截图流程，不做 UI 代码改动。
+  - 这一步到底做什么：补一个不污染业务依赖的本地 UI 截图对照入口，让别人能按固定步骤生成临时资料库并完成主界面截图走查。
+  - 做完你能看到什么：文档里能照着启动后端和前端、绑定 fixture、检查 grid、list/Finder、右键菜单、新建弹窗和标签弹窗。
+  - 先依赖什么：3.4、5.3
+  - 开始前先看：
+    - `requirements.md` 需求 2
+    - `design.md` §3.1「核心组件」
+    - `docs/20260608-当前CodingNS文档库迁移清单.md`
+    - `/Users/jackson/Code/CodingNS/docs/开发设计规范/20260419-前端页面与样式设计规范.md`
+    - `/Users/jackson/Code/CodingNS/docs/开发设计规范/20260419-模态框与按钮设计规范.md`
+  - 主要改哪里：
+    - `scripts/prepare-ui-screenshot-session.mjs`
+    - `docs/20260609-X-File本地UI截图对照说明.md`
+    - `specs/spec001-X-File文档库独立应用/tasks.md`
+  - 这一步先不做什么：不改 `apps/web/src/`，不启动开发服务器，不安装 Playwright，不改 `package.json`，不提交临时截图和 fixture 文件。
+  - 怎么算完成：
+    1. 文档能让别人照着跑一遍
+    2. 脚本只创建临时目录并输出截图路径、绑定 API 示例
+    3. 截图清单覆盖 grid、list/Finder、右键菜单、新建弹窗、标签弹窗
+    4. 文档明确提醒结束后清理 dev server
+  - 怎么验证：
+    - `node scripts/prepare-ui-screenshot-session.mjs`
+    - 人工按 `docs/20260609-X-File本地UI截图对照说明.md` 走查
+  - 对应需求：`requirements.md` 需求 2
+  - 对应设计：`design.md` §3.1
