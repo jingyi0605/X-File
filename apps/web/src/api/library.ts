@@ -1,5 +1,6 @@
 import type {
   HttpServerState,
+  HostDirectoryBrowseResult,
   LibraryBinding,
   LibraryConfig,
   LibraryDocumentList,
@@ -44,6 +45,13 @@ export function getLibraryBinding(): Promise<LibraryBinding | null> {
 
 export function saveLibraryBinding(input: SaveLibraryBindingInput): Promise<LibraryBinding> {
   return putJson<LibraryBinding>("/api/library/binding", input);
+}
+
+export function browseHostDirectories(path?: string | null): Promise<HostDirectoryBrowseResult> {
+  const search = new URLSearchParams();
+  appendSearch(search, "path", path);
+  const query = search.toString();
+  return apiRequest<HostDirectoryBrowseResult>(`/api/host/directories${query ? `?${query}` : ""}`);
 }
 
 export function getLibraryConfig(): Promise<LibraryConfig> {

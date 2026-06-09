@@ -19,11 +19,31 @@ export interface LibraryBinding {
   folderOpenBehavior: LibraryFolderOpenBehavior;
   configRelativePath: string;
   exportMode: LibraryExportMode;
+  /**
+   * 初始化是否真正完成。
+   * 注意：binding 存在只表示选过路径，不表示初始化流程完成。
+   */
+  initialized: boolean;
+  initializedAt: string | null;
   updatedAt: string;
 }
 
 export interface SaveLibraryBindingInput {
   rootDir: string;
+  /** 只有初始化流程最后一步才传 true；普通保存路径不能伪装成初始化完成。 */
+  completeInitialization?: boolean;
+}
+
+export interface HostDirectoryOption {
+  path: string;
+  name: string;
+}
+
+export interface HostDirectoryBrowseResult {
+  currentPath: string;
+  parentPath: string | null;
+  roots: HostDirectoryOption[];
+  items: HostDirectoryOption[];
 }
 
 export interface LibraryConfig {
@@ -148,6 +168,13 @@ export interface LibraryFolderNode {
 
 export interface LibrarySnapshot {
   binding: LibraryBinding | null;
+  /**
+   * 后端统一给出的初始化状态。
+   * binding 不存在或 binding.initialized 不是 true 时必须为 true，前端据此固定进入初始化页面。
+   */
+  requiresInitialization: boolean;
+  /** 初始化页面的稳定入口标识；当前前端没有路由系统，只作为重定向目标变量暴露。 */
+  initializationRedirectPath: string;
   status: LibraryIndexStatus;
   tags: LibraryTagNode[];
   favorites: LibraryFavoriteRecord[];
