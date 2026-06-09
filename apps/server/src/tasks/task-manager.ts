@@ -1,0 +1,179 @@
+export type TaskState = "queued" | "running" | "failed" | "fresh" | "queue_timeout";
+
+export interface TaskSummary {
+  taskId: string;
+  taskType: string;
+  key: string;
+  state: TaskState;
+  source: string;
+  queuedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  failedAt: string | null;
+  errorSummary: string | null;
+  runningStage: string | null;
+  deduped?: boolean;
+}
+
+export interface TaskDefinition<Input, Output> {
+  taskType: string;
+  timeoutMs: number;
+  run: (input: Input, context: TaskRunContext) => Promise<Output>;
+}
+
+export interface TaskRunContext {
+  taskId: string;
+  queuedAt: string;
+  startedAt: () => string | null;
+  signal: AbortSignal;
+  setStage: (stage: string) => void;
+}
+
+export interface EnqueueTaskInput<Input> {
+  key: string;
+  source: string;
+  input: Input;
+}
+
+interface TaskRecord<Output = unknown> {
+  summary: TaskSummary;
+  promise: Promise<Output>;
+  controller: AbortController;
+  timeout: NodeJS.Timeout;
+  runningStage: string | null;
+}
+
+const QUEUE_TIMEOUT_MS = 30_000;
+
+export class TaskManager {
+  private readonly definitions = new Map<string, TaskDefinition<unknown, unknown>>();
+  private readonly inflight = new Map<string, TaskRecord>();
+  private readonly latest = new Map<string, TaskRecord>();
+
+  has(taskType: string): boolean {
+    return this.definitions.has(taskType);
+  }
+
+  register<Input, Output>(definition: TaskDefinition<Input, Output>): void {
+    if (this.definitions.has(definition.taskType)) {
+      return;
+    }
+    this.definitions.set(definition.taskType, definition as TaskDefinition<unknown, unknown>);
+  }
+
+  enqueue<Input, Output>(taskType: string, input: EnqueueTaskInput<Input>): TaskSummary {
+    const definition = this.definitions.get(taskType);
+    if (!definition) {
+      throw new Error(`Task type is not registered: ${taskType}`);
+    }
+
+    const runtimeKey = buildRuntimeKey(taskType, input.key);
+    const existing = this.inflight.get(runtimeKey);
+    if (existing) {
+      return {
+        ...this.snapshotRecord(existing),
+        deduped: true
+      };
+    }
+
+    const taskId = `${taskType}:${hashKey(input.key)}:${Date.now().toString(36)}`;
+    const controller = new AbortController();
+    const summary: TaskSummary = {
+      taskId,
+      taskType,
+      key: input.key,
+      state: "queued",
+      source: input.source,
+      queuedAt: new Date().toISOString(),
+      startedAt: null,
+      completedAt: null,
+      failedAt: null,
+      errorSummary: null,
+      runningStage: null
+    };
+
+    let record: TaskRecord<Output>;
+    const timeout = setTimeout(() => {
+      if (record.summary.state === "queued") {
+        record.summary.state = "queue_timeout";
+        record.summary.failedAt = new Date().toISOString();
+        record.summary.errorSummary = "任务排队超时";
+        this.inflight.delete(runtimeKey);
+      }
+    }, QUEUE_TIMEOUT_MS);
+
+    const promise = Promise.resolve().then(async () => {
+      if (summary.state === "queue_timeout") {
+        throw new Error("任务排队超时");
+      }
+      summary.state = "running";
+      summary.startedAt = new Date().toISOString();
+      const runTimeout = setTimeout(() => controller.abort(), definition.timeoutMs);
+      try {
+        const output = await definition.run(input.input as unknown, {
+          taskId,
+          queuedAt: summary.queuedAt,
+          startedAt: () => summary.startedAt,
+          signal: controller.signal,
+          setStage: (stage) => {
+            record.runningStage = stage;
+            record.summary.runningStage = stage;
+          }
+        });
+        summary.state = "fresh";
+        summary.completedAt = new Date().toISOString();
+        summary.errorSummary = null;
+        return output as Output;
+      } catch (error) {
+        summary.state = "failed";
+        summary.failedAt = new Date().toISOString();
+        summary.errorSummary = error instanceof Error ? error.message : String(error);
+        throw error;
+      } finally {
+        clearTimeout(runTimeout);
+        clearTimeout(timeout);
+        this.inflight.delete(runtimeKey);
+      }
+    });
+
+    promise.catch(() => {
+      // 后台任务失败只更新状态，不能变成未处理拒绝。
+    });
+
+    record = {
+      summary,
+      promise,
+      controller,
+      timeout,
+      runningStage: null
+    };
+    this.inflight.set(runtimeKey, record as TaskRecord);
+    this.latest.set(runtimeKey, record as TaskRecord);
+    return this.snapshotRecord(record);
+  }
+
+  get(taskType: string, key: string): TaskSummary | null {
+    const runtimeKey = buildRuntimeKey(taskType, key);
+    const record = this.inflight.get(runtimeKey) ?? this.latest.get(runtimeKey);
+    return record ? this.snapshotRecord(record) : null;
+  }
+
+  private snapshotRecord(record: TaskRecord): TaskSummary {
+    return {
+      ...record.summary,
+      runningStage: record.runningStage ?? record.summary.runningStage
+    };
+  }
+}
+
+function buildRuntimeKey(taskType: string, key: string): string {
+  return `${taskType}:${key}`;
+}
+
+function hashKey(value: string): string {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = ((hash << 5) - hash + value.charCodeAt(index)) | 0;
+  }
+  return Math.abs(hash).toString(36);
+}
