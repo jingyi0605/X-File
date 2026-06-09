@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type {
   LibraryBinding,
+  LibraryDocumentRecord,
   LibraryDocumentList,
   LibraryFavoriteRecord,
   LibraryFileNode,
@@ -68,7 +69,13 @@ export interface LibraryState {
   openPreview: (path: string) => Promise<void>;
   downloadSelected: (path: string) => Promise<void>;
   toggleFavorite: (favorite: LibraryFavoriteRecord) => Promise<void>;
-  operateFile: (input: { opType: LibraryOperationType; srcPath?: string; dstPath?: string | null; content?: string | null }) => Promise<void>;
+  operateFile: (input: {
+    opType: LibraryOperationType;
+    srcPath?: string;
+    dstPath?: string | null;
+    content?: string | null;
+    expectedVersion?: string | null;
+  }) => Promise<void>;
 }
 
 export function useLibraryState(): LibraryState {
@@ -86,7 +93,7 @@ export function useLibraryState(): LibraryState {
   const [previewError, setPreviewError] = useState<string | null>(null);
 
   const entries = useMemo(
-    () => sortLibraryEntries(buildEntries(snapshot, documentPage, fileItems, viewState), viewState.librarySort),
+    () => buildVisibleEntries(snapshot, documentPage, fileItems, viewState),
     [documentPage, fileItems, snapshot, viewState]
   );
 
@@ -166,7 +173,6 @@ export function useLibraryState(): LibraryState {
           selectedTagPath: viewState.selectedTagPath,
           selectedTagPaths: viewState.selectedTagPaths,
           selectedFavoriteId: viewState.selectedFavoriteId,
-          keyword: viewState.keyword,
           offset,
           limit: DOCUMENT_PAGE_LIMIT
         }),
@@ -246,14 +252,17 @@ export function useLibraryState(): LibraryState {
   function selectTag(path: string | null): void {
     setPreview(null);
     setPreviewError(null);
-    setViewState((current) => ({
-      ...current,
-      browseMode: "tag",
-      selectedTagPath: path,
-      selectedTagPaths: path ? [path] : [],
-      selectedFavoriteId: null,
-      selectedDocumentId: null
-    }));
+    setViewState((current) => {
+      const nextSelectedTagPaths = updateSelectedTagPaths(tags, current.selectedTagPaths, path);
+      return {
+        ...current,
+        browseMode: "tag",
+        selectedTagPath: nextSelectedTagPaths[nextSelectedTagPaths.length - 1] ?? null,
+        selectedTagPaths: nextSelectedTagPaths,
+        selectedFavoriteId: null,
+        selectedDocumentId: null
+      };
+    });
   }
 
   function selectFavorite(favorite: LibraryFavoriteRecord): void {
@@ -263,13 +272,14 @@ export function useLibraryState(): LibraryState {
       return;
     }
 
+    const favoriteTagPaths = favorite.tagPaths?.length ? favorite.tagPaths : [favorite.path];
     setPreview(null);
     setPreviewError(null);
     setViewState((current) => ({
       ...current,
       browseMode: "tag",
-      selectedTagPath: favorite.path,
-      selectedTagPaths: favorite.tagPaths?.length ? favorite.tagPaths : [favorite.path],
+      selectedTagPath: favoriteTagPaths[favoriteTagPaths.length - 1] ?? null,
+      selectedTagPaths: favoriteTagPaths,
       selectedFavoriteId: favorite.path,
       selectedDocumentId: null
     }));
@@ -320,6 +330,7 @@ export function useLibraryState(): LibraryState {
     srcPath?: string;
     dstPath?: string | null;
     content?: string | null;
+    expectedVersion?: string | null;
   }): Promise<void> {
     setError(null);
     try {
@@ -347,7 +358,6 @@ export function useLibraryState(): LibraryState {
     viewState.selectedTagPath,
     viewState.selectedTagPaths.join("|"),
     viewState.selectedFavoriteId,
-    viewState.keyword,
     snapshot?.status.lastCompletedAt
   ]);
 
@@ -405,6 +415,24 @@ export function useLibraryState(): LibraryState {
   };
 }
 
+function buildVisibleEntries(
+  snapshot: LibrarySnapshot | null,
+  documentPage: LibraryDocumentList | null,
+  fileItems: LibraryFileNode[],
+  viewState: LibraryViewState
+): LibraryEntry[] {
+  const baseEntries = buildEntries(snapshot, documentPage, fileItems, viewState);
+  if (
+    viewState.browseMode === "tag" &&
+    viewState.viewMode === "list" &&
+    viewState.selectedTagPaths.length > 0 &&
+    viewState.tagResultStructureMode === "directory"
+  ) {
+    return buildTagDirectoryEntries(documentPage?.items ?? [], viewState.librarySort);
+  }
+  return sortLibraryEntries(baseEntries, viewState.librarySort);
+}
+
 function buildEntries(
   snapshot: LibrarySnapshot | null,
   documentPage: LibraryDocumentList | null,
@@ -431,6 +459,135 @@ function buildEntries(
   return [...folderEntries, ...documentEntries];
 }
 
+function buildTagDirectoryEntries(
+  documents: LibraryDocumentRecord[],
+  sortState: LibraryViewState["librarySort"]
+): LibraryEntry[] {
+  const directories = new Map<string, Extract<LibraryEntry, { kind: "tag-directory" }>>();
+  const childDirectoryPathsByParent = new Map<string, Set<string>>();
+  const documentsByParent = new Map<string, Extract<LibraryEntry, { kind: "document" }>[] >();
+
+  const addChildDirectory = (parentPath: string, childPath: string) => {
+    const children = childDirectoryPathsByParent.get(parentPath) ?? new Set<string>();
+    children.add(childPath);
+    childDirectoryPathsByParent.set(parentPath, children);
+  };
+
+  const touchDirectory = (directoryPath: string, document: LibraryDocumentRecord) => {
+    const normalizedPath = normalizeFolderPath(directoryPath);
+    if (!normalizedPath) return;
+    const existing = directories.get(normalizedPath);
+    directories.set(normalizedPath, {
+      kind: "tag-directory",
+      path: normalizedPath,
+      name: getPathName(normalizedPath),
+      depth: getFolderDepth(normalizedPath),
+      documentCount: (existing?.documentCount ?? 0) + 1,
+      updatedAt: pickLatestDate(existing?.updatedAt ?? null, document.updatedAt),
+      createdAt: pickEarliestDate(existing?.createdAt ?? null, document.createdAt)
+    });
+  };
+
+  for (const document of documents) {
+    const parentPath = normalizeFolderPath(getDocumentParentPath(document.path));
+    const documentEntry: Extract<LibraryEntry, { kind: "document" }> = {
+      ...document,
+      kind: "document",
+      depth: parentPath ? parentPath.split("/").length : 0
+    } as Extract<LibraryEntry, { kind: "document" }>;
+    const siblingDocuments = documentsByParent.get(parentPath) ?? [];
+    siblingDocuments.push(documentEntry);
+    documentsByParent.set(parentPath, siblingDocuments);
+
+    if (!parentPath) continue;
+    const segments = parentPath.split("/").filter(Boolean);
+    for (let index = 0; index < segments.length; index += 1) {
+      const directoryPath = segments.slice(0, index + 1).join("/");
+      const directoryParentPath = segments.slice(0, index).join("/");
+      touchDirectory(directoryPath, document);
+      addChildDirectory(directoryParentPath, directoryPath);
+    }
+  }
+
+  const entries: LibraryEntry[] = [];
+  const visit = (parentPath: string) => {
+    const childDirectoryPaths = Array.from(childDirectoryPathsByParent.get(parentPath) ?? [])
+      .sort((left, right) => getPathName(left).localeCompare(getPathName(right), "zh-CN"));
+    for (const childPath of childDirectoryPaths) {
+      const directory = directories.get(childPath);
+      if (!directory) continue;
+      entries.push(directory);
+      visit(childPath);
+    }
+    entries.push(...sortLibraryEntries(documentsByParent.get(parentPath) ?? [], sortState));
+  };
+
+  visit("");
+  return entries;
+}
+
 function resolveFolderCount(snapshot: LibrarySnapshot | null, folderPath: string): number {
   return snapshot?.folders.find((folder) => folder.path === folderPath)?.documentCount ?? 0;
+}
+
+function normalizeFolderPath(value: string): string {
+  return value
+    .replaceAll("\\\\", "/")
+    .replace(/^\/+|\/+$/g, "")
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter((segment) => segment && segment !== "." && segment !== "..")
+    .join("/");
+}
+
+function getDocumentParentPath(filePath: string): string {
+  const segments = normalizeFolderPath(filePath).split("/").filter(Boolean);
+  segments.pop();
+  return segments.join("/");
+}
+
+function getFolderDepth(folderPath: string): number {
+  return normalizeFolderPath(folderPath).split("/").filter(Boolean).length;
+}
+
+function pickLatestDate(left: string | null | undefined, right: string | null | undefined): string | null {
+  if (!left) return right ?? null;
+  if (!right) return left;
+  return new Date(left).getTime() >= new Date(right).getTime() ? left : right;
+}
+
+function pickEarliestDate(left: string | null | undefined, right: string | null | undefined): string | null {
+  if (!left) return right ?? null;
+  if (!right) return left;
+  return new Date(left).getTime() <= new Date(right).getTime() ? left : right;
+}
+
+function updateSelectedTagPaths(
+  tagRecords: LibraryTagNode[],
+  currentPaths: string[],
+  nextPath: string | null,
+): string[] {
+  const normalizedPath = nextPath?.trim() ?? "";
+  if (!normalizedPath) {
+    return [];
+  }
+  const nextRootType = resolveTagRootType(tagRecords, normalizedPath);
+  const alreadySelected = currentPaths.includes(normalizedPath);
+  const nextPaths = currentPaths.filter((item) => resolveTagRootType(tagRecords, item) !== nextRootType);
+  if (alreadySelected) {
+    return nextPaths;
+  }
+  return [...nextPaths, normalizedPath];
+}
+
+function resolveTagRootType(tagRecords: LibraryTagNode[], pathValue: string): string {
+  const normalizedPath = pathValue.trim();
+  if (!normalizedPath) {
+    return "";
+  }
+  const matched = tagRecords.find((item) => item.path === normalizedPath);
+  if (matched?.rootType?.trim()) {
+    return matched.rootType.trim();
+  }
+  return normalizedPath.split("/")[0] ?? normalizedPath;
 }

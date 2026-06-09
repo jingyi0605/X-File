@@ -7,6 +7,7 @@ export type LibraryViewMode = "grid" | "list";
 export type LibrarySortMode = "recent" | "name" | "type" | "size" | "createdAt";
 export type LibrarySortDirection = "asc" | "desc";
 export type FinderColumnKey = "name" | "size" | "updatedAt" | "type" | "createdAt";
+export type TagResultStructureMode = "file" | "directory";
 
 export const FINDER_COLUMN_MIN_WIDTHS: Record<FinderColumnKey, number> = {
   name: 240,
@@ -42,6 +43,7 @@ export interface LibraryViewState {
   keyword: string;
   librarySort: LibrarySortState;
   finderColumnWidths: Record<FinderColumnKey, number>;
+  tagResultStructureMode: TagResultStructureMode;
 }
 
 export type LibraryEntry =
@@ -52,8 +54,18 @@ export type LibraryEntry =
       documentCount: number;
       updatedAt: string | null;
     }
+  | {
+      kind: "tag-directory";
+      path: string;
+      name: string;
+      depth: number;
+      documentCount: number;
+      updatedAt: string | null;
+      createdAt?: string | null;
+    }
   | ({
       kind: "document";
+      depth?: number;
     } & LibraryDocumentRecord);
 
 const DEFAULT_SORT: LibrarySortState = {
@@ -72,7 +84,8 @@ const DEFAULT_STATE: Omit<LibraryViewState, "libraryId"> = {
   selectedFavoriteId: null,
   keyword: "",
   librarySort: DEFAULT_SORT,
-  finderColumnWidths: DEFAULT_FINDER_COLUMN_WIDTHS
+  finderColumnWidths: DEFAULT_FINDER_COLUMN_WIDTHS,
+  tagResultStructureMode: "file"
 };
 
 function buildStateKey(libraryId: string): string {
@@ -115,7 +128,7 @@ export function sortLibraryEntries(entries: LibraryEntry[], sort: LibrarySortSta
   const direction = sort.direction === "asc" ? 1 : -1;
   return [...entries].sort((left, right) => {
     if (left.kind !== right.kind) {
-      return left.kind === "folder" ? -1 : 1;
+      return left.kind === "document" ? 1 : right.kind === "document" ? -1 : left.kind.localeCompare(right.kind);
     }
 
     const result = compareEntryValue(left, right, sort.mode);
@@ -138,7 +151,8 @@ function normalizeLibraryViewState(libraryId: string, value: Partial<LibraryView
     selectedFavoriteId: normalizeNullable(value.selectedFavoriteId),
     keyword: value.keyword?.trim() ?? "",
     librarySort: normalizeLibrarySortState(value.librarySort),
-    finderColumnWidths: normalizeFinderColumnWidths(value.finderColumnWidths)
+    finderColumnWidths: normalizeFinderColumnWidths(value.finderColumnWidths),
+    tagResultStructureMode: value.tagResultStructureMode === "directory" ? "directory" : "file"
   };
 }
 
@@ -188,11 +202,11 @@ function compareEntryValue(left: LibraryEntry, right: LibraryEntry, mode: Librar
 }
 
 function getEntryName(entry: LibraryEntry): string {
-  return entry.kind === "folder" ? entry.name : entry.title || entry.path;
+  return entry.kind === "document" ? entry.title || entry.path : entry.name;
 }
 
 function getEntryExtension(entry: LibraryEntry): string {
-  if (entry.kind === "folder") {
+  if (entry.kind === "folder" || entry.kind === "tag-directory") {
     return "folder";
   }
   const dotIndex = entry.path.lastIndexOf(".");
@@ -204,7 +218,7 @@ function getEntrySize(entry: LibraryEntry): number {
 }
 
 function getEntryUpdatedAt(entry: LibraryEntry): string | null {
-  return entry.kind === "folder" ? entry.updatedAt : entry.updatedAt;
+  return entry.updatedAt;
 }
 
 function getTime(value: string | null | undefined): number {

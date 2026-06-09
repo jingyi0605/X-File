@@ -24,6 +24,18 @@ export interface ReadLibraryDocumentsInput {
   favorites?: LibraryFavoriteRecord[];
 }
 
+interface SearchMatchState {
+  readonly hasIndex: boolean;
+  readonly keywords: string[];
+  readonly groups: SearchKeywordMatchGroup[];
+  readonly ranks: Map<string, number>;
+}
+
+interface SearchKeywordMatchGroup {
+  readonly keyword: string;
+  readonly documentIds: Set<string>;
+}
+
 interface ManifestFile {
   generated_at?: string;
   entries?: {
@@ -72,6 +84,19 @@ interface MetaShardFile {
     direct_tags?: string[];
     derived_tags?: string[];
   }>;
+}
+
+interface SearchBucketPosting {
+  term: string;
+  document_count: number;
+  document_ids?: string[];
+  postings?: Array<{
+    document_id: string;
+  }>;
+}
+
+interface SearchBucketFile {
+  terms?: SearchBucketPosting[];
 }
 
 export class LibraryExportReader {
@@ -145,10 +170,12 @@ export class LibraryExportReader {
     }
 
     const allDocuments = this.readDocumentsFromManifest(exportDir, manifest);
+    const searchMatch = readOfflineSearchMatchState(exportDir, input.keyword);
     const filtered = filterDocuments(
       markFavoriteDocuments(allDocuments, input.favorites ?? []),
       input,
-    );
+      searchMatch,
+    ).sort((left, right) => compareSearchRank(left, right, searchMatch));
     return {
       total: filtered.length,
       visibleEntryTotal: filtered.length,
@@ -280,6 +307,7 @@ function readFolders(
 function filterDocuments(
   documents: LibraryDocumentRecord[],
   input: ReadLibraryDocumentsInput,
+  searchMatch: SearchMatchState,
 ): LibraryDocumentRecord[] {
   const folderPath = normalizeFolderPath(input.selectedFolderPath ?? "");
   const selectedFavorite = resolveSelectedFavorite(
@@ -291,7 +319,6 @@ function filterDocuments(
     : input.selectedTagPath
       ? [input.selectedTagPath]
       : [];
-  const keyword = input.keyword?.trim().toLowerCase() ?? "";
 
   return documents.filter((document) => {
     if (selectedFavorite && !matchesFavorite(document, selectedFavorite)) {
@@ -317,16 +344,144 @@ function filterDocuments(
       }
     }
 
-    if (keyword) {
+    if (searchMatch.keywords.length > 0) {
       const haystack =
         `${document.title}\n${document.path}\n${document.summary}`.toLowerCase();
-      if (!haystack.includes(keyword)) {
+      const matchedEveryKeyword = searchMatch.groups.every((group) => (
+        haystack.includes(group.keyword) ||
+        group.documentIds.has(document.documentId)
+      ));
+      if (!matchedEveryKeyword) {
         return false;
       }
     }
 
     return true;
   });
+}
+
+function compareSearchRank(
+  left: LibraryDocumentRecord,
+  right: LibraryDocumentRecord,
+  searchMatch: SearchMatchState,
+): number {
+  if (!searchMatch.hasIndex) {
+    return 0;
+  }
+  const rankDelta =
+    (searchMatch.ranks.get(right.documentId) ?? 0) -
+    (searchMatch.ranks.get(left.documentId) ?? 0);
+  if (rankDelta !== 0) {
+    return rankDelta;
+  }
+  return right.updatedAt.localeCompare(left.updatedAt) || left.path.localeCompare(right.path, "zh-Hans-CN");
+}
+
+function readOfflineSearchMatchState(
+  exportDir: string,
+  keyword: string | null | undefined,
+): SearchMatchState {
+  const keywords = splitSearchKeywords(keyword ?? "");
+  if (keywords.length === 0) {
+    return createEmptySearchMatchState([]);
+  }
+
+  const manifestPath = path.join(exportDir, "search", "manifest.json");
+  if (!fs.existsSync(manifestPath)) {
+    return createEmptySearchMatchState(keywords);
+  }
+
+  const ranks = new Map<string, number>();
+  const groups = keywords.map((keywordItem) => {
+    const documentIds = new Set<string>();
+    for (const term of tokenizeSearchQuery(keywordItem)) {
+      const bucketPath = path.join(exportDir, "search", `${resolveSearchBucketName(term)}.json`);
+      const bucket = readJson<SearchBucketFile>(bucketPath);
+      const posting = bucket?.terms?.find((item) => item.term === term);
+      if (!posting) {
+        continue;
+      }
+
+      const postingDocumentIds = Array.isArray(posting.document_ids)
+        ? posting.document_ids
+        : (posting.postings ?? []).map((item) => item.document_id);
+      for (const documentId of postingDocumentIds) {
+        documentIds.add(documentId);
+        ranks.set(documentId, (ranks.get(documentId) ?? 0) + 1);
+      }
+    }
+
+    return { keyword: keywordItem, documentIds };
+  });
+
+  return { hasIndex: ranks.size > 0, keywords, groups, ranks };
+}
+
+function createEmptySearchMatchState(keywords: string[]): SearchMatchState {
+  return {
+    hasIndex: false,
+    keywords,
+    groups: keywords.map((keywordItem) => ({
+      keyword: keywordItem,
+      documentIds: new Set<string>(),
+    })),
+    ranks: new Map(),
+  };
+}
+
+function splitSearchKeywords(value: string): string[] {
+  const seen = new Set<string>();
+  return value
+    .trim()
+    .split(/\s+/)
+    .map((item) => item.trim().toLowerCase())
+    .filter((item) => item.length > 0)
+    .filter((item) => {
+      if (seen.has(item)) {
+        return false;
+      }
+      seen.add(item);
+      return true;
+    });
+}
+
+function tokenizeSearchQuery(value: string): string[] {
+  const terms = new Set<string>();
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    return [];
+  }
+
+  const wordMatches = normalized.match(/[a-z0-9][a-z0-9._-]*/g) ?? [];
+  for (const word of wordMatches) {
+    if (word.length >= 2) {
+      terms.add(word);
+    }
+  }
+
+  const compact = normalized.replace(/\s+/g, "");
+  const hanMatches = compact.match(/[\u4e00-\u9fff]{2,}/g) ?? [];
+  for (const block of hanMatches) {
+    if (block.length <= 4) {
+      terms.add(block);
+      continue;
+    }
+    for (let size = 2; size <= 4; size += 1) {
+      for (let index = 0; index <= block.length - size; index += 1) {
+        terms.add(block.slice(index, index + size));
+      }
+    }
+  }
+
+  return [...terms];
+}
+
+function resolveSearchBucketName(term: string): string {
+  const first = term[0] ?? "_";
+  if (/[a-z0-9]/.test(first)) {
+    return first;
+  }
+  return "han";
 }
 
 function markFavoriteDocuments(
