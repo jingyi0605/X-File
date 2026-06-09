@@ -39,6 +39,18 @@ test("文档库主路由、标签路由和 server state 都已注册", async () 
     assert.equal(createdTag.statusCode, 200);
     const tagId = createdTag.json().id;
 
+    const tagDetail = await app.inject({ method: "GET", url: `/api/library/tags/${tagId}` });
+    assert.equal(tagDetail.statusCode, 200);
+    assert.equal(tagDetail.json().path, "主题/路由");
+
+    const updatedTag = await app.inject({
+      method: "PUT",
+      url: `/api/library/tags/${tagId}`,
+      payload: { name: "路由设计" }
+    });
+    assert.equal(updatedTag.statusCode, 200);
+    assert.equal(updatedTag.json().path, "主题/路由设计");
+
     const documentTags = await app.inject({
       method: "PUT",
       url: "/api/library/documents/docs%2Fa.md/tags",
@@ -54,6 +66,18 @@ test("文档库主路由、标签路由和 server state 都已注册", async () 
     });
     assert.equal(folderTags.statusCode, 200);
     assert.equal(folderTags.json().bindingTagIds[0], tagId);
+
+    const savedFavorites = await app.inject({
+      method: "PUT",
+      url: "/api/library/favorites",
+      payload: { favorites: [{ kind: "tag", path: "主题/路由设计", label: "路由设计" }] }
+    });
+    assert.equal(savedFavorites.statusCode, 200);
+    assert.equal(savedFavorites.json().items[0]?.path, "主题/路由设计");
+
+    const deletedTag = await app.inject({ method: "DELETE", url: `/api/library/tags/${tagId}` });
+    assert.equal(deletedTag.statusCode, 200);
+    assert.equal(deletedTag.json().deletedTagIds[0], tagId);
 
     const state = await app.inject({ method: "GET", url: "/api/server/state" });
     assert.equal(state.statusCode, 200);

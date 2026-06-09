@@ -6,6 +6,7 @@ import type {
   ListTagsInput,
   SaveDocumentTagsInput,
   SaveFolderTagsInput,
+  UpdateTagInput,
   TagService
 } from "./tag-service.js";
 
@@ -34,6 +35,27 @@ export class TagController {
     reply: FastifyReply
   ): Promise<void> => {
     reply.send(this.tagService.ensureTag(request.body ?? {}));
+  };
+
+  readonly getTagDetail = async (
+    request: FastifyRequest<{ Params: { tagId: string } }>,
+    reply: FastifyReply
+  ): Promise<void> => {
+    reply.send(this.tagService.getTagDetail(request.params.tagId));
+  };
+
+  readonly updateTag = async (
+    request: FastifyRequest<{ Params: { tagId: string }; Body: UpdateTagInput }>,
+    reply: FastifyReply
+  ): Promise<void> => {
+    reply.send(this.tagService.updateTag(request.params.tagId, request.body ?? {}));
+  };
+
+  readonly deleteTag = async (
+    request: FastifyRequest<{ Params: { tagId: string } }>,
+    reply: FastifyReply
+  ): Promise<void> => {
+    reply.send(this.tagService.deleteTag(request.params.tagId));
   };
 
   readonly getDocumentTagDetails = async (

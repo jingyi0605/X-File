@@ -18,6 +18,9 @@ export async function registerTagRoutes(app: FastifyInstance, tagController: Tag
   app.get("/api/library/tags", wrap(tagController.listTags));
   app.post("/api/library/tags", wrap(tagController.createTag));
   app.post("/api/library/tags/ensure", wrap(tagController.ensureTag));
+  app.get("/api/library/tags/:tagId", wrap(tagController.getTagDetail));
+  app.put("/api/library/tags/:tagId", wrap(tagController.updateTag));
+  app.delete("/api/library/tags/:tagId", wrap(tagController.deleteTag));
   app.get("/api/library/documents/:documentId/tag-details", wrap(tagController.getDocumentTagDetails));
   app.put("/api/library/documents/:documentId/tags", wrap(tagController.saveDocumentTags));
   app.get("/api/library/folders/tag-details", wrap(tagController.getFolderTagDetails));

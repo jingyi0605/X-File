@@ -22,6 +22,10 @@ export interface CreateTagInput {
   description?: string | null;
 }
 
+export interface UpdateTagInput extends CreateTagInput {
+  status?: "active" | "disabled";
+}
+
 export interface EnsureTagInput {
   path?: string;
 }
@@ -86,6 +90,80 @@ export class TagService {
     const tag = this.ensureTagInStore(data, normalizeTagPath(input.path ?? ""), null);
     this.writeCurrentStore(data);
     return this.toTagDetail(tag, data);
+  }
+
+  getTagDetail(tagId: string): LibraryTagDetailWithRules {
+    const data = this.readCurrentStore();
+    const tag = this.requireTag(data, tagId);
+    return this.toTagDetail(tag, data);
+  }
+
+  updateTag(tagId: string, input: UpdateTagInput): LibraryTagDetailWithRules {
+    const data = this.readCurrentStore();
+    const tag = this.requireTag(data, tagId);
+    const name = normalizeTagSegment(input.name ?? tag.name);
+    if (!name) {
+      throw new LibraryError(400, "INVALID_INPUT", "标签名称不能为空", "name");
+    }
+
+    const parentId = input.parentId === undefined ? tag.parentId : input.parentId;
+    const parent = parentId
+      ? data.tags.find((item) => item.id === parentId) ?? null
+      : null;
+    if (parentId && !parent) {
+      throw new LibraryError(404, "LIBRARY_TAG_NOT_FOUND", "父标签不存在", "parentId");
+    }
+    if (parent && (parent.id === tag.id || isDescendantTag(data.tags, parent.id, tag.id))) {
+      throw new LibraryError(400, "INVALID_INPUT", "不能把标签移动到自己或子标签下面", "parentId");
+    }
+
+    const oldPath = tag.path;
+    const nextPath = parent ? `${parent.path}/${name}` : name;
+    const duplicate = data.tags.find((item) => item.id !== tag.id && item.path === nextPath);
+    if (duplicate) {
+      throw new LibraryError(409, "INVALID_INPUT", "同级标签已存在", "name");
+    }
+
+    const now = new Date().toISOString();
+    tag.name = name;
+    tag.path = nextPath;
+    tag.rootType = nextPath.split("/")[0] ?? name;
+    tag.parentId = parent?.id ?? null;
+    tag.parentPath = parent?.path ?? null;
+    tag.description = input.description ?? tag.description;
+    if (input.status === "disabled") {
+      tag.status = "disabled";
+      tag.disabledAt = tag.disabledAt ?? now;
+    } else if (input.status === "active") {
+      tag.status = "active";
+      tag.disabledAt = null;
+    }
+    tag.updatedAt = now;
+
+    if (oldPath !== nextPath) {
+      updateDescendantPaths(data.tags, tag.id, oldPath, nextPath);
+    }
+
+    this.writeCurrentStore(data);
+    return this.toTagDetail(tag, data);
+  }
+
+  deleteTag(tagId: string): { deletedTagIds: string[] } {
+    const data = this.readCurrentStore();
+    const tag = this.requireTag(data, tagId);
+    const deletedTagIds = [tag.id, ...collectDescendantTags(data.tags, tag.id).map((item) => item.id)];
+    const deleted = new Set(deletedTagIds);
+    data.tags = data.tags.filter((item) => !deleted.has(item.id));
+    data.documentTags = data.documentTags.map((binding) => ({
+      ...binding,
+      manualTagIds: binding.manualTagIds.filter((id) => !deleted.has(id))
+    }));
+    data.folderTags = data.folderTags.map((binding) => ({
+      ...binding,
+      bindingTagIds: binding.bindingTagIds.filter((id) => !deleted.has(id))
+    }));
+    this.writeCurrentStore(data);
+    return { deletedTagIds };
   }
 
   getDocumentTagDetails(documentId: string): LibraryDocumentTagDetails {
@@ -186,6 +264,15 @@ export class TagService {
 
   private ensureInputTagIds(data: StoredLibraryTags, input: SaveDocumentTagsInput): string[] {
     return (input.createTagPaths ?? []).map((tagPath) => this.ensureTagInStore(data, normalizeTagPath(tagPath), null).id);
+  }
+
+  private requireTag(data: StoredLibraryTags, tagId: string): StoredTagDefinition {
+    const normalizedTagId = normalizeRequiredId(tagId, "tagId");
+    const tag = data.tags.find((item) => item.id === normalizedTagId);
+    if (!tag) {
+      throw new LibraryError(404, "LIBRARY_TAG_NOT_FOUND", "标签不存在", "tagId");
+    }
+    return tag;
   }
 
   private ensureTagInStore(data: StoredLibraryTags, tagPath: string, description: string | null): StoredTagDefinition {
@@ -327,4 +414,40 @@ function countTagDocuments(data: StoredLibraryTags, tagId: string): number {
 
 function folderBindingId(folderPath: string, tagId: string): string {
   return `folder_${crypto.createHash("sha1").update(`${folderPath}:${tagId}`).digest("hex")}`;
+}
+
+function isDescendantTag(tags: StoredTagDefinition[], candidateId: string, ancestorId: string): boolean {
+  let current = tags.find((tag) => tag.id === candidateId) ?? null;
+  while (current?.parentId) {
+    if (current.parentId === ancestorId) {
+      return true;
+    }
+    current = tags.find((tag) => tag.id === current?.parentId) ?? null;
+  }
+  return false;
+}
+
+function collectDescendantTags(tags: StoredTagDefinition[], ancestorId: string): StoredTagDefinition[] {
+  const result: StoredTagDefinition[] = [];
+  const visit = (parentId: string) => {
+    for (const tag of tags.filter((item) => item.parentId === parentId)) {
+      result.push(tag);
+      visit(tag.id);
+    }
+  };
+  visit(ancestorId);
+  return result;
+}
+
+function updateDescendantPaths(tags: StoredTagDefinition[], tagId: string, oldPath: string, nextPath: string): void {
+  const descendants = collectDescendantTags(tags, tagId);
+  for (const descendant of descendants) {
+    if (descendant.path === oldPath || descendant.path.startsWith(`${oldPath}/`)) {
+      descendant.path = `${nextPath}${descendant.path.slice(oldPath.length)}`;
+      descendant.rootType = descendant.path.split("/")[0] ?? descendant.name;
+      descendant.updatedAt = new Date().toISOString();
+    }
+    const parent = tags.find((item) => item.id === descendant.parentId) ?? null;
+    descendant.parentPath = parent?.path ?? null;
+  }
 }

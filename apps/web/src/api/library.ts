@@ -136,6 +136,15 @@ export async function listLibraryTags(): Promise<LibraryTagNode[]> {
   }));
 }
 
+export async function listLibraryTagDetails(includeDisabled = true): Promise<LibraryTagDetailWithRules[]> {
+  const search = new URLSearchParams();
+  if (includeDisabled) {
+    search.set("includeDisabled", "true");
+  }
+  const payload = await apiRequest<LibraryTagListResponse | LibraryTagDetailWithRules[]>(`/api/library/tags${search.toString() ? `?${search.toString()}` : ""}`);
+  return Array.isArray(payload) ? payload : payload.items;
+}
+
 export function getDocumentTagDetails(documentId: string): Promise<LibraryDocumentTagDetails> {
   return apiRequest<LibraryDocumentTagDetails>(`/api/library/documents/${encodeURIComponent(documentId)}/tag-details`);
 }
@@ -152,6 +161,24 @@ export function getFolderTagDetails(folderPath: string): Promise<LibraryFolderTa
 
 export function saveFolderTags(input: SaveLibraryFolderTagsInput): Promise<LibraryFolderTagDetails> {
   return putJson<LibraryFolderTagDetails>("/api/library/folders/tags", input);
+}
+
+export function getLibraryTagDetail(tagId: string): Promise<LibraryTagDetailWithRules> {
+  return apiRequest<LibraryTagDetailWithRules>(`/api/library/tags/${encodeURIComponent(tagId)}`);
+}
+
+export function createLibraryTag(input: SaveLibraryTagDefinitionInput): Promise<LibraryTagDetailWithRules> {
+  return postJson<LibraryTagDetailWithRules>("/api/library/tags", input);
+}
+
+export function updateLibraryTag(tagId: string, input: SaveLibraryTagDefinitionInput): Promise<LibraryTagDetailWithRules> {
+  return putJson<LibraryTagDetailWithRules>(`/api/library/tags/${encodeURIComponent(tagId)}`, input);
+}
+
+export function deleteLibraryTag(tagId: string): Promise<{ deletedTagIds: string[] }> {
+  return apiRequest<{ deletedTagIds: string[] }>(`/api/library/tags/${encodeURIComponent(tagId)}`, {
+    method: "DELETE"
+  });
 }
 
 export function getOnlyOfficeSettings(): Promise<OnlyOfficeSettings> {
@@ -188,6 +215,13 @@ export interface SaveLibraryTagsInput {
 
 export interface SaveLibraryFolderTagsInput extends SaveLibraryTagsInput {
   folderPath?: string;
+}
+
+export interface SaveLibraryTagDefinitionInput {
+  name?: string;
+  parentId?: string | null;
+  description?: string | null;
+  status?: "active" | "disabled";
 }
 
 interface LibraryTagListResponse {

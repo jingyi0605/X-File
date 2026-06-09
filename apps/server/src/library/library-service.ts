@@ -28,6 +28,7 @@ import type { LibraryBindingStore } from "../storage/library-binding-store.js";
 import { LibraryConfigStore } from "../storage/library-config-store.js";
 import { IndexRuntimeStore } from "../storage/index-runtime-store.js";
 import { LibraryExportReader } from "../storage/library-export-reader.js";
+import { LibraryFavoritesStore } from "../storage/library-favorites-store.js";
 import { LibraryError } from "./library-errors.js";
 import { LibraryIndexService } from "./index-service.js";
 import { TaskManager } from "../tasks/task-manager.js";
@@ -105,7 +106,8 @@ export class LibraryService {
     private readonly bindingStore: LibraryBindingStore,
     private readonly exportReader = new LibraryExportReader(),
     private readonly indexService: LibraryIndexService | null = createDefaultIndexService(),
-    private readonly configStore = new LibraryConfigStore()
+    private readonly configStore = new LibraryConfigStore(),
+    private readonly favoritesStore = new LibraryFavoritesStore()
   ) {}
 
   getBinding(): LibraryBinding | null {
@@ -151,18 +153,21 @@ export class LibraryService {
     const status = binding && this.indexService
       ? this.indexService.getStatus(binding.rootDir)
       : createEmptyStatus();
-    return this.exportReader.readSnapshot(binding, status);
+    return this.exportReader.readSnapshot(binding, status, binding ? this.readFavorites(binding) : []);
   }
 
   listDocuments(input: ListLibraryDocumentsInput): LibraryDocumentList {
-    return this.exportReader.listDocuments(this.bindingStore.read(), {
+    const binding = this.bindingStore.read();
+    return this.exportReader.listDocuments(binding, {
       browseMode: input.browseMode,
       selectedFolderPath: input.selectedFolderPath,
       selectedTagPath: input.selectedTagPath,
       selectedTagPaths: input.selectedTagPaths,
+      selectedFavoriteId: input.selectedFavoriteId,
       keyword: input.keyword,
       offset: normalizeNonNegativeInteger(input.offset, 0),
-      limit: normalizeLimit(input.limit, 50)
+      limit: normalizeLimit(input.limit, 50),
+      favorites: binding ? this.readFavorites(binding) : []
     });
   }
 
@@ -443,9 +448,14 @@ export class LibraryService {
   }
 
   updateFavorites(input: UpdateLibraryFavoritesInput): { items: LibraryFavoriteRecord[] } {
+    const binding = this.requireBinding();
     return {
-      items: Array.isArray(input.favorites) ? input.favorites : []
+      items: this.favoritesStore.write(binding.libraryId, binding.rootDir, Array.isArray(input.favorites) ? input.favorites : [])
     };
+  }
+
+  private readFavorites(binding: LibraryBinding): LibraryFavoriteRecord[] {
+    return this.favoritesStore.read(binding.libraryId, binding.rootDir);
   }
 
   private requireBinding(): LibraryBinding {

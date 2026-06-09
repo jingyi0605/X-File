@@ -488,6 +488,14 @@ export interface SaveLibraryTagsInput {
   createTagPaths?: string[];
 }
 
+export interface SaveLibraryTagDefinitionInput {
+  name?: string;
+  parentId?: string | null;
+  description?: string | null;
+  status?: "active" | "disabled";
+  smartRules?: LibraryTagRule[];
+}
+
 export interface SaveLibraryFolderTagsInput extends SaveLibraryTagsInput {
   folderPath?: string;
 }
