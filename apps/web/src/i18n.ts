@@ -61,13 +61,15 @@ export const zhCN = {
   libraryRenameConfirm: "保存名称",
   libraryDeleteModalTitle: "删除项目",
   libraryDeleteModalDescription: "将删除 {path}。",
-  libraryDeleteModalWarning: "删除后无法从 X-File 里恢复，请确认这个项目不再需要。",
+  libraryDeleteModalWarning:
+    "删除后无法从 X-File 里恢复，请确认这个项目不再需要。",
   libraryDeleteConfirmAction: "删除",
   libraryTagAssignmentModalTitle: "调整标签",
   libraryTagAssignmentModalDescription: "为 {name} 设置标签。",
   libraryTagAssignmentLoading: "正在读取标签。",
   libraryTagAssignmentTagsLabel: "标签",
-  libraryTagAssignmentTagsDescription: "用逗号分隔；保存后会写入文档或目录的标签绑定。",
+  libraryTagAssignmentTagsDescription:
+    "用逗号分隔；保存后会写入文档或目录的标签绑定。",
   libraryTagAssignmentRecommendations: "推荐标签",
   libraryTagManagerAction: "管理标签",
   libraryTagManagerTitle: "标签管理",
@@ -102,10 +104,51 @@ export const zhCN = {
   libraryTagStatusDisabled: "停用",
   libraryTagDeleteAction: "删除标签",
   libraryTagSaveAction: "保存标签",
+  libraryTagSmartRulesSectionTitle: "智能标签规则",
+  libraryTagSmartRulesSectionDescription:
+    "规则会直接挂在当前标签上。命中后，系统会自动把这个标签推荐给文件。",
+  libraryTagSmartRulesEmpty: "还没有智能规则",
+  libraryTagSmartRulesEmptyDescription:
+    "如果这个标签需要自动命中条件，就在这里追加规则。",
+  libraryTagSmartRuleAddAction: "添加规则",
+  libraryTagSmartRuleRemoveAction: "删除规则",
+  libraryTagSmartRuleOrderHint: "规则 {index}",
+  libraryTagSmartRuleEnabledLabel: "启用",
+  libraryTagSmartRuleRelationLabel: "关系",
+  libraryTagSmartRuleRelationAnd: "并且",
+  libraryTagSmartRuleRelationOr: "或者",
+  libraryTagSmartRuleRelationNot: "排除",
+  libraryTagSmartRuleTypeLabel: "规则类型",
+  libraryTagSmartRuleTypeFileNameContains: "文件名包含",
+  libraryTagSmartRuleTypeFileContentContains: "标题、路径或内容包含",
+  libraryTagSmartRuleTypeFileExtensionIn: "文件类型命中",
+  libraryTagSmartRuleTypeModifiedTimeBetween: "修改时间介于",
+  libraryTagSmartRuleTypeDocumentPathInFolder: "位于文件夹",
+  libraryTagSmartRuleKeywordLabel: "关键词",
+  libraryTagSmartRuleKeywordPlaceholder: "合同、发票、需求……",
+  libraryTagSmartRuleExtensionsLabel: "扩展名",
+  libraryTagSmartRuleExtensionsPlaceholder: ".pdf, .docx, xlsx",
+  libraryTagSmartRuleModifiedStartLabel: "开始时间",
+  libraryTagSmartRuleModifiedEndLabel: "结束时间",
+  libraryTagSmartRuleFolderPathLabel: "文件夹路径",
+  libraryTagSmartRuleFolderPathPlaceholder: "客户/合同 或 .",
+  libraryTagRecoverySectionTitle: "恢复文件标签结果",
+  libraryTagRecoverySectionDescription:
+    "标签树、文件夹标签或智能规则变更后，用这里重跑 CodingNS 同款标签合并流程。",
+  libraryTagRecoveryStatusIdle: "还没有恢复任务。",
+  libraryTagRecoveryAction: "恢复文件标签结果",
+  libraryTagRecoveryRunningAction: "正在恢复文件标签结果…",
+  libraryTagRecoveryQueued: "恢复任务已排队。",
+  libraryTagRecoveryQueuedDescription: "已经有同一个恢复任务在排队或执行。",
+  libraryTagRecoveryStartedDescription: "恢复任务已经开始。",
+  libraryTagRecoveryCompleted: "恢复任务已完成。",
+  libraryTagRecoveryCompletedAt: "恢复任务已完成：{time}",
+  libraryTagRecoveryFailed: "恢复任务失败。",
   libraryTitle: "我的文档库",
   librarySubtitle: "浏览本地资料、收藏常用入口，并查看标签和文件详情。",
   librarySummaryBound: "当前资料库已绑定到 {rootDir}",
-  librarySummaryUnbound: "还没有绑定资料库。先在设置里填写根目录，文档才会出现在这里。",
+  librarySummaryUnbound:
+    "还没有绑定资料库。先在设置里填写根目录，文档才会出现在这里。",
   librarySummaryDisabled: "资料库已保存，但当前未启用。",
   libraryStatusTitle: "索引状态",
   libraryStatusFresh: "内容可用",
@@ -124,16 +167,19 @@ export const zhCN = {
   libraryDocumentsLoading: "正在读取文档",
   libraryInitPill: "首次设置",
   libraryInitTitle: "先选一个资料目录",
-  libraryInitSubtitle: "X-File 会把这个目录作为你的文档库。选择后就能在本机浏览、索引、预览和操作文件。",
+  libraryInitSubtitle:
+    "X-File 会把这个目录作为你的文档库。选择后就能在本机浏览、索引、预览和操作文件。",
   libraryInitSubmit: "建立文档库",
   libraryInitOpenAdvanced: "高级设置",
   libraryInitPreviewTitle: "独立文档库",
-  libraryInitPreviewCopy: "这里不会启动 CodingNS 的代码工作台，也不会搬入事务模式，只负责把本地资料整理好。",
+  libraryInitPreviewCopy:
+    "这里不会启动 CodingNS 的代码工作台，也不会搬入事务模式，只负责把本地资料整理好。",
   libraryInitBenefitLocal: "只读取你选择的本机目录",
   libraryInitBenefitIndex: "后台建立索引，列表和标签会自动更新",
   libraryInitBenefitOffice: "保留 PDF、图片、Markdown 和 Office 预览能力",
   hostDirectoryBrowserTitle: "HOST 目录浏览器",
-  hostDirectoryBrowserDescription: "从当前主机读取目录列表，选择一个目录作为 X-File 文档库根目录。",
+  hostDirectoryBrowserDescription:
+    "从当前主机读取目录列表，选择一个目录作为 X-File 文档库根目录。",
   hostDirectoryBrowseAction: "浏览目录",
   hostDirectoryCurrentPath: "浏览路径",
   hostDirectoryOpenParent: "上一级",
@@ -144,7 +190,8 @@ export const zhCN = {
   hostDirectoryEmpty: "当前目录没有可进入的子目录。",
   hostDirectoryNotLoaded: "目录尚未加载",
   libraryEmptyUnbound: "还没有资料库路径。去设置里填写本地目录后再回来。",
-  libraryBindingInlineHint: "填写本机资料库根目录后，X-File 会从真实文件读取目录、文档、标签和预览内容。",
+  libraryBindingInlineHint:
+    "填写本机资料库根目录后，X-File 会从真实文件读取目录、文档、标签和预览内容。",
   libraryEmptyFolder: "这个位置暂时没有可显示的文档。",
   libraryEmptyTag: "当前标签下没有文档。",
   libraryEmptyFavorite: "还没有收藏的目录或标签。",
@@ -241,18 +288,22 @@ export const zhCN = {
   libraryStatusProgress: "刷新进度",
   libraryProgressSummary: "已扫描 {scanned}，已索引 {indexed}，失败 {failed}",
   settingsTitle: "设置",
-  settingsSubtitle: "绑定资料库、调整索引范围，并检查本机 HTTP 服务和 OnlyOffice。",
+  settingsSubtitle:
+    "绑定资料库、调整索引范围，并检查本机 HTTP 服务和 OnlyOffice。",
   settingsBindingTitle: "资料库绑定",
-  settingsBindingDescription: "填写本地资料根目录。X-File 只会在这个目录内读取、预览和操作文件。",
+  settingsBindingDescription:
+    "填写本地资料根目录。X-File 只会在这个目录内读取、预览和操作文件。",
   settingsRootDir: "资料库根目录",
   settingsRootDirPlaceholder: "/Users/you/Documents",
   settingsSaveBinding: "保存绑定",
   settingsConfigTitle: "索引范围",
-  settingsConfigDescription: "控制哪些扩展名会进入索引，以及隐藏目录的例外名单。",
+  settingsConfigDescription:
+    "控制哪些扩展名会进入索引，以及隐藏目录的例外名单。",
   settingsAllowedExtensions: "允许索引的扩展名",
   settingsAllowedExtensionsHint: "用逗号分隔，例如 .md, .pdf, .docx",
   settingsIncludedHiddenPaths: "包含的隐藏路径",
-  settingsIncludedHiddenPathsHint: "用逗号分隔，例如 .obsidian, .ai-index/public",
+  settingsIncludedHiddenPathsHint:
+    "用逗号分隔，例如 .obsidian, .ai-index/public",
   settingsFolderOpenBehavior: "文件夹打开方式",
   settingsSingleClick: "单击打开",
   settingsDoubleClick: "双击打开",
@@ -261,7 +312,8 @@ export const zhCN = {
   settingsOpenFull: "打开完整设置",
   settingsConfigUnavailable: "后端还没有开放配置保存接口，本页已保留入口。",
   settingsOnlyOfficeTitle: "OnlyOffice",
-  settingsOnlyOfficeDescription: "用于在线预览和编辑 Office 文档。没有配置时，文档库仍可正常浏览。",
+  settingsOnlyOfficeDescription:
+    "用于在线预览和编辑 Office 文档。没有配置时，文档库仍可正常浏览。",
   settingsOnlyOfficeEnabled: "启用 OnlyOffice",
   settingsOnlyOfficeServerUrl: "OnlyOffice 服务地址",
   settingsOnlyOfficePublicBaseUrl: "公开访问地址",
@@ -277,7 +329,8 @@ export const zhCN = {
   settingsOnlyOfficeJwtConfigured: "已配置密钥",
   settingsOnlyOfficeJwtNotConfigured: "未配置密钥",
   settingsServerTitle: "HTTP 服务",
-  settingsServerDescription: "给前端、CodingNS 或本机脚本访问文档库 API。默认只应监听本机地址。",
+  settingsServerDescription:
+    "给前端、CodingNS 或本机脚本访问文档库 API。默认只应监听本机地址。",
   settingsServerEnabled: "启用 HTTP 服务",
   settingsServerPersistent: "关闭窗口后保持服务运行",
   settingsServerPort: "端口",
@@ -289,7 +342,8 @@ export const zhCN = {
   settingsServerLastError: "最近错误",
   settingsServerSave: "保存服务设置",
   settingsServerRefresh: "刷新服务状态",
-  settingsServerUnavailable: "后端还没有开放 HTTP 服务状态接口，本页已保留入口。",
+  settingsServerUnavailable:
+    "后端还没有开放 HTTP 服务状态接口，本页已保留入口。",
   settingsSaveSuccess: "已保存",
   settingsSaveFailed: "保存失败",
   settingsLoadFailed: "设置读取失败",
@@ -312,16 +366,22 @@ export const zhCN = {
   commonGiB: "{count} GiB",
   apiNotAvailable: "接口暂不可用：{path}",
   apiRequestFailed: "请求失败：{status}",
-  apiNetworkFailed: "无法连接后端服务"
+  apiNetworkFailed: "无法连接后端服务",
 } as const;
 
-export function t(key: I18nKey, params?: Record<string, string | number | null | undefined>): string {
+export function t(
+  key: I18nKey,
+  params?: Record<string, string | number | null | undefined>,
+): string {
   const template: string = zhCN[key] ?? key;
   if (!params) {
     return template;
   }
 
   return Object.entries(params).reduce<string>((result, [name, value]) => {
-    return result.replaceAll(`{${name}}`, value === null || value === undefined ? "" : String(value));
+    return result.replaceAll(
+      `{${name}}`,
+      value === null || value === undefined ? "" : String(value),
+    );
   }, template);
 }

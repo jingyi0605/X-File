@@ -16,6 +16,7 @@ import type {
   LibrarySnapshot,
   LibraryTagDetailWithRules,
   LibraryTagNode,
+  LibraryTagRule,
   OnlyOfficeSettings,
   OnlyOfficeStatus,
   RequestLibraryRefreshInput,
@@ -23,7 +24,7 @@ import type {
   SaveLibraryBindingInput,
   SaveLibraryConfigInput,
   UpdateLibraryFavoritesInput,
-  UpdateOnlyOfficeSettingsInput
+  UpdateOnlyOfficeSettingsInput,
 } from "@x-file/shared";
 
 import { apiRequest, postJson, putJson } from "./http";
@@ -43,22 +44,30 @@ export function getLibraryBinding(): Promise<LibraryBinding | null> {
   return apiRequest<LibraryBinding | null>("/api/library/binding");
 }
 
-export function saveLibraryBinding(input: SaveLibraryBindingInput): Promise<LibraryBinding> {
+export function saveLibraryBinding(
+  input: SaveLibraryBindingInput,
+): Promise<LibraryBinding> {
   return putJson<LibraryBinding>("/api/library/binding", input);
 }
 
-export function browseHostDirectories(path?: string | null): Promise<HostDirectoryBrowseResult> {
+export function browseHostDirectories(
+  path?: string | null,
+): Promise<HostDirectoryBrowseResult> {
   const search = new URLSearchParams();
   appendSearch(search, "path", path);
   const query = search.toString();
-  return apiRequest<HostDirectoryBrowseResult>(`/api/host/directories${query ? `?${query}` : ""}`);
+  return apiRequest<HostDirectoryBrowseResult>(
+    `/api/host/directories${query ? `?${query}` : ""}`,
+  );
 }
 
 export function getLibraryConfig(): Promise<LibraryConfig> {
   return apiRequest<LibraryConfig>("/api/library/config");
 }
 
-export function saveLibraryConfig(input: SaveLibraryConfigInput): Promise<LibraryConfig> {
+export function saveLibraryConfig(
+  input: SaveLibraryConfigInput,
+): Promise<LibraryConfig> {
   return putJson<LibraryConfig>("/api/library/config", input);
 }
 
@@ -66,7 +75,9 @@ export function getLibrarySnapshot(): Promise<LibrarySnapshot> {
   return apiRequest<LibrarySnapshot>("/api/library/snapshot");
 }
 
-export function listLibraryDocuments(query: ListDocumentsQuery): Promise<LibraryDocumentList> {
+export function listLibraryDocuments(
+  query: ListDocumentsQuery,
+): Promise<LibraryDocumentList> {
   const search = new URLSearchParams();
   search.set("browseMode", query.browseMode);
   appendSearch(search, "selectedFolderPath", query.selectedFolderPath);
@@ -84,45 +95,65 @@ export function listLibraryDocuments(query: ListDocumentsQuery): Promise<Library
     search.set("limit", String(query.limit));
   }
 
-  return apiRequest<LibraryDocumentList>(`/api/library/documents?${search.toString()}`);
+  return apiRequest<LibraryDocumentList>(
+    `/api/library/documents?${search.toString()}`,
+  );
 }
 
-export function listLibraryFiles(path: string | null, limit = 200): Promise<LibraryFileList> {
+export function listLibraryFiles(
+  path: string | null,
+  limit = 200,
+): Promise<LibraryFileList> {
   const search = new URLSearchParams();
   appendSearch(search, "path", path);
   search.set("limit", String(limit));
   return apiRequest<LibraryFileList>(`/api/library/files?${search.toString()}`);
 }
 
-export function getLibraryPreview(path: string, displayMode?: "default" | "reading"): Promise<LibraryPreview> {
+export function getLibraryPreview(
+  path: string,
+  displayMode?: "default" | "reading",
+): Promise<LibraryPreview> {
   const search = new URLSearchParams();
   search.set("path", path);
   if (displayMode) {
     search.set("displayMode", displayMode);
   }
-  return apiRequest<LibraryPreview>(`/api/library/preview?${search.toString()}`);
+  return apiRequest<LibraryPreview>(
+    `/api/library/preview?${search.toString()}`,
+  );
 }
 
 export function downloadLibraryFile(path: string): Promise<LibraryDownload> {
   const search = new URLSearchParams();
   search.set("path", path);
-  return apiRequest<LibraryDownload>(`/api/library/download?${search.toString()}`);
+  return apiRequest<LibraryDownload>(
+    `/api/library/download?${search.toString()}`,
+  );
 }
 
-export function operateLibraryFile(input: LibraryOperationInput): Promise<LibraryOperationResult> {
+export function operateLibraryFile(
+  input: LibraryOperationInput,
+): Promise<LibraryOperationResult> {
   return postJson<LibraryOperationResult>("/api/library/ops", input);
 }
 
-export function requestLibraryRefresh(input: RequestLibraryRefreshInput): Promise<LibraryRefreshResult> {
+export function requestLibraryRefresh(
+  input: RequestLibraryRefreshInput,
+): Promise<LibraryRefreshResult> {
   return postJson<LibraryRefreshResult>("/api/library/refresh", input);
 }
 
-export function updateLibraryFavorites(input: UpdateLibraryFavoritesInput): Promise<LibraryFavoritesResult> {
+export function updateLibraryFavorites(
+  input: UpdateLibraryFavoritesInput,
+): Promise<LibraryFavoritesResult> {
   return putJson<LibraryFavoritesResult>("/api/library/favorites", input);
 }
 
 export async function listLibraryTags(): Promise<LibraryTagNode[]> {
-  const payload = await apiRequest<LibraryTagListResponse | LibraryTagNode[]>("/api/library/tags");
+  const payload = await apiRequest<LibraryTagListResponse | LibraryTagNode[]>(
+    "/api/library/tags",
+  );
   if (Array.isArray(payload)) {
     return payload;
   }
@@ -132,60 +163,112 @@ export async function listLibraryTags(): Promise<LibraryTagNode[]> {
     rootType: item.rootType,
     parentPath: item.parentPath,
     depth: item.path.split("/").filter(Boolean).length - 1,
-    documentCount: item.documentCount
+    documentCount: item.documentCount,
   }));
 }
 
-export async function listLibraryTagDetails(includeDisabled = true): Promise<LibraryTagDetailWithRules[]> {
+export async function listLibraryTagDetails(
+  includeDisabled = true,
+): Promise<LibraryTagDetailWithRules[]> {
   const search = new URLSearchParams();
   if (includeDisabled) {
     search.set("includeDisabled", "true");
   }
-  const payload = await apiRequest<LibraryTagListResponse | LibraryTagDetailWithRules[]>(`/api/library/tags${search.toString() ? `?${search.toString()}` : ""}`);
+  const payload = await apiRequest<
+    LibraryTagListResponse | LibraryTagDetailWithRules[]
+  >(`/api/library/tags${search.toString() ? `?${search.toString()}` : ""}`);
   return Array.isArray(payload) ? payload : payload.items;
 }
 
-export function getDocumentTagDetails(documentId: string): Promise<LibraryDocumentTagDetails> {
-  return apiRequest<LibraryDocumentTagDetails>(`/api/library/documents/${encodeURIComponent(documentId)}/tag-details`);
+export function getDocumentTagDetails(
+  documentId: string,
+): Promise<LibraryDocumentTagDetails> {
+  return apiRequest<LibraryDocumentTagDetails>(
+    `/api/library/documents/${encodeURIComponent(documentId)}/tag-details`,
+  );
 }
 
-export function saveDocumentTags(documentId: string, input: SaveLibraryTagsInput): Promise<LibraryDocumentTagDetails> {
-  return putJson<LibraryDocumentTagDetails>(`/api/library/documents/${encodeURIComponent(documentId)}/tags`, input);
+export function saveDocumentTags(
+  documentId: string,
+  input: SaveLibraryTagsInput,
+): Promise<LibraryDocumentTagDetails> {
+  return putJson<LibraryDocumentTagDetails>(
+    `/api/library/documents/${encodeURIComponent(documentId)}/tags`,
+    input,
+  );
 }
 
-export function getFolderTagDetails(folderPath: string): Promise<LibraryFolderTagDetails> {
+export function getFolderTagDetails(
+  folderPath: string,
+): Promise<LibraryFolderTagDetails> {
   const search = new URLSearchParams();
   appendSearch(search, "folderPath", folderPath);
-  return apiRequest<LibraryFolderTagDetails>(`/api/library/folders/tag-details?${search.toString()}`);
+  return apiRequest<LibraryFolderTagDetails>(
+    `/api/library/folders/tag-details?${search.toString()}`,
+  );
 }
 
-export function saveFolderTags(input: SaveLibraryFolderTagsInput): Promise<LibraryFolderTagDetails> {
+export function saveFolderTags(
+  input: SaveLibraryFolderTagsInput,
+): Promise<LibraryFolderTagDetails> {
   return putJson<LibraryFolderTagDetails>("/api/library/folders/tags", input);
 }
 
-export function getLibraryTagDetail(tagId: string): Promise<LibraryTagDetailWithRules> {
-  return apiRequest<LibraryTagDetailWithRules>(`/api/library/tags/${encodeURIComponent(tagId)}`);
+export function getLibraryTagDetail(
+  tagId: string,
+): Promise<LibraryTagDetailWithRules> {
+  return apiRequest<LibraryTagDetailWithRules>(
+    `/api/library/tags/${encodeURIComponent(tagId)}`,
+  );
 }
 
-export function createLibraryTag(input: SaveLibraryTagDefinitionInput): Promise<LibraryTagDetailWithRules> {
+export function createLibraryTag(
+  input: SaveLibraryTagDefinitionInput,
+): Promise<LibraryTagDetailWithRules> {
   return postJson<LibraryTagDetailWithRules>("/api/library/tags", input);
 }
 
-export function updateLibraryTag(tagId: string, input: SaveLibraryTagDefinitionInput): Promise<LibraryTagDetailWithRules> {
-  return putJson<LibraryTagDetailWithRules>(`/api/library/tags/${encodeURIComponent(tagId)}`, input);
+export function updateLibraryTag(
+  tagId: string,
+  input: SaveLibraryTagDefinitionInput,
+): Promise<LibraryTagDetailWithRules> {
+  return putJson<LibraryTagDetailWithRules>(
+    `/api/library/tags/${encodeURIComponent(tagId)}`,
+    input,
+  );
 }
 
-export function deleteLibraryTag(tagId: string): Promise<{ deletedTagIds: string[] }> {
-  return apiRequest<{ deletedTagIds: string[] }>(`/api/library/tags/${encodeURIComponent(tagId)}`, {
-    method: "DELETE"
-  });
+export function deleteLibraryTag(
+  tagId: string,
+): Promise<{ deletedTagIds: string[] }> {
+  return apiRequest<{ deletedTagIds: string[] }>(
+    `/api/library/tags/${encodeURIComponent(tagId)}`,
+    {
+      method: "DELETE",
+    },
+  );
+}
+
+export function requestLibraryTagRecompute(): Promise<LibraryTagRecomputeRequestResult> {
+  return postJson<LibraryTagRecomputeRequestResult>(
+    "/api/library/tags/recompute",
+    {},
+  );
+}
+
+export function getLibraryTagRecomputeTask(): Promise<LibraryTagRecomputeTask | null> {
+  return apiRequest<LibraryTagRecomputeTask | null>(
+    "/api/library/tags/recompute-task",
+  );
 }
 
 export function getOnlyOfficeSettings(): Promise<OnlyOfficeSettings> {
   return apiRequest<OnlyOfficeSettings>("/api/office/onlyoffice/settings");
 }
 
-export function saveOnlyOfficeSettings(input: UpdateOnlyOfficeSettingsInput): Promise<OnlyOfficeSettings> {
+export function saveOnlyOfficeSettings(
+  input: UpdateOnlyOfficeSettingsInput,
+): Promise<OnlyOfficeSettings> {
   return putJson<OnlyOfficeSettings>("/api/office/onlyoffice/settings", input);
 }
 
@@ -197,11 +280,17 @@ export function getHttpServerState(): Promise<HttpServerState> {
   return apiRequest<HttpServerState>("/api/server/state");
 }
 
-export function saveHttpServerState(input: SaveHttpServerStateInput): Promise<HttpServerState> {
+export function saveHttpServerState(
+  input: SaveHttpServerStateInput,
+): Promise<HttpServerState> {
   return putJson<HttpServerState>("/api/server/state", input);
 }
 
-function appendSearch(search: URLSearchParams, key: string, value: string | null | undefined): void {
+function appendSearch(
+  search: URLSearchParams,
+  key: string,
+  value: string | null | undefined,
+): void {
   const normalized = value?.trim();
   if (normalized) {
     search.set(key, normalized);
@@ -222,8 +311,30 @@ export interface SaveLibraryTagDefinitionInput {
   parentId?: string | null;
   description?: string | null;
   status?: "active" | "disabled";
+  smartRules?: LibraryTagRule[];
 }
 
 interface LibraryTagListResponse {
   items: LibraryTagDetailWithRules[];
+}
+
+export interface LibraryTagRecomputeRequestResult {
+  taskId: string;
+  deduped: boolean;
+  status: "queued";
+}
+
+export interface LibraryTagRecomputeTask {
+  taskId: string;
+  taskType: string;
+  key: string;
+  state: "queued" | "running" | "failed" | "fresh" | "queue_timeout";
+  source: string;
+  queuedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  failedAt: string | null;
+  errorSummary: string | null;
+  runningStage: string | null;
+  deduped?: boolean;
 }
