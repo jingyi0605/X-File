@@ -1,9 +1,11 @@
 import {
+  Fragment,
   useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type FormEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
@@ -14,11 +16,14 @@ import type {
   LibraryDirectorySource,
   LibraryDirectoryState,
   LibraryDocumentTagDetails,
+  LibraryDocumentList,
+  LibraryDocumentRecord,
   LibraryFavoriteKind,
   LibraryFavoriteRecord,
   LibraryFolderTagDetails,
   LibraryIndexState,
   LibraryPreview,
+  LibraryTagNode,
   LibraryTagDetailWithRules,
   LibraryTagRule,
 } from "@x-file/shared";
@@ -29,7 +34,9 @@ import {
   deleteLibraryTag,
   getDocumentTagDetails,
   getFolderTagDetails,
+  getLibraryPreview,
   getLibraryTagRecomputeTask,
+  listLibraryDocuments,
   listLibraryTagDetails,
   requestLibraryTagRecompute,
   saveDocumentTags,
@@ -48,6 +55,17 @@ import {
   ModalTag,
 } from "../../shared/modal";
 import { resolveDocumentVisual } from "./document-visual";
+import {
+  StaticHtmlPresentationView,
+  inspectStaticHtmlPresentation,
+  type DocumentProject,
+  writeStaticHtmlDocumentProject,
+} from "../static-html-editor";
+import {
+  CodePreview,
+  MarkdownPreview,
+  detectLanguage,
+} from "./LibraryFileCodeViewer";
 import { useLibraryState, type LibraryState } from "./useLibraryState";
 import {
   DEFAULT_FINDER_COLUMN_WIDTHS,
@@ -126,6 +144,7 @@ interface LibraryClipboardState {
 }
 
 type PendingCreateKind = "directory" | "markdown" | "text" | "custom";
+type ViewerMode = "preview" | "presentation" | "edit";
 
 interface PendingCreateState {
   kind: PendingCreateKind;
@@ -142,11 +161,36 @@ type PendingTagAssignmentTarget =
   | { kind: "document"; documentId: string; path: string; title: string }
   | { kind: "folder"; folderPath: string; title: string };
 
+interface LibraryViewerState {
+  filePath: string;
+  title: string;
+}
+
 interface FinderResizeState {
   column: FinderColumnKey;
   startX: number;
   startWidth: number;
 }
+
+interface LibraryTagTreeNodeRecord {
+  path: string;
+  label: string;
+  count: number;
+  children: LibraryTagTreeNodeRecord[];
+}
+
+interface LibraryTagTreeState {
+  expandedPaths: string[];
+}
+
+interface PendingTagFilterFavoriteState {
+  tagPaths: string[];
+  name: string;
+  error: string | null;
+}
+
+const LIBRARY_TAG_TREE_ROOTS = new Set(["时间", "类型", "time", "type"]);
+const LIBRARY_TAG_TREE_STATE_KEY = "x-file.library.tag-tree";
 
 export function LibraryPage({
   onOpenSettings,
@@ -169,7 +213,17 @@ export function LibraryPage({
     useState<LibraryContextMenuTarget | null>(null);
   const [pendingTagAssignment, setPendingTagAssignment] =
     useState<PendingTagAssignmentTarget | null>(null);
+  const [viewerState, setViewerState] = useState<LibraryViewerState | null>(null);
   const [tagManagerOpen, setTagManagerOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchDraft, setSearchDraft] = useState("");
+
+  function openLibraryViewer(entry: LibraryDocumentEntry): void {
+    setViewerState({
+      filePath: entry.path,
+      title: entry.title || getPathName(entry.path),
+    });
+  }
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -222,7 +276,7 @@ export function LibraryPage({
       case "preview":
         if (target.kind === "document") {
           library.selectDocument(target.entry.documentId);
-          await library.openPreview(target.entry.path);
+          openLibraryViewer(target.entry);
         }
         return;
       case "open":
@@ -415,6 +469,8 @@ export function LibraryPage({
             onRequestTagAssignment={(target) =>
               setPendingTagAssignment(resolvePendingTagAssignmentTarget(target))
             }
+            onOpenSearch={() => setSearchOpen(true)}
+            onOpenLibraryViewer={openLibraryViewer}
           />
         </section>
         <LibraryDetail
@@ -430,6 +486,7 @@ export function LibraryPage({
           state={contextMenu}
           library={library}
           libraryClipboard={libraryClipboard}
+          onOpenLibraryViewer={openLibraryViewer}
           onSetClipboard={setLibraryClipboard}
           onClose={() => setContextMenu(null)}
           onRequestCreate={(state) => setPendingCreate(state)}
@@ -440,6 +497,24 @@ export function LibraryPage({
           onRequestTagAssignment={(target) =>
             setPendingTagAssignment(resolvePendingTagAssignmentTarget(target))
           }
+        />
+      ) : null}
+      {searchOpen ? (
+        <LibrarySearchModal
+          library={library}
+          keyword={searchDraft}
+          onKeywordChange={setSearchDraft}
+          onOpenDocument={(entry) => {
+            library.selectDocument(entry.documentId);
+            openLibraryViewer(entry);
+            setSearchOpen(false);
+          }}
+          onLocateDocument={(entry) => {
+            library.selectFolder(resolveDocumentFolderPath(entry.path));
+            library.selectDocument(entry.documentId);
+            setSearchOpen(false);
+          }}
+          onClose={() => setSearchOpen(false)}
         />
       ) : null}
       {pendingCreate ? (
@@ -472,6 +547,13 @@ export function LibraryPage({
           onClose={() => setPendingTagAssignment(null)}
         />
       ) : null}
+      {viewerState ? (
+        <LibraryFileViewerModal
+          library={library}
+          viewerState={viewerState}
+          onClose={() => setViewerState(null)}
+        />
+      ) : null}
       {tagManagerOpen ? (
         <LibraryTagManagerModal
           library={library}
@@ -492,28 +574,126 @@ function LibraryDesktopSidebar({
   onOpenTagManager: () => void;
 }) {
   const snapshot = library.snapshot;
-  const currentFolder = library.viewState.selectedFolderPath;
   const selectedTagPath = library.viewState.selectedTagPath;
   const tags = library.tags.length ? library.tags : (snapshot?.tags ?? []);
+  const [tagSearchOpen, setTagSearchOpen] = useState(false);
+  const [tagSearchQuery, setTagSearchQuery] = useState("");
+  const [tagTreeState, setTagTreeState] = useState<LibraryTagTreeState>(() => readLibraryTagTreeState());
+  const tagSearchInputRef = useRef<HTMLInputElement | null>(null);
+  const selectedTagPaths = library.viewState.selectedTagPaths;
+  const hasTagSelection = selectedTagPaths.length > 0;
+  const tagFacetCounts = library.documentPage?.tagFacetCounts ?? {};
+  const tagTree = useMemo(() => buildLibraryTagTree(tags), [tags]);
+  const tagTreeWithCounts = useMemo(
+    () => applyTagFacetCountsToTree(tagTree, tagFacetCounts, hasTagSelection),
+    [hasTagSelection, tagFacetCounts, tagTree],
+  );
+  const tagTreeVisibility = useMemo(
+    () => buildTagTreeVisibility(tagTreeWithCounts, selectedTagPaths, tagFacetCounts),
+    [tagFacetCounts, selectedTagPaths, tagTreeWithCounts],
+  );
+  const visibleTagTree = useMemo(
+    () => filterTagTreeByVisibility(tagTreeWithCounts, tagTreeVisibility.visiblePathSet),
+    [tagTreeVisibility.visiblePathSet, tagTreeWithCounts],
+  );
+  const filteredTagTree = useMemo(
+    () => filterLibraryTagTree(visibleTagTree, tagSearchQuery),
+    [tagSearchQuery, visibleTagTree],
+  );
+  const [pendingTagFilterFavorite, setPendingTagFilterFavorite] = useState<PendingTagFilterFavoriteState | null>(null);
+  const [tagFilterFavoriteSubmitting, setTagFilterFavoriteSubmitting] = useState(false);
+
+  useEffect(() => {
+    writeLibraryTagTreeState(tagTreeState);
+  }, [tagTreeState]);
+
+  useEffect(() => {
+    if (selectedTagPaths.length === 0) {
+      return;
+    }
+    setTagTreeState((current) => {
+      const nextExpandedPaths = Array.from(
+        new Set([
+          ...current.expandedPaths,
+          ...selectedTagPaths.flatMap(buildTagAncestorPaths),
+        ]),
+      );
+      return areStringArraysEqual(current.expandedPaths, nextExpandedPaths)
+        ? current
+        : { expandedPaths: nextExpandedPaths };
+    });
+  }, [selectedTagPaths]);
+
+  useEffect(() => {
+    if (!tagSearchOpen) {
+      return;
+    }
+    tagSearchInputRef.current?.focus();
+    tagSearchInputRef.current?.select();
+  }, [tagSearchOpen]);
+
+  function toggleExpandedTagPath(path: string): void {
+    setTagTreeState((current) => ({
+      expandedPaths: current.expandedPaths.includes(path)
+        ? current.expandedPaths.filter((item) => item !== path)
+        : [...current.expandedPaths, path],
+    }));
+  }
+
+  function openTagFilterFavoriteModal(): void {
+    if (selectedTagPaths.length === 0) return;
+    const defaultName = selectedTagPaths.length === 1
+      ? tags.find((item) => item.path === selectedTagPaths[0])?.name ?? selectedTagPaths[0]
+      : "";
+    setPendingTagFilterFavorite({
+      tagPaths: selectedTagPaths,
+      name: defaultName,
+      error: null,
+    });
+  }
+
+  async function submitTagFilterFavorite(): Promise<void> {
+    if (!pendingTagFilterFavorite) return;
+    const name = pendingTagFilterFavorite.name.trim();
+    if (!name) {
+      setPendingTagFilterFavorite((current) => current ? { ...current, error: t("libraryTagFilterFavoriteNameRequired") } : current);
+      return;
+    }
+    const tagPaths = normalizeFavoriteTagPaths(pendingTagFilterFavorite.tagPaths);
+    if (tagPaths.length === 0) {
+      setPendingTagFilterFavorite(null);
+      return;
+    }
+    const favorite: LibraryFavoriteRecord = {
+      kind: tagPaths.length === 1 ? "tag" : "tag_filter",
+      path: buildTagFilterFavoritePath(tagPaths),
+      label: name,
+      ...(tagPaths.length > 1 ? { tagPaths } : {}),
+    };
+    setTagFilterFavoriteSubmitting(true);
+    try {
+      await library.toggleFavorite(favorite);
+      setPendingTagFilterFavorite(null);
+    } finally {
+      setTagFilterFavoriteSubmitting(false);
+    }
+  }
 
   return (
     <aside className="workbench-sidebar affairs-layout-sidebar">
       <div className="affairs-sidebar-panel">
+        <div className="xfile-sidebar-brand" aria-label={t("appTitle")}>
+          <span className="xfile-sidebar-brand-icon" aria-hidden="true">
+            {renderXFileBrandIcon()}
+          </span>
+          <span className="xfile-sidebar-brand-copy">
+            <strong>{t("appTitle")}</strong>
+            <span>{t("appTagline")}</span>
+          </span>
+        </div>
         <div className="affairs-sidebar-shell">
           <div className="affairs-sidebar-content">
             <div className="affairs-sidebar-groups affairs-library-sidebar-groups">
-              <div className="affairs-sidebar-group affairs-sidebar-group-plain affairs-sidebar-primary-nav">
-                <SidebarPlainItem
-                  active={
-                    library.viewState.browseMode === "folder" && !currentFolder
-                  }
-                  title={t("libraryAllFiles")}
-                  count={snapshot?.documentCount ?? 0}
-                  icon="folder"
-                  onClick={() => library.selectFolder(null)}
-                />
-              </div>
-
               <div className="affairs-sidebar-group affairs-sidebar-group-plain affairs-favorites-panel">
                 <div className="affairs-sidebar-group-header">
                   <span>{t("libraryFavorites")}</span>
@@ -523,21 +703,15 @@ function LibraryDesktopSidebar({
                 </div>
                 <div className="affairs-sidebar-list affairs-sidebar-list-plain">
                   {(snapshot?.favorites.length ?? 0) === 0 ? (
-                    <p className="affairs-sidebar-empty">
+                    <p className="affairs-sidebar-empty compact">
                       {t("libraryEmptyFavorite")}
                     </p>
                   ) : (
                     snapshot?.favorites.map((favorite) => (
                       <SidebarPlainItem
                         key={`${favorite.kind}:${favorite.path}`}
-                        active={
-                          library.viewState.selectedFavoriteId === favorite.path
-                        }
-                        title={
-                          favorite.label ||
-                          favorite.path ||
-                          t("libraryRootFolder")
-                        }
+                        active={library.viewState.selectedFavoriteId === favorite.path}
+                        title={favorite.label || favorite.path || t("libraryRootFolder")}
                         count={resolveFavoriteKindLabel(favorite.kind)}
                         icon={favorite.kind === "folder" ? "folder" : "tag"}
                         onClick={() => library.selectFavorite(favorite)}
@@ -547,82 +721,250 @@ function LibraryDesktopSidebar({
                 </div>
               </div>
 
-              <div className="affairs-sidebar-group affairs-sidebar-group-plain affairs-tag-tree-panel">
-                <div className="affairs-sidebar-group-header">
+              <section className="affairs-sidebar-group affairs-sidebar-group-plain affairs-tag-tree-panel">
+                <header className="affairs-sidebar-group-header">
                   <span className="affairs-tag-tree-title">
-                    <span>{t("libraryTags")}</span>
+                    <span>{t("libraryTagTreeSectionTitle")}</span>
+                    <button
+                      type="button"
+                      className={tagSearchOpen ? "affairs-tag-tree-icon-button active" : "affairs-tag-tree-icon-button"}
+                      aria-label={t("libraryTagSearchAction")}
+                      title={t("libraryTagSearchAction")}
+                      onClick={() => setTagSearchOpen((current) => !current)}
+                    >
+                      {renderSearchIcon()}
+                    </button>
                   </span>
-                  <span className="affairs-sidebar-block-count">
-                    {tags.length}
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  className="affairs-sidebar-footer-button"
-                  onClick={onOpenTagManager}
-                >
-                  {renderTagIcon()}
-                  {t("libraryTagManagerAction")}
-                </button>
-                <div className="affairs-sidebar-list affairs-sidebar-list-plain affairs-tag-tree-list">
-                  <SidebarPlainItem
-                    active={
-                      library.viewState.browseMode === "tag" && !selectedTagPath
-                    }
-                    title={t("libraryTags")}
-                    count={snapshot?.documentCount ?? 0}
-                    icon="tag"
-                    onClick={() => library.selectTag(null)}
-                  />
-                  {tags.slice(0, 64).map((tag) => (
-                    <SidebarPlainItem
-                      key={tag.path}
-                      active={selectedTagPath === tag.path}
-                      title={tag.name}
-                      count={tag.documentCount}
-                      icon="tag"
-                      onClick={() => library.selectTag(tag.path)}
-                    />
-                  ))}
-                </div>
-              </div>
-
-              <div className="affairs-sidebar-group affairs-sidebar-group-plain affairs-tag-tree-panel">
-                <div className="affairs-sidebar-group-header">
-                  <span>{t("libraryFolders")}</span>
-                  <span className="affairs-sidebar-block-count">
-                    {snapshot?.folders.length ?? 0}
-                  </span>
-                </div>
-                <div className="affairs-sidebar-list affairs-sidebar-list-plain">
-                  {(snapshot?.folders ?? []).slice(0, 36).map((folder) => (
-                    <SidebarPlainItem
-                      key={folder.path}
-                      active={currentFolder === folder.path}
-                      title={folder.name || getPathName(folder.path)}
-                      count={folder.documentCount}
-                      icon="folder"
-                      onClick={() => library.selectFolder(folder.path)}
-                    />
-                  ))}
-                </div>
-              </div>
+                  <div className="affairs-sidebar-group-header-actions">
+                    {selectedTagPaths.length > 0 ? (
+                      <button
+                        type="button"
+                        className="affairs-tag-tree-icon-button affairs-tag-tree-reset"
+                        aria-label={t("libraryTagTreeReset")}
+                        title={t("libraryTagTreeReset")}
+                        onClick={() => library.selectTag(null)}
+                      >
+                        {renderResetFilterIcon()}
+                      </button>
+                    ) : null}
+                    {selectedTagPaths.length > 0 ? (
+                      <button
+                        type="button"
+                        className="affairs-tag-tree-icon-button"
+                        aria-label={t("libraryTagFilterFavoriteAction")}
+                        title={t("libraryTagFilterFavoriteAction")}
+                        onClick={openTagFilterFavoriteModal}
+                      >
+                        {renderFavoriteIcon()}
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="affairs-tag-tree-icon-button"
+                      aria-label={t("libraryTagManagerAction")}
+                      title={t("libraryTagManagerAction")}
+                      onClick={onOpenTagManager}
+                    >
+                      {renderTagManagerIcon()}
+                    </button>
+                  </div>
+                </header>
+                {tagSearchOpen ? (
+                  <div className="affairs-tag-tree-search">
+                    <div className="affairs-tag-tree-search-field">
+                      {renderSearchIcon()}
+                      <input
+                        ref={tagSearchInputRef}
+                        value={tagSearchQuery}
+                        aria-label={t("libraryTagSearchInputLabel")}
+                        placeholder={t("libraryTagSearchPlaceholder")}
+                        onChange={(event) => setTagSearchQuery(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Escape") {
+                            setTagSearchOpen(false);
+                            setTagSearchQuery("");
+                          }
+                        }}
+                      />
+                    </div>
+                  </div>
+                ) : null}
+                {filteredTagTree.length === 0 ? (
+                  <div className="affairs-sidebar-empty affairs-sidebar-empty-plain compact">
+                    {t("libraryTagTreeEmpty")}
+                  </div>
+                ) : (
+                  <div className="affairs-tag-tree-list" role="tree" aria-label={t("libraryTagTreeSectionTitle")}>
+                    {filteredTagTree.map((node) => (
+                      <LibraryTagTreeNode
+                        key={node.path}
+                        node={node}
+                        selectedTagPaths={selectedTagPaths}
+                        expandedPaths={tagTreeState.expandedPaths}
+                        forceExpanded={tagSearchQuery.trim().length > 0}
+                        onSelect={library.selectTag}
+                        onToggleExpand={toggleExpandedTagPath}
+                      />
+                    ))}
+                  </div>
+                )}
+              </section>
             </div>
           </div>
-
           <footer className="workbench-sidebar-footer">
             <button
               type="button"
               className="workbench-sidebar-footer-button"
               onClick={onOpenSettings}
+              aria-label={t("navSettings")}
+              title={t("navSettings")}
             >
               {renderSettingsIcon()}
-              {t("navSettings")}
+              <span>{t("navSettings")}</span>
             </button>
           </footer>
         </div>
       </div>
+      {pendingTagFilterFavorite ? (
+        <LibraryTagFilterFavoriteModal
+          pending={pendingTagFilterFavorite}
+          submitting={tagFilterFavoriteSubmitting}
+          onChangeName={(name) => setPendingTagFilterFavorite((current) => current ? { ...current, name, error: null } : current)}
+          onCancel={() => setPendingTagFilterFavorite(null)}
+          onSubmit={() => void submitTagFilterFavorite()}
+        />
+      ) : null}
     </aside>
+  );
+}
+
+function LibraryTagFilterFavoriteModal({
+  pending,
+  submitting,
+  onChangeName,
+  onCancel,
+  onSubmit,
+}: {
+  pending: PendingTagFilterFavoriteState;
+  submitting: boolean;
+  onChangeName: (name: string) => void;
+  onCancel: () => void;
+  onSubmit: () => void;
+}) {
+  return (
+    <DesktopModal
+      title={t("libraryTagFilterFavoriteModalTitle")}
+      description={t("libraryTagFilterFavoriteModalDescription", { count: pending.tagPaths.length })}
+      onClose={onCancel}
+      dismissible={!submitting}
+      footer={
+        <ModalActions>
+          <button type="button" className="secondary-button" disabled={submitting} onClick={onCancel}>
+            {t("actionCancel")}
+          </button>
+          <button type="button" className="primary-button" disabled={submitting} onClick={onSubmit}>
+            {submitting ? t("settingsSaving") : t("libraryTagFilterFavoriteSubmit")}
+          </button>
+        </ModalActions>
+      }
+    >
+      <ModalSection className="affairs-tag-filter-favorite-summary">
+        <div className="affairs-tag-filter-favorite-tags">
+          {pending.tagPaths.map((tagPath) => (
+            <ModalTag key={tagPath}>{tagPath}</ModalTag>
+          ))}
+        </div>
+      </ModalSection>
+      <ModalField
+        label={t("libraryTagFilterFavoriteNameLabel")}
+        description={pending.tagPaths.length === 1
+          ? t("libraryTagFilterFavoriteSingleNameHint")
+          : t("libraryTagFilterFavoriteMultiNameHint")}
+      >
+        <input
+          value={pending.name}
+          placeholder={t("libraryTagFilterFavoriteNamePlaceholder")}
+          autoFocus
+          onChange={(event) => onChangeName(event.target.value)}
+        />
+        {pending.error ? <small className="modal-field-error">{pending.error}</small> : null}
+      </ModalField>
+    </DesktopModal>
+  );
+}
+
+function LibraryTagTreeNode({
+  node,
+  selectedTagPaths,
+  expandedPaths,
+  forceExpanded,
+  onSelect,
+  onToggleExpand,
+  depth = 0,
+}: {
+  node: LibraryTagTreeNodeRecord;
+  selectedTagPaths: string[];
+  expandedPaths: string[];
+  forceExpanded: boolean;
+  onSelect: (path: string | null) => void;
+  onToggleExpand: (path: string) => void;
+  depth?: number;
+}) {
+  const hasChildren = node.children.length > 0;
+  const expanded = forceExpanded || (hasChildren && expandedPaths.includes(node.path));
+  const active = selectedTagPaths.includes(node.path);
+  return (
+    <div
+      className="affairs-tag-tree-node"
+      role="treeitem"
+      aria-expanded={hasChildren ? expanded : undefined}
+      data-depth={depth}
+    >
+      <div className={active ? "affairs-sidebar-item active" : "affairs-sidebar-item"} data-tone="tag">
+        <div className="affairs-tag-tree-row">
+          {hasChildren ? (
+            <button
+              type="button"
+              className="affairs-tag-tree-toggle"
+              aria-label={expanded ? t("libraryTagTreeCollapse") : t("libraryTagTreeExpand")}
+              onClick={() => onToggleExpand(node.path)}
+            >
+              {renderTagTreeChevronIcon(expanded)}
+            </button>
+          ) : (
+            <span className="affairs-tag-tree-toggle placeholder" aria-hidden="true" />
+          )}
+          <button
+            type="button"
+            className="affairs-sidebar-item-button affairs-sidebar-item-button-content"
+            onClick={() => onSelect(node.path)}
+          >
+            <div className="affairs-sidebar-item-row">
+              <span className="affairs-sidebar-item-title" title={node.label}>{node.label}</span>
+              <div className="affairs-sidebar-item-actions">
+                <span className="affairs-sidebar-item-badge">{node.count}</span>
+              </div>
+            </div>
+          </button>
+        </div>
+      </div>
+      {expanded ? (
+        <div className="affairs-tag-tree-children" role="group">
+          {node.children.map((child) => (
+            <LibraryTagTreeNode
+              key={child.path}
+              node={child}
+              selectedTagPaths={selectedTagPaths}
+              expandedPaths={expandedPaths}
+              forceExpanded={forceExpanded}
+              onSelect={onSelect}
+              onToggleExpand={onToggleExpand}
+              depth={depth + 1}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -980,6 +1322,8 @@ function LibraryStage({
   onRequestRename,
   onRequestDelete,
   onRequestTagAssignment: _onRequestTagAssignment,
+  onOpenSearch,
+  onOpenLibraryViewer,
 }: {
   library: LibraryState;
   onOpenSettings: () => void;
@@ -991,11 +1335,9 @@ function LibraryStage({
   onRequestRename: (path: string) => void;
   onRequestDelete: (target: LibraryContextMenuTarget) => void;
   onRequestTagAssignment: (target: LibraryContextMenuTarget) => void;
+  onOpenSearch: () => void;
+  onOpenLibraryViewer: (entry: LibraryDocumentEntry) => void;
 }) {
-  const currentPath =
-    library.viewState.browseMode === "folder"
-      ? library.viewState.selectedFolderPath
-      : library.viewState.selectedTagPath;
   const directoryStatus = library.documentPage?.directoryStatus ?? null;
   const blankTarget: LibraryContextMenuTarget = {
     kind: "blank",
@@ -1007,32 +1349,13 @@ function LibraryStage({
       <LibraryStageToolbar
         library={library}
         directoryStatus={directoryStatus}
-        onOpenSettings={onOpenSettings}
         onRequestCreate={onRequestCreate}
+        onOpenSearch={onOpenSearch}
       />
       <div
         className="affairs-stage-content"
         onContextMenu={(event) => onOpenContextMenu(event, blankTarget)}
       >
-        <div className="affairs-stage-meta-row">
-          <span>
-            {currentPath ? getPathName(currentPath) : t("libraryRootFolder")}
-          </span>
-          <span>
-            {t("libraryCountDocuments", {
-              count:
-                library.documentPage?.total ??
-                library.snapshot?.documentCount ??
-                0,
-            })}
-          </span>
-          {directoryStatus ? (
-            <span>
-              {resolveDirectoryStateLabel(directoryStatus.state)} ·{" "}
-              {resolveDirectorySourceLabel(directoryStatus.source)}
-            </span>
-          ) : null}
-        </div>
         {library.loading || library.documentsLoading ? (
           <LibrarySkeleton viewMode={library.viewState.viewMode} />
         ) : library.entries.length === 0 ? (
@@ -1046,12 +1369,14 @@ function LibraryStage({
             library={library}
             entries={library.entries}
             onOpenContextMenu={onOpenContextMenu}
+            onOpenLibraryViewer={onOpenLibraryViewer}
           />
         ) : (
           <VirtualLibraryFinderList
             library={library}
             entries={library.entries}
             onOpenContextMenu={onOpenContextMenu}
+            onOpenLibraryViewer={onOpenLibraryViewer}
           />
         )}
         {library.hasMore ? (
@@ -1073,9 +1398,9 @@ function LibraryStage({
 
 function LibraryStageToolbar({
   library,
-  directoryStatus,
-  onOpenSettings,
+  directoryStatus: _directoryStatus,
   onRequestCreate,
+  onOpenSearch,
 }: {
   library: LibraryState;
   directoryStatus: {
@@ -1083,16 +1408,21 @@ function LibraryStageToolbar({
     source: LibraryDirectorySource;
     errorSummary?: string | null;
   } | null;
-  onOpenSettings: () => void;
   onRequestCreate: (state: PendingCreateState) => void;
+  onOpenSearch: () => void;
 }) {
+  const sortOptions: Array<{ value: LibrarySortMode; label: string }> = [
+    { value: "recent", label: t("librarySortRecent") },
+    { value: "name", label: t("librarySortName") },
+    { value: "type", label: t("librarySortType") },
+    { value: "size", label: t("librarySortSize") },
+    { value: "createdAt", label: t("librarySortCreatedAt") },
+  ];
+
   return (
     <div className="affairs-stage-toolbar">
       <div className="affairs-stage-toolbar-left">
-        <div
-          className="affairs-stage-breadcrumb"
-          aria-label={t("libraryCurrentFolder")}
-        >
+        <div className="affairs-stage-breadcrumb" aria-label={t("libraryCurrentFolder")}>
           <button
             type="button"
             className="affairs-stage-breadcrumb-button root"
@@ -1118,17 +1448,8 @@ function LibraryStageToolbar({
         <div className="affairs-stage-toolbar-group">
           <button
             type="button"
-            className={
-              library.viewState.viewMode === "grid"
-                ? "affairs-stage-toolbar-icon active"
-                : "affairs-stage-toolbar-icon"
-            }
-            onClick={() =>
-              library.setViewState((current) => ({
-                ...current,
-                viewMode: "grid",
-              }))
-            }
+            className={library.viewState.viewMode === "grid" ? "affairs-stage-toolbar-icon active" : "affairs-stage-toolbar-icon"}
+            onClick={() => library.setViewState((current) => ({ ...current, viewMode: "grid" }))}
             aria-label={t("libraryViewGrid")}
             title={t("libraryViewGrid")}
           >
@@ -1136,151 +1457,97 @@ function LibraryStageToolbar({
           </button>
           <button
             type="button"
-            className={
-              library.viewState.viewMode === "list"
-                ? "affairs-stage-toolbar-icon active"
-                : "affairs-stage-toolbar-icon"
-            }
-            onClick={() =>
-              library.setViewState((current) => ({
-                ...current,
-                viewMode: "list",
-              }))
-            }
+            className={library.viewState.viewMode === "list" ? "affairs-stage-toolbar-icon active" : "affairs-stage-toolbar-icon"}
+            onClick={() => library.setViewState((current) => ({ ...current, viewMode: "list" }))}
             aria-label={t("libraryViewList")}
             title={t("libraryViewList")}
           >
             {renderListIcon()}
           </button>
         </div>
-        <div className="affairs-stage-toolbar-group xfile-search-group">
-          {renderSearchIcon()}
-          <input
-            className="affairs-stage-toolbar-search"
-            value={library.viewState.keyword}
-            placeholder={t("libraryKeywordPlaceholder")}
-            onChange={(event) =>
-              library.setViewState((current) => ({
-                ...current,
-                keyword: event.target.value,
-              }))
-            }
-          />
-        </div>
-        <div className="affairs-stage-toolbar-group">
-          <select
-            className="affairs-stage-toolbar-select"
-            value={library.viewState.librarySort.mode}
-            onChange={(event) =>
-              library.setViewState((current) => ({
-                ...current,
-                librarySort: {
-                  ...current.librarySort,
-                  mode: event.target.value as LibrarySortMode,
-                },
-              }))
-            }
-            aria-label={t("librarySortRecent")}
-            title={t("librarySortRecent")}
+        {library.viewState.browseMode === "tag" &&
+        library.viewState.selectedTagPaths.length > 0 &&
+        library.viewState.viewMode === "list" ? (
+          <span
+            className="affairs-tag-result-structure-switch"
+            role="group"
+            aria-label={t("libraryTagResultStructureLabel")}
           >
-            <option value="recent">{t("librarySortRecent")}</option>
-            <option value="name">{t("librarySortName")}</option>
-            <option value="type">{t("librarySortType")}</option>
-            <option value="size">{t("librarySortSize")}</option>
-            <option value="createdAt">{t("librarySortCreatedAt")}</option>
-          </select>
-        </div>
-        <div className="affairs-stage-toolbar-group">
-          <button
-            type="button"
-            className="affairs-stage-toolbar-segment"
-            onClick={() =>
-              library.setViewState((current) => ({
-                ...current,
-                librarySort: {
-                  ...current.librarySort,
-                  direction:
-                    current.librarySort.direction === "desc"
-                      ? "asc"
-                      : ("desc" as LibrarySortDirection),
-                },
-              }))
-            }
-          >
-            {library.viewState.librarySort.direction === "desc"
-              ? t("librarySortDesc")
-              : t("librarySortAsc")}
-          </button>
-        </div>
-        <div className="affairs-stage-toolbar-group">
-          <button
-            type="button"
-            className="affairs-stage-toolbar-icon"
-            disabled={library.refreshPending}
-            onClick={() => void library.refresh()}
-            aria-label={t("libraryRefresh")}
-            title={t("libraryRefresh")}
-          >
-            {renderRefreshIcon()}
-          </button>
-        </div>
-        <div className="affairs-stage-toolbar-group">
-          <button
-            type="button"
-            className="affairs-stage-status-trigger"
-            title={resolveIndexStatusLabel(library.snapshot?.status.state)}
-          >
-            <span
-              className={`affairs-stage-status-dot state-${resolveStatusDotState(library.snapshot?.status.state)}`}
-            />
-            {directoryStatus?.errorSummary ? (
-              <span className="affairs-stage-status-text">
-                {directoryStatus.errorSummary}
-              </span>
-            ) : null}
-          </button>
-        </div>
-        {library.viewState.browseMode === "folder" ? (
-          <div className="affairs-stage-toolbar-group">
             <button
               type="button"
-              className="affairs-stage-toolbar-segment"
-              onClick={() =>
-                onRequestCreate({
-                  kind: "directory",
-                  folderPath: library.viewState.selectedFolderPath,
-                  fileName: "",
-                })
-              }
+              className={library.viewState.tagResultStructureMode === "file" ? "active" : ""}
+              onClick={() => library.setViewState((current) => ({ ...current, tagResultStructureMode: "file" }))}
+              aria-pressed={library.viewState.tagResultStructureMode === "file"}
             >
-              {t("libraryCreateFolder")}
+              {t("libraryTagResultFileMode")}
             </button>
             <button
               type="button"
-              className="affairs-stage-toolbar-segment"
-              onClick={() =>
-                onRequestCreate({
-                  kind: "markdown",
-                  folderPath: library.viewState.selectedFolderPath,
-                  fileName: "",
-                })
-              }
+              className={library.viewState.tagResultStructureMode === "directory" ? "active" : ""}
+              onClick={() => library.setViewState((current) => ({ ...current, tagResultStructureMode: "directory" }))}
+              aria-pressed={library.viewState.tagResultStructureMode === "directory"}
             >
-              {t("libraryCreateFile")}
+              {t("libraryTagResultDirectoryMode")}
             </button>
-          </div>
+          </span>
         ) : null}
-        <div className="affairs-stage-toolbar-group">
-          <button
-            type="button"
-            className="affairs-stage-toolbar-icon"
-            onClick={onOpenSettings}
-            aria-label={t("navSettings")}
-            title={t("navSettings")}
-          >
-            {renderSettingsIcon()}
-          </button>
-        </div>
+        <select
+          className="affairs-stage-toolbar-select"
+          value={library.viewState.librarySort.mode}
+          onChange={(event) =>
+            library.setViewState((current) => ({
+              ...current,
+              librarySort: {
+                ...current.librarySort,
+                mode: event.target.value as LibrarySortMode,
+              },
+            }))
+          }
+          aria-label={t("librarySortRecent")}
+          title={t("librarySortRecent")}
+        >
+          {sortOptions.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
+        <button
+          type="button"
+          className="affairs-stage-toolbar-icon"
+          disabled={library.refreshPending}
+          onClick={() => void library.refresh()}
+          aria-label={t("libraryRefresh")}
+          title={t("libraryRefresh")}
+        >
+          {renderRefreshIcon()}
+        </button>
+        <button
+          type="button"
+          className="affairs-stage-status-trigger"
+          title={resolveIndexStatusLabel(library.snapshot?.status.state)}
+        >
+          <span className={`affairs-stage-status-dot state-${resolveStatusDotState(library.snapshot?.status.state)}`} />
+          <span className="affairs-stage-status-text">
+            {resolveIndexStatusShortLabel(library.snapshot?.status.state)}
+          </span>
+        </button>
+        <button
+          type="button"
+          className="affairs-stage-toolbar-icon"
+          onClick={onOpenSearch}
+          aria-label={t("librarySearchAction")}
+          title={t("librarySearchAction")}
+        >
+          {renderSearchIcon()}
+        </button>
+        <button
+          type="button"
+          className="affairs-stage-toolbar-icon"
+          onClick={() => onRequestCreate({ kind: "directory", folderPath: library.viewState.selectedFolderPath, fileName: t("libraryCreateDirectoryDefaultName") })}
+          aria-label={t("libraryContextNew")}
+          title={t("libraryContextNew")}
+        >
+          {renderPlusIcon()}
+        </button>
       </div>
     </div>
   );
@@ -1380,6 +1647,7 @@ function VirtualLibraryGrid({
   library,
   entries,
   onOpenContextMenu,
+  onOpenLibraryViewer,
 }: {
   library: LibraryState;
   entries: LibraryEntry[];
@@ -1387,6 +1655,7 @@ function VirtualLibraryGrid({
     event: ReactMouseEvent<HTMLElement>,
     target: LibraryContextMenuTarget,
   ) => void;
+  onOpenLibraryViewer: (entry: LibraryDocumentEntry) => void;
 }) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const [viewport, setViewport] = useState({
@@ -1531,10 +1800,11 @@ function VirtualLibraryGrid({
       {visibleSlots.map((slot) =>
         slot.entry ? (
           <LibraryEntryCard
-            key={`${slot.entry.kind}:${slot.entry.kind === "folder" ? slot.entry.path : slot.entry.documentId}`}
+            key={resolveLibraryEntryKey(slot.entry)}
             entry={slot.entry}
             library={library}
             onOpenContextMenu={onOpenContextMenu}
+            onOpenLibraryViewer={onOpenLibraryViewer}
           />
         ) : (
           <AffairsGridPlaceholderCard key={`grid-placeholder-${slot.index}`} />
@@ -1569,6 +1839,7 @@ function VirtualLibraryFinderList({
   library,
   entries,
   onOpenContextMenu,
+  onOpenLibraryViewer,
 }: {
   library: LibraryState;
   entries: LibraryEntry[];
@@ -1576,6 +1847,7 @@ function VirtualLibraryFinderList({
     event: ReactMouseEvent<HTMLElement>,
     target: LibraryContextMenuTarget,
   ) => void;
+  onOpenLibraryViewer: (entry: LibraryDocumentEntry) => void;
 }) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const [viewport, setViewport] = useState({ height: 0, scrollTop: 0 });
@@ -1832,11 +2104,12 @@ function VirtualLibraryFinderList({
             {visibleSlots.map((slot) =>
               slot.entry ? (
                 <LibraryFinderRow
-                  key={`${slot.entry.kind}:${slot.entry.kind === "folder" ? slot.entry.path : slot.entry.documentId}`}
+                  key={resolveLibraryEntryKey(slot.entry)}
                   entry={slot.entry}
                   library={library}
                   gridTemplateColumns={finderGridTemplateColumns}
                   onOpenContextMenu={onOpenContextMenu}
+                  onOpenLibraryViewer={onOpenLibraryViewer}
                 />
               ) : (
                 <AffairsFinderPlaceholderRow
@@ -2185,6 +2458,7 @@ function LibraryEntryCard({
   entry,
   library,
   onOpenContextMenu,
+  onOpenLibraryViewer,
 }: {
   entry: LibraryEntry;
   library: LibraryState;
@@ -2192,8 +2466,9 @@ function LibraryEntryCard({
     event: ReactMouseEvent<HTMLElement>,
     target: LibraryContextMenuTarget,
   ) => void;
+  onOpenLibraryViewer: (entry: LibraryDocumentEntry) => void;
 }) {
-  if (entry.kind === "folder") {
+  if (entry.kind !== "document") {
     const active = library.viewState.selectedFolderEntryPath === entry.path;
     return (
       <button
@@ -2201,9 +2476,12 @@ function LibraryEntryCard({
         className={
           active ? "affairs-doc-item grid active" : "affairs-doc-item grid"
         }
-        onClick={() => handleFolderClick(library, entry.path)}
-        onDoubleClick={() => library.selectFolder(entry.path)}
+        onClick={() => { if (entry.kind === "folder") handleFolderClick(library, entry.path); }}
+        onDoubleClick={() => { if (entry.kind === "folder") library.selectFolder(entry.path); }}
         onContextMenu={(event) => {
+          if (entry.kind !== "folder") {
+            return;
+          }
           library.selectFolderEntry(entry.path);
           onOpenContextMenu(event, { kind: "folder", entry });
         }}
@@ -2233,7 +2511,7 @@ function LibraryEntryCard({
         library.selectDocument(entry.documentId);
         onOpenContextMenu(event, { kind: "document", entry });
       }}
-      onDoubleClick={() => void library.openPreview(entry.path)}
+      onDoubleClick={() => onOpenLibraryViewer(entry)}
     >
       <div className="affairs-doc-icon">{renderDocumentShape(entry.path)}</div>
       <div
@@ -2256,6 +2534,7 @@ function LibraryFinderRow({
   library,
   gridTemplateColumns,
   onOpenContextMenu,
+  onOpenLibraryViewer,
 }: {
   entry: LibraryEntry;
   library: LibraryState;
@@ -2264,8 +2543,9 @@ function LibraryFinderRow({
     event: ReactMouseEvent<HTMLElement>,
     target: LibraryContextMenuTarget,
   ) => void;
+  onOpenLibraryViewer: (entry: LibraryDocumentEntry) => void;
 }) {
-  if (entry.kind === "folder") {
+  if (entry.kind !== "document") {
     const active = library.viewState.selectedFolderEntryPath === entry.path;
     return (
       <button
@@ -2276,20 +2556,29 @@ function LibraryFinderRow({
             : "affairs-finder-row affairs-finder-directory-row"
         }
         style={{ gridTemplateColumns }}
-        onClick={() => handleFolderClick(library, entry.path)}
-        onDoubleClick={() => library.selectFolder(entry.path)}
+        onClick={() => { if (entry.kind === "folder") handleFolderClick(library, entry.path); }}
+        onDoubleClick={() => { if (entry.kind === "folder") library.selectFolder(entry.path); }}
         onContextMenu={(event) => {
+          if (entry.kind !== "folder") {
+            return;
+          }
           library.selectFolderEntry(entry.path);
           onOpenContextMenu(event, { kind: "folder", entry });
         }}
       >
         <span className="affairs-finder-name-cell">
+          {entry.kind === "tag-directory" ? (
+            <span className="affairs-finder-disclosure" aria-hidden="true">▾</span>
+          ) : null}
           <span className="affairs-finder-icon">
             {renderFolderShape("row")}
           </span>
           <span className="affairs-finder-name" title={entry.name}>
             {entry.name}
           </span>
+          {entry.kind === "tag-directory" ? (
+            <span className="affairs-finder-directory-count">{t("libraryCountDocuments", { count: entry.documentCount })}</span>
+          ) : null}
         </span>
         <span className="affairs-finder-cell">--</span>
         <span className="affairs-finder-cell">
@@ -2314,9 +2603,9 @@ function LibraryFinderRow({
         library.selectDocument(entry.documentId);
         onOpenContextMenu(event, { kind: "document", entry });
       }}
-      onDoubleClick={() => void library.openPreview(entry.path)}
+      onDoubleClick={() => onOpenLibraryViewer(entry)}
     >
-      <span className="affairs-finder-name-cell">
+      <span className="affairs-finder-name-cell" style={{ "--affairs-finder-depth": entry.depth ?? 0 } as CSSProperties}>
         <span className="affairs-finder-icon">
           {renderDocumentShape(entry.path, "row")}
         </span>
@@ -2470,6 +2759,7 @@ function LibraryContextMenu({
   state,
   library,
   libraryClipboard,
+  onOpenLibraryViewer,
   onSetClipboard,
   onClose,
   onRequestCreate,
@@ -2480,6 +2770,7 @@ function LibraryContextMenu({
   state: LibraryContextMenuState;
   library: LibraryState;
   libraryClipboard: LibraryClipboardState | null;
+  onOpenLibraryViewer: (entry: LibraryDocumentEntry) => void;
   onSetClipboard: (state: LibraryClipboardState | null) => void;
   onClose: () => void;
   onRequestCreate: (state: PendingCreateState) => void;
@@ -2585,7 +2876,7 @@ function LibraryContextMenu({
           onClick={() =>
             void run(() => {
               library.selectDocument(target.entry.documentId);
-              return library.openPreview(target.entry.path);
+              onOpenLibraryViewer(target.entry);
             })
           }
         >
@@ -2869,6 +3160,227 @@ function ContextSubmenu({
   );
 }
 
+function LibrarySearchModal({
+  library,
+  keyword,
+  onKeywordChange,
+  onOpenDocument,
+  onLocateDocument,
+  onClose,
+}: {
+  library: LibraryState;
+  keyword: string;
+  onKeywordChange: (value: string) => void;
+  onOpenDocument: (entry: LibraryDocumentEntry) => void;
+  onLocateDocument: (entry: LibraryDocumentEntry) => void;
+  onClose: () => void;
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [activeKeyword, setActiveKeyword] = useState("");
+  const [resultPage, setResultPage] = useState<LibraryDocumentList | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const searchResults = useMemo(
+    () => (resultPage?.items ?? []).map((entry) => ({
+      ...entry,
+      kind: "document" as const,
+    })),
+    [resultPage],
+  );
+  const hasDraftKeyword = keyword.trim().length > 0;
+  const showsResults = activeKeyword.length > 0;
+  const hasMore = (resultPage?.items.length ?? 0) < (resultPage?.total ?? 0);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+
+  async function runSearch(nextKeyword: string, reset = true): Promise<void> {
+    const normalizedKeyword = nextKeyword.trim();
+    setActiveKeyword(normalizedKeyword);
+    if (!normalizedKeyword) {
+      setResultPage(null);
+      setError(null);
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    try {
+      const offset = reset ? 0 : resultPage?.items.length ?? 0;
+      const nextPage = await listLibraryDocuments({
+        browseMode: library.viewState.browseMode,
+        selectedFolderPath: library.viewState.selectedFolderPath,
+        selectedTagPath: library.viewState.selectedTagPath,
+        selectedTagPaths: library.viewState.selectedTagPaths,
+        selectedFavoriteId: library.viewState.selectedFavoriteId,
+        keyword: normalizedKeyword,
+        offset,
+        limit: 60,
+      });
+      setResultPage((current) => {
+        if (reset || !current) {
+          return nextPage;
+        }
+        return {
+          ...nextPage,
+          items: [...current.items, ...nextPage.items],
+          offset: current.offset,
+        };
+      });
+    } catch (err) {
+      setError(toApiErrorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function clearSearch(): void {
+    onKeywordChange("");
+    setActiveKeyword("");
+    setResultPage(null);
+    setError(null);
+  }
+
+  function handleSubmit(event?: FormEvent): void {
+    event?.preventDefault();
+    void runSearch(keyword, true);
+  }
+
+  return (
+    <DesktopModal
+      title={t("librarySearchModalTitle")}
+      description={t("librarySearchModalDescription")}
+      size="regular"
+      layout="list"
+      className="library-search-modal"
+      bodyClassName="library-search-modal-body"
+      onClose={onClose}
+      footer={
+        <ModalActions align="between">
+          <span className="library-search-result-count">
+            {showsResults
+              ? t("librarySearchResultCount", {
+                  count: resultPage?.total ?? searchResults.length,
+                })
+              : t("librarySearchReadyHint")}
+          </span>
+          <div className="button-row">
+            <button type="button" className="secondary-button" onClick={onClose}>
+              {t("actionClose")}
+            </button>
+            {activeKeyword ? (
+              <button type="button" className="secondary-button" onClick={clearSearch}>
+                {t("librarySearchClear")}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="primary-button"
+              disabled={!hasDraftKeyword}
+              onClick={() => handleSubmit()}
+            >
+              {t("librarySearchSubmit")}
+            </button>
+          </div>
+        </ModalActions>
+      }
+    >
+      <form className="library-search-form" onSubmit={handleSubmit}>
+        <ModalField label={t("librarySearchKeywordLabel")} htmlFor="library-search-keyword">
+          <div className="library-search-input-wrap">
+            {renderSearchIcon()}
+            <input
+              ref={inputRef}
+              id="library-search-keyword"
+              type="search"
+              value={keyword}
+              placeholder={t("libraryKeywordPlaceholder")}
+              onChange={(event) => onKeywordChange(event.target.value)}
+            />
+          </div>
+        </ModalField>
+      </form>
+      <div className="library-search-results" role="list">
+        {error ? <div className="inline-alert compact">{error}</div> : null}
+        {loading && showsResults ? (
+          <ModalEmptyState
+            compact
+            title={t("librarySearchLoading")}
+            description={t("librarySearchLoadingDescription")}
+          />
+        ) : null}
+        {!showsResults ? (
+          <ModalEmptyState
+            compact
+            title={t("librarySearchEmptyTitle")}
+            description={t("librarySearchEmptyDescription")}
+          />
+        ) : null}
+        {showsResults && !loading && searchResults.length === 0 ? (
+          <ModalEmptyState
+            compact
+            title={t("librarySearchNoResultsTitle")}
+            description={t("librarySearchNoResultsDescription", {
+              keyword: activeKeyword,
+            })}
+          />
+        ) : null}
+        {showsResults && searchResults.length > 0 ? (
+          <div className="library-search-result-list">
+            {searchResults.map((entry) => (
+              <div
+                key={entry.documentId}
+                className="library-search-result-item"
+                role="listitem"
+              >
+                <button
+                  type="button"
+                  className="library-search-result-main"
+                  onClick={() => onOpenDocument(entry)}
+                >
+                  <span className="library-search-result-title">
+                    {renderHighlightedText(entry.title || getPathName(entry.path), activeKeyword)}
+                  </span>
+                  <span className="library-search-result-path">
+                    {renderHighlightedText(entry.path, activeKeyword)}
+                  </span>
+                  {entry.summary ? (
+                    <span className="library-search-result-summary">
+                      {renderHighlightedText(entry.summary, activeKeyword)}
+                    </span>
+                  ) : null}
+                </button>
+                <div className="library-search-result-side">
+                  <ModalTag>{resolveDocumentVisual(entry.path).extension.toUpperCase()}</ModalTag>
+                  <button
+                    type="button"
+                    className="secondary-button library-search-locate-button"
+                    onClick={() => onLocateDocument(entry)}
+                  >
+                    {t("libraryContextLocate")}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {hasMore && showsResults ? (
+          <button
+            type="button"
+            className="secondary-button library-search-load-more"
+            disabled={loading}
+            onClick={() => void runSearch(activeKeyword, false)}
+          >
+            {t("libraryLoadMore")}
+          </button>
+        ) : null}
+      </div>
+    </DesktopModal>
+  );
+}
+
 function LibraryCreateModal({
   library,
   state,
@@ -3109,90 +3621,76 @@ function LibraryTagAssignmentModal({
   target: PendingTagAssignmentTarget;
   onClose: () => void;
 }) {
-  const [value, setValue] = useState("");
   const [details, setDetails] = useState<
     LibraryDocumentTagDetails | LibraryFolderTagDetails | null
   >(null);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [tagDetails, setTagDetails] = useState<LibraryTagDetailWithRules[]>([]);
+  const assignableTags = useMemo(
+    () => tagDetails.filter(isAssignableLibraryTag),
+    [tagDetails],
+  );
 
-  useEffect(() => {
-    let cancelled = false;
+  async function refreshDetails(): Promise<void> {
     setLoading(true);
     setError(null);
-    const request =
-      target.kind === "document"
-        ? getDocumentTagDetails(target.documentId)
-        : getFolderTagDetails(target.folderPath);
-    void request
-      .then((nextDetails) => {
-        if (cancelled) return;
-        setDetails(nextDetails);
-        setValue(resolveTagAssignmentInitialValue(nextDetails));
-      })
-      .catch((err) => {
-        if (!cancelled) setError(toApiErrorMessage(err));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [target]);
-
-  async function submit(): Promise<void> {
-    setSaving(true);
-    setError(null);
     try {
-      if (target.kind === "document") {
-        await saveDocumentTags(target.documentId, {
-          createTagPaths: splitTagInput(value),
-        });
-      } else {
-        await saveFolderTags({
-          folderPath: target.folderPath,
-          createTagPaths: splitTagInput(value),
-        });
-      }
-      await library.reload();
-      await library.reloadDocuments(true);
-      onClose();
+      const [nextDetails, nextTags] = await Promise.all([
+        target.kind === "document"
+          ? getDocumentTagDetails(target.documentId)
+          : getFolderTagDetails(target.folderPath),
+        listLibraryTagDetails(true),
+      ]);
+      setDetails(nextDetails);
+      setTagDetails(nextTags);
     } catch (err) {
       setError(toApiErrorMessage(err));
     } finally {
-      setSaving(false);
+      setLoading(false);
     }
   }
 
-  const recommendations = details?.recommendedTags ?? [];
+  useEffect(() => {
+    void refreshDetails();
+  }, [target]);
+
+  async function saveTags(
+    nextTagIds: string[],
+    createTagPaths: string[] = [],
+  ): Promise<void> {
+    setError(null);
+    const nextDetails = target.kind === "document"
+      ? await saveDocumentTags(target.documentId, {
+        tagIds: nextTagIds,
+        createTagPaths,
+      })
+      : await saveFolderTags({
+        folderPath: target.folderPath,
+        tagIds: nextTagIds,
+        createTagPaths,
+      });
+    setDetails(nextDetails);
+    await Promise.all([library.reload(), library.reloadDocuments(true)]);
+  }
+
+  const assignedTagIds = details ? resolveAssignedTagIds(details) : [];
+  const resolvedTagPaths = details && "resolvedTags" in details
+    ? details.resolvedTags.map((item) => item.path)
+    : [];
 
   return (
     <DesktopModal
       title={t("libraryTagAssignmentModalTitle")}
-      description={t("libraryTagAssignmentModalDescription", {
-        name: target.title,
-      })}
+      description={target.kind === "document"
+        ? t("libraryTagAssignmentDocumentDescription", { name: target.title })
+        : t("libraryTagAssignmentFolderDescription", { name: target.title })}
       onClose={onClose}
-      dismissible={!saving}
+      dismissible={!loading}
       footer={
         <ModalActions>
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={saving}
-            onClick={onClose}
-          >
-            {t("actionCancel")}
-          </button>
-          <button
-            type="button"
-            className="primary-button"
-            disabled={saving || loading}
-            onClick={() => void submit()}
-          >
-            {saving ? t("settingsSaving") : t("librarySaveTags")}
+          <button type="button" className="secondary-button" onClick={onClose}>
+            {t("actionClose")}
           </button>
         </ModalActions>
       }
@@ -3200,47 +3698,289 @@ function LibraryTagAssignmentModal({
       {loading ? (
         <ModalEmptyState title={t("libraryTagAssignmentLoading")} compact />
       ) : null}
-      <ModalField
-        label={t("libraryTagAssignmentTagsLabel")}
-        description={t("libraryTagAssignmentTagsDescription")}
-      >
-        <input
-          value={value}
-          autoFocus
-          placeholder={t("libraryEditTagsPlaceholder")}
-          onChange={(event) => setValue(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") void submit();
-          }}
+      {!loading && details ? (
+        <LibraryQuickTagAssignmentEditor
+          assignedTagIds={assignedTagIds}
+          assignableTags={assignableTags}
+          resolvedTagPaths={resolvedTagPaths}
+          recommendedTags={details.recommendedTags ?? []}
+          emptyText={t("libraryTagAssignmentEmpty")}
+          inputLabel={t("libraryTagAssignmentTagsLabel")}
+          suggestionsLabel={t("libraryTagAssignmentSuggestionsLabel")}
+          onSave={saveTags}
+          onSaved={() => void refreshDetails()}
+          onError={(message) => setError(message)}
         />
-      </ModalField>
-      {recommendations.length ? (
-        <ModalSection
-          heading={t("libraryTagAssignmentRecommendations")}
-          className="affairs-tag-assignment-recommendations"
-        >
-          <div className="tag-group">
-            {recommendations.map((item) => (
-              <button
-                key={item.path}
-                type="button"
-                className="modal-tag-button"
-                onClick={() =>
-                  setValue((current) => appendTagPath(current, item.path))
-                }
-                title={item.evidence}
-              >
-                <ModalTag tone="accent">{item.name}</ModalTag>
-              </button>
-            ))}
-          </div>
-        </ModalSection>
       ) : null}
       {error ? (
         <div className="affairs-binding-hint affairs-create-error">{error}</div>
       ) : null}
     </DesktopModal>
   );
+}
+
+function LibraryQuickTagAssignmentEditor({
+  assignedTagIds,
+  assignableTags,
+  resolvedTagPaths = [],
+  recommendedTags = [],
+  emptyText,
+  inputLabel,
+  suggestionsLabel,
+  onSave,
+  onSaved,
+  onError,
+}: {
+  assignedTagIds: string[];
+  assignableTags: LibraryTagDetailWithRules[];
+  resolvedTagPaths?: string[];
+  recommendedTags?: LibraryDocumentTagDetails["recommendedTags"];
+  emptyText: string;
+  inputLabel: string;
+  suggestionsLabel: string;
+  onSave: (nextTagIds: string[], createTagPaths?: string[]) => Promise<void>;
+  onSaved?: () => void;
+  onError?: (message: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [pendingAction, setPendingAction] = useState<"assign" | "create" | "remove" | null>(null);
+  const selectedTagIds = useMemo(() => new Set(assignedTagIds), [assignedTagIds]);
+  const selectedTags = useMemo(
+    () => assignableTags.filter((tag) => selectedTagIds.has(tag.id)),
+    [assignableTags, selectedTagIds],
+  );
+  const visibleTagPaths = useMemo(
+    () => compactDocumentTagPaths([
+      ...resolvedTagPaths,
+      ...selectedTags.map((tag) => tag.path),
+    ]),
+    [resolvedTagPaths, selectedTags],
+  );
+  const recommendedVisibleTags = useMemo(() => {
+    const assignableTagIdSet = new Set(assignableTags.map((tag) => tag.id));
+    return (recommendedTags ?? [])
+      .filter((tag) => assignableTagIdSet.has(tag.tagId) && !selectedTagIds.has(tag.tagId))
+      .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path, "zh-Hans-CN"))
+      .slice(0, 8);
+  }, [assignableTags, recommendedTags, selectedTagIds]);
+  const selectedTagByPath = useMemo(() => {
+    const map = new Map<string, LibraryTagDetailWithRules>();
+    selectedTags.forEach((tag) => map.set(tag.path, tag));
+    return map;
+  }, [selectedTags]);
+  const normalizedQuery = normalizeTagPathInput(query);
+  const normalizedQueryLower = normalizedQuery.toLowerCase();
+  const matchedTags = useMemo(() => {
+    if (!normalizedQueryLower) {
+      return [];
+    }
+    return assignableTags
+      .filter((tag) => !selectedTagIds.has(tag.id))
+      .filter((tag) => {
+        const searchable = `${tag.path} ${tag.name}`.toLowerCase();
+        return searchable.includes(normalizedQueryLower);
+      })
+      .slice(0, 8);
+  }, [assignableTags, normalizedQueryLower, selectedTagIds]);
+  const exactMatchedTag = useMemo(
+    () => assignableTags.find((tag) => tag.path.toLowerCase() === normalizedQueryLower) ?? null,
+    [assignableTags, normalizedQueryLower],
+  );
+  const canCreateTag = normalizedQuery.length > 0 && !exactMatchedTag;
+
+  const commitSelection = async (
+    nextTagIds: string[],
+    createTagPaths: string[] = [],
+    action: "assign" | "create" | "remove" = createTagPaths.length > 0 ? "create" : "assign",
+  ) => {
+    setSubmitting(true);
+    setPendingAction(action);
+    onError?.("");
+    try {
+      await onSave(uniqueStringList(nextTagIds), createTagPaths);
+      setQuery("");
+      onSaved?.();
+    } catch (err) {
+      onError?.(toApiErrorMessage(err));
+    } finally {
+      setSubmitting(false);
+      setPendingAction(null);
+    }
+  };
+
+  const handleSubmitQuery = async () => {
+    if (!normalizedQuery) {
+      return;
+    }
+    if (exactMatchedTag) {
+      const exactId = exactMatchedTag.id;
+      if (selectedTagIds.has(exactId)) {
+        setQuery("");
+        return;
+      }
+      await commitSelection([...assignedTagIds, exactId], [], "assign");
+      return;
+    }
+    await commitSelection([...assignedTagIds], [normalizedQuery], "create");
+  };
+  const pendingStatusText = pendingAction === "create"
+    ? t("libraryTagQuickCreateSubmitting")
+    : pendingAction === "remove"
+      ? t("libraryTagQuickRemoveSubmitting")
+      : pendingAction === "assign"
+        ? t("libraryTagQuickAssignSubmitting")
+        : null;
+
+  return (
+    <div className="affairs-document-tag-editor">
+      {pendingStatusText ? (
+        <div className="affairs-document-tag-submit-status" role="status" aria-live="polite">
+          <span className="affairs-document-tag-submit-spinner" aria-hidden="true" />
+          <span>{pendingStatusText}</span>
+        </div>
+      ) : null}
+      <div className="affairs-document-tag-list">
+        {visibleTagPaths.length === 0 ? (
+          <span className="affairs-binding-hint">{emptyText}</span>
+        ) : visibleTagPaths.map((tagPath) => {
+          const manualTag = selectedTagByPath.get(tagPath);
+          if (!manualTag) {
+            return <LibraryColorTag key={tagPath} label={tagPath} path={tagPath} />;
+          }
+          const manualTagId = manualTag.id;
+          return (
+            <button
+              key={manualTagId}
+              type="button"
+              className="affairs-document-tag-token"
+              aria-label={t("libraryDocumentTagRemoveAction", { tag: manualTag.path })}
+              disabled={submitting}
+              onClick={() => {
+                void commitSelection(assignedTagIds.filter((item) => item !== manualTagId), [], "remove");
+              }}
+            >
+              <LibraryColorTag label={manualTag.path} path={manualTag.path} />
+              <span aria-hidden="true">×</span>
+            </button>
+          );
+        })}
+      </div>
+      {recommendedVisibleTags.length > 0 ? (
+        <div className="affairs-document-tag-recommendations" aria-label={t("libraryTagAssignmentRecommendations")}>
+          <span className="affairs-document-tag-recommendations-title">{t("libraryTagAssignmentRecommendations")}</span>
+          <div className="affairs-document-tag-recommendation-list">
+            {recommendedVisibleTags.map((tag) => (
+              <button
+                key={tag.tagId}
+                type="button"
+                className="affairs-document-tag-recommendation"
+                disabled={submitting}
+                aria-label={t("libraryTagRecommendationAssignAction", { tag: tag.path })}
+                title={tag.evidence}
+                onClick={() => {
+                  void commitSelection([...assignedTagIds, tag.tagId], [], "assign");
+                }}
+              >
+                <LibraryColorTag label={tag.path} path={tag.path} variant="recommended" />
+                <span className="affairs-document-tag-recommendation-reason">
+                  {resolveTagRecommendationReasonLabel(tag.reason)}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      <div className="affairs-document-tag-picker">
+        <label className="affairs-document-tag-input-label">
+          <span>{inputLabel}</span>
+          <input
+            value={query}
+            autoFocus
+            disabled={submitting}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                void handleSubmitQuery();
+              }
+            }}
+            placeholder={t("libraryTagQuickSearchPlaceholder")}
+          />
+        </label>
+        {normalizedQuery ? (
+          <div className="affairs-document-tag-suggestions" role="listbox" aria-label={suggestionsLabel}>
+            {matchedTags.map((tag) => {
+              const tagId = tag.id;
+              return (
+                <button
+                  key={tagId}
+                  type="button"
+                  className="affairs-document-tag-suggestion"
+                  disabled={submitting}
+                  onClick={() => {
+                    void commitSelection([...assignedTagIds, tagId], [], "assign");
+                  }}
+                >
+                  <LibraryColorTag label={tag.path} path={tag.path} />
+                </button>
+              );
+            })}
+            {canCreateTag ? (
+              <button
+                type="button"
+                className="affairs-document-tag-suggestion affairs-document-tag-create-suggestion"
+                disabled={submitting}
+                onClick={() => {
+                  void commitSelection([...assignedTagIds], [normalizedQuery], "create");
+                }}
+              >
+                <span className="affairs-document-tag-create-label">{t("libraryTagQuickCreateAction", { tag: normalizedQuery })}</span>
+                <span className="affairs-binding-hint">{t("libraryTagQuickCreateHint")}</span>
+              </button>
+            ) : null}
+            {matchedTags.length === 0 && !canCreateTag ? (
+              <span className="affairs-binding-hint">{t("libraryTagQuickAlreadyAssigned")}</span>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function LibraryColorTag({
+  label,
+  path,
+  variant = "assigned",
+}: {
+  label: string;
+  path: string;
+  variant?: "assigned" | "recommended";
+}) {
+  return (
+    <span
+      className={`affairs-color-tag ${variant === "recommended" ? "recommended" : "assigned"}`}
+      style={buildTagColorStyle(path)}
+    >
+      {label}
+    </span>
+  );
+}
+
+function resolveTagRecommendationReasonLabel(
+  reason: NonNullable<LibraryDocumentTagDetails["recommendedTags"]>[number]["reason"],
+): string {
+  switch (reason) {
+    case "name_match":
+      return t("libraryTagRecommendationReasonName");
+    case "folder_context":
+      return t("libraryTagRecommendationReasonFolder");
+    case "smart_rule":
+      return t("libraryTagRecommendationReasonRule");
+    case "time_pattern":
+      return t("libraryTagRecommendationReasonTime");
+  }
 }
 
 type EditableLibraryTagRule = LibraryTagRule;
@@ -4073,6 +4813,569 @@ function LibraryTagManagerModal({
   );
 }
 
+function LibraryFileViewerModal({
+  library,
+  viewerState,
+  onClose,
+}: {
+  library: LibraryState;
+  viewerState: LibraryViewerState;
+  onClose: () => void;
+}) {
+  const [preview, setPreview] = useState<LibraryPreview | null>(null);
+  const [editorContent, setEditorContent] = useState("");
+  const [mode, setMode] = useState<ViewerMode>("preview");
+  const [presentationProject, setPresentationProject] = useState<DocumentProject | null>(null);
+  const [presentationSavedContent, setPresentationSavedContent] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saveMessage, setSaveMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    setSaveMessage(null);
+    setPreview(null);
+    setEditorContent("");
+    setPresentationProject(null);
+    setPresentationSavedContent(null);
+    void getLibraryPreviewForViewer(viewerState.filePath)
+      .then((nextPreview) => {
+        if (cancelled) {
+          return;
+        }
+        applyLibraryViewerPreviewState({
+          filePath: viewerState.filePath,
+          nextPreview,
+          setPreview,
+          setEditorContent,
+          setMode,
+        });
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(toApiErrorMessage(err));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [viewerState.filePath]);
+
+  const htmlPresentationProbe = useMemo(() => {
+    if (preview?.kind !== "html" || !editorContent.trim()) {
+      return null;
+    }
+    return inspectStaticHtmlPresentation(editorContent, viewerState.filePath);
+  }, [editorContent, preview?.kind, viewerState.filePath]);
+
+  const canShowPresentationTab = shouldEnableHtmlPresentationMode({
+    filePath: viewerState.filePath,
+    html: editorContent,
+    probe: htmlPresentationProbe,
+  });
+  const canShowPreviewTab = canUsePreviewMode(preview?.kind ?? null);
+  const canShowEditTab = Boolean(preview?.capabilities.canEdit && preview.version && canUseEditMode(preview.kind));
+  const viewerTabs = buildViewerTabs({
+    canShowPresentationTab,
+    canShowPreviewTab,
+    canShowEditTab,
+  });
+  const canSave = canShowEditTab && (mode === "edit" || mode === "presentation");
+  const savedComparableContent = mode === "presentation" && presentationSavedContent !== null
+    ? presentationSavedContent
+    : editorContent;
+  const isDirty = Boolean(preview && canSave && savedComparableContent !== (preview.content ?? ""));
+
+  useEffect(() => {
+    if (!viewerTabs.length) {
+      return;
+    }
+    if (!viewerTabs.includes(mode)) {
+      setMode(viewerTabs[0] ?? "preview");
+    }
+  }, [mode, viewerTabs.join("|")]);
+
+  async function refreshPreview(preserveMode = true): Promise<void> {
+    setLoading(true);
+    setError(null);
+    setSaveMessage(null);
+    try {
+      const nextPreview = await getLibraryPreviewForViewer(viewerState.filePath);
+      applyLibraryViewerPreviewState({
+        filePath: viewerState.filePath,
+        nextPreview,
+        setPreview,
+        setEditorContent,
+        setMode: preserveMode
+          ? (updater) => setMode((current) => {
+              const next = typeof updater === "function" ? updater(current) : updater;
+              return canUseMode(current, nextPreview.kind) ? current : next;
+            })
+          : setMode,
+      });
+      setPresentationProject(null);
+      setPresentationSavedContent(null);
+      await library.reloadDocuments(true);
+    } catch (err) {
+      setError(toApiErrorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function saveContent(): Promise<void> {
+    if (!preview || !canSave || !preview.version) {
+      return;
+    }
+
+    const nextContent = mode === "presentation" && presentationProject
+      ? presentationSavedContent ?? writeStaticHtmlDocumentProject({ html: editorContent, project: presentationProject }) ?? editorContent
+      : editorContent;
+
+    setSaving(true);
+    setError(null);
+    setSaveMessage(null);
+    try {
+      await library.operateFile({
+        opType: "write",
+        srcPath: viewerState.filePath,
+        content: nextContent,
+        expectedVersion: preview.version,
+      });
+      setSaveMessage(t("filePanelSaveSuccess"));
+      const nextPreview = await getLibraryPreviewForViewer(viewerState.filePath);
+      applyLibraryViewerPreviewState({
+        filePath: viewerState.filePath,
+        nextPreview,
+        setPreview,
+        setEditorContent,
+        setMode,
+      });
+      setPresentationProject(null);
+      setPresentationSavedContent(null);
+      await library.reloadDocuments(true);
+    } catch (err) {
+      setError(toApiErrorMessage(err));
+      setSaveMessage(t("filePanelSaveFailed"));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function openDetachedPreview(): void {
+    openLibraryPreviewDetachedWindow(preview, viewerState, editorContent);
+    onClose();
+  }
+
+  const detachControl = (
+    <button
+      type="button"
+      className="desktop-modal-close file-viewer-detach-button"
+      aria-label={t("libraryPreviewOpenInWindow")}
+      title={t("libraryPreviewOpenInWindow")}
+      disabled={loading || Boolean(error) || !preview}
+      onClick={openDetachedPreview}
+    >
+      {renderDetachWindowIcon()}
+    </button>
+  );
+
+  const headerActions = (
+    <div className="file-viewer-header-controls">
+      {viewerTabs.length > 1 ? (
+        <div className="file-viewer-header-tabs" role="tablist" aria-label={t("fileViewerModeLabel")}>
+          {viewerTabs.map((viewerMode) => (
+            <button
+              key={viewerMode}
+              type="button"
+              className="file-viewer-tab"
+              data-active={mode === viewerMode ? "true" : undefined}
+              onClick={() => setMode(viewerMode)}
+            >
+              {resolveViewerModeLabel(viewerMode)}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      <div className="file-viewer-header-action-buttons">
+        {saveMessage ? <span className="file-viewer-save-status">{saveMessage}</span> : null}
+        {canSave ? (
+          <button
+            type="button"
+            className="primary-button file-viewer-action-button"
+            disabled={saving || !isDirty}
+            onClick={() => void saveContent()}
+          >
+            {saving ? t("filePanelSaving") : t("filePanelSave")}
+          </button>
+        ) : null}
+        <button
+          type="button"
+          className="secondary-button file-viewer-action-button"
+          disabled={loading || saving}
+          onClick={() => void refreshPreview()}
+        >
+          {t("fileViewerRefreshPreview")}
+        </button>
+      </div>
+    </div>
+  );
+
+  return (
+    <DesktopModal
+      open
+      title={viewerState.title}
+      description={viewerState.filePath}
+      size="regular"
+      layout="viewer"
+      className="file-viewer-modal library-file-viewer-modal is-resizable"
+      bodyClassName="file-viewer-modal-body library-file-viewer-body"
+      titleClassName="file-viewer-title"
+      headerActions={headerActions}
+      beforeCloseButton={detachControl}
+      onClose={onClose}
+    >
+      <LibraryFileViewerSurface
+        preview={preview}
+        filePath={viewerState.filePath}
+        mode={mode}
+        editorContent={editorContent}
+        loading={loading}
+        error={error}
+        canSave={canSave}
+        saving={saving}
+        onEditorContentChange={setEditorContent}
+        onPresentationProjectChange={(project) => {
+          setPresentationProject(project);
+          setPresentationSavedContent(
+            project ? writeStaticHtmlDocumentProject({ html: editorContent, project }) : null,
+          );
+        }}
+        onSave={() => void saveContent()}
+      />
+    </DesktopModal>
+  );
+}
+
+function LibraryFileViewerSurface({
+  preview,
+  filePath,
+  mode,
+  editorContent,
+  loading,
+  error,
+  canSave,
+  saving,
+  onEditorContentChange,
+  onPresentationProjectChange,
+  onSave,
+}: {
+  preview: LibraryPreview | null;
+  filePath: string;
+  mode: ViewerMode;
+  editorContent: string;
+  loading: boolean;
+  error: string | null;
+  canSave: boolean;
+  saving: boolean;
+  onEditorContentChange: (content: string) => void;
+  onPresentationProjectChange: (project: DocumentProject | null) => void;
+  onSave: () => void;
+}) {
+  if (loading || error || !preview || !preview.supported || preview.kind === "office") {
+    return (
+      <div className="library-file-viewer-fallback">
+        <PreviewPanel preview={preview} loading={loading} error={error} />
+      </div>
+    );
+  }
+
+  if (mode === "presentation" && preview.kind === "html") {
+    return (
+      <StaticHtmlPresentationView
+        filePath={filePath}
+        html={editorContent}
+        baseHref={preview.previewUrl}
+        canSave={canSave}
+        saving={saving}
+        onSave={onSave}
+        onProjectChange={onPresentationProjectChange}
+      />
+    );
+  }
+
+  if (mode === "edit") {
+    return (
+      <CodePreview
+        content={editorContent}
+        language={detectLanguage(filePath)}
+        overviewTotalLines={editorContent.split(/\r?\n/).length}
+        editable
+        onContentChange={onEditorContentChange}
+      />
+    );
+  }
+
+  if (preview.kind === "markdown") {
+    return <MarkdownPreview content={editorContent || t("libraryPreviewEmpty")} />;
+  }
+
+  if (preview.kind === "image" && preview.previewUrl) {
+    return (
+      <div className="library-file-viewer-image-wrap file-viewer-media-shell">
+        <img className="library-file-viewer-image" src={preview.previewUrl} alt={preview.path} />
+      </div>
+    );
+  }
+
+  if (preview.kind === "pdf" && preview.previewUrl) {
+    return (
+      <div className="file-viewer-pdf-shell">
+        <iframe className="library-file-viewer-frame file-viewer-pdf-frame" src={preview.previewUrl} title={preview.path} />
+      </div>
+    );
+  }
+
+  if (preview.kind === "html") {
+    if (preview.previewUrl) {
+      return (
+        <div className="file-viewer-html-frame-shell">
+          <iframe className="library-file-viewer-frame file-viewer-html-frame" src={preview.previewUrl} title={preview.path} />
+        </div>
+      );
+    }
+    return (
+      <div className="file-viewer-html-frame-shell">
+        <iframe className="library-file-viewer-frame file-viewer-html-frame" srcDoc={editorContent} title={preview.path} />
+      </div>
+    );
+  }
+
+  return (
+    <CodePreview
+      content={editorContent || t("libraryPreviewEmpty")}
+      language={detectLanguage(filePath)}
+      overviewTotalLines={editorContent.split(/\r?\n/).length}
+    />
+  );
+}
+
+function getLibraryPreviewForViewer(path: string): Promise<LibraryPreview> {
+  return getLibraryPreview(path, "reading");
+}
+
+interface HtmlPresentationModeInput {
+  filePath: string | null;
+  html: string;
+  probe: ReturnType<typeof inspectStaticHtmlPresentation> | null;
+}
+
+const PRESENTATION_DIRECTORY_SEGMENTS = new Set([
+  "slides",
+  "slide",
+  "presentations",
+  "presentation",
+  "deck",
+  "decks",
+  "ppt",
+  "pptx",
+]);
+
+const TOOL_DIRECTORY_SEGMENTS = new Set(["tools", "tool"]);
+
+function applyLibraryViewerPreviewState(input: {
+  filePath: string;
+  nextPreview: LibraryPreview;
+  setPreview: (preview: LibraryPreview) => void;
+  setEditorContent: (content: string) => void;
+  setMode: (updater: ViewerMode | ((current: ViewerMode) => ViewerMode)) => void;
+}): void {
+  input.setPreview(input.nextPreview);
+  input.setEditorContent(input.nextPreview.content ?? "");
+  input.setMode((current) => {
+    if (canUseMode(current, input.nextPreview.kind)) {
+      return current;
+    }
+    return resolveInitialViewerMode(input.filePath, input.nextPreview.kind);
+  });
+}
+
+function shouldEnableHtmlPresentationMode(input: HtmlPresentationModeInput): boolean {
+  const { filePath, html, probe } = input;
+
+  if (!probe?.supported || !html.trim()) {
+    return false;
+  }
+
+  const normalizedSegments = splitNormalizedPathSegments(filePath);
+
+  if (normalizedSegments.some((segment) => TOOL_DIRECTORY_SEGMENTS.has(segment))) {
+    return false;
+  }
+
+  if (hasExplicitPresentationOptIn(html)) {
+    return true;
+  }
+
+  if (normalizedSegments.some((segment) => PRESENTATION_DIRECTORY_SEGMENTS.has(segment))) {
+    return true;
+  }
+
+  if (probe.strategy === "deck-direct-child") {
+    return false;
+  }
+
+  return hasStrongPresentationSignals(html);
+}
+
+function splitNormalizedPathSegments(filePath: string | null): string[] {
+  if (!filePath) {
+    return [];
+  }
+
+  return filePath
+    .split(/[\\/]+/)
+    .map((segment) => segment.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function hasExplicitPresentationOptIn(html: string): boolean {
+  return /<meta[^>]+name=["'](?:codingns-preview-mode|codingns-presentation|cns-preview-mode|cns-presentation)["'][^>]+content=["']presentation["'][^>]*>/i.test(html)
+    || /\bdata-(?:codingns|cns)-(?:preview-mode|presentation)\s*=\s*["']presentation["']/i.test(html);
+}
+
+function hasStrongPresentationSignals(html: string): boolean {
+  const hasDeckContainer = /\bclass\s*=\s*["'][^"']*\bdeck\b[^"']*["']/i.test(html);
+  const hasSlideClass = /\bclass\s*=\s*["'][^"']*\bslide\b[^"']*["']/i.test(html);
+  const hasSlideMetadata = /\bdata-(?:slide|title)\s*=\s*["'][^"']+["']/i.test(html);
+  const hasDeckViewport = /--deck-width\s*:|--deck-height\s*:|aspect-ratio\s*:\s*16\s*\/\s*9/i.test(html);
+
+  return hasSlideClass && (hasDeckContainer || hasSlideMetadata || hasDeckViewport);
+}
+
+function resolveInitialViewerMode(
+  filePath: string | null,
+  previewKind: LibraryPreview["kind"] | null,
+): ViewerMode {
+  if (
+    previewKind === "markdown" ||
+    previewKind === "html" ||
+    previewKind === "image" ||
+    previewKind === "pdf" ||
+    previewKind === "office"
+  ) {
+    return "preview";
+  }
+
+  return "preview";
+}
+
+function canUsePreviewMode(previewKind: LibraryPreview["kind"] | null): boolean {
+  return previewKind === "text" ||
+    previewKind === "markdown" ||
+    previewKind === "html" ||
+    previewKind === "image" ||
+    previewKind === "pdf" ||
+    previewKind === "office";
+}
+
+function canUseEditMode(previewKind: LibraryPreview["kind"] | null): boolean {
+  return previewKind === "text" || previewKind === "markdown" || previewKind === "html";
+}
+
+function canUseMode(mode: ViewerMode, previewKind: LibraryPreview["kind"] | null): boolean {
+  if (mode === "presentation") {
+    return previewKind === "html";
+  }
+  if (mode === "preview") {
+    return canUsePreviewMode(previewKind);
+  }
+  return canUseEditMode(previewKind);
+}
+
+function buildViewerTabs(input: {
+  canShowPresentationTab: boolean;
+  canShowPreviewTab: boolean;
+  canShowEditTab: boolean;
+}): ViewerMode[] {
+  const tabs: ViewerMode[] = [];
+  if (input.canShowPresentationTab) tabs.push("presentation");
+  if (input.canShowPreviewTab) tabs.push("preview");
+  if (input.canShowEditTab) tabs.push("edit");
+  return tabs;
+}
+
+function resolveViewerModeLabel(mode: ViewerMode): string {
+  if (mode === "presentation") return t("fileViewerPresentation");
+  if (mode === "preview") return t("fileViewerPreview");
+  return t("fileViewerEdit");
+}
+
+function openLibraryPreviewDetachedWindow(
+  preview: LibraryPreview | null,
+  viewerState: LibraryViewerState,
+  editorContent = "",
+): void {
+  const targetUrl = resolveLibraryPreviewDetachedUrl(preview, viewerState, editorContent);
+  const opened = window.open(
+    targetUrl,
+    "_blank",
+    "noopener,noreferrer,width=1180,height=820",
+  );
+  if (!opened && targetUrl.startsWith("blob:")) {
+    window.location.href = targetUrl;
+  }
+}
+
+function resolveLibraryPreviewDetachedUrl(
+  preview: LibraryPreview | null,
+  viewerState: LibraryViewerState,
+  editorContent = "",
+): string {
+  if (preview?.onlyOffice?.documentUrl) {
+    return preview.onlyOffice.documentUrl;
+  }
+  if (preview?.previewUrl) {
+    return preview.previewUrl;
+  }
+  const content = editorContent || preview?.content || "";
+  const title = escapeHtml(viewerState.title);
+  const path = escapeHtml(viewerState.filePath);
+  const body = escapeHtml(content || t("libraryPreviewEmpty"));
+  return URL.createObjectURL(new Blob([`<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>${title}</title>
+<style>
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif;background:#f8f8f7;color:#1c1c1e;}
+header{position:sticky;top:0;padding:14px 18px;border-bottom:1px solid rgba(0,0,0,.08);background:rgba(248,248,247,.92);backdrop-filter:blur(16px);}
+h1{margin:0;font-size:15px;}
+p{margin:6px 0 0;color:rgba(60,60,67,.68);font-size:12px;word-break:break-all;}
+pre{margin:0;padding:20px 24px;white-space:pre-wrap;line-height:1.7;font:13px/1.7 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif;}
+</style>
+</head>
+<body><header><h1>${title}</h1><p>${path}</p></header><pre>${body}</pre></body>
+</html>`], { type: "text/html;charset=utf-8" }));
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 function PreviewPanel({
   preview,
   loading,
@@ -4292,10 +5595,11 @@ function DetailRow({ label, value }: { label: string; value: string }) {
 }
 
 function TagPills({ items }: { items: string[] }) {
+  const visibleItems = compactDocumentTagPaths(items);
   return (
     <div className="tag-group">
-      {items.length ? (
-        items.map((item) => <mark key={item}>{item}</mark>)
+      {visibleItems.length ? (
+        visibleItems.map((item) => <mark key={item}>{item}</mark>)
       ) : (
         <small>{t("libraryNoTags")}</small>
       )}
@@ -4324,6 +5628,26 @@ function resolveIndexStatusLabel(state: LibraryIndexState | undefined): string {
   }
 }
 
+function resolveIndexStatusShortLabel(state: LibraryIndexState | undefined): string {
+  switch (state) {
+    case "fresh":
+      return t("libraryStatusFreshShort");
+    case "running":
+      return t("libraryStatusRunningShort");
+    case "queued":
+      return t("libraryStatusQueuedShort");
+    case "cooldown":
+      return t("libraryStatusCooldownShort");
+    case "failed":
+    case "queue_timeout":
+      return t("libraryStatusFailedShort");
+    case "stale":
+      return t("libraryStatusStaleShort");
+    default:
+      return t("libraryStatusUnknownShort");
+  }
+}
+
 function resolveDirectoryStateLabel(state: LibraryDirectoryState): string {
   const labels: Record<LibraryDirectoryState, string> = {
     idle: t("libraryDirectoryStateIdle"),
@@ -4344,6 +5668,182 @@ function resolveDirectorySourceLabel(source: LibraryDirectorySource): string {
     stale_fallback: t("libraryDirectorySourceStaleFallback"),
   };
   return labels[source];
+}
+
+
+function buildLibraryTagTree(tags: LibraryTagNode[]): LibraryTagTreeNodeRecord[] {
+  const nodes = new Map<string, LibraryTagTreeNodeRecord>();
+  const roots: LibraryTagTreeNodeRecord[] = [];
+
+  for (const tag of tags) {
+    if (!LIBRARY_TAG_TREE_ROOTS.has(tag.name) && !LIBRARY_TAG_TREE_ROOTS.has(tag.rootType) && !isDefaultLibraryTagPath(tag.path)) {
+      continue;
+    }
+    nodes.set(tag.path, {
+      path: tag.path,
+      label: tag.name,
+      count: tag.documentCount,
+      children: [],
+    });
+  }
+
+  for (const tag of tags) {
+    const node = nodes.get(tag.path);
+    if (!node) {
+      continue;
+    }
+    const parent = tag.parentPath ? nodes.get(tag.parentPath) : null;
+    if (parent) {
+      parent.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+
+  const compare = (left: LibraryTagTreeNodeRecord, right: LibraryTagTreeNodeRecord) => {
+    const leftOrder = left.label === "时间" ? 0 : left.label === "类型" ? 1 : 2;
+    const rightOrder = right.label === "时间" ? 0 : right.label === "类型" ? 1 : 2;
+    return leftOrder === rightOrder ? left.label.localeCompare(right.label, "zh-CN") : leftOrder - rightOrder;
+  };
+  const sortNodes = (items: LibraryTagTreeNodeRecord[]) => {
+    items.sort(compare);
+    items.forEach((item) => sortNodes(item.children));
+  };
+  sortNodes(roots);
+  return roots;
+}
+
+
+function applyTagFacetCountsToTree(
+  nodes: LibraryTagTreeNodeRecord[],
+  tagFacetCounts: Record<string, number>,
+  hasTagSelection: boolean,
+): LibraryTagTreeNodeRecord[] {
+  if (!hasTagSelection) {
+    return nodes;
+  }
+  return nodes.map((node) => ({
+    ...node,
+    count: tagFacetCounts[node.path] ?? 0,
+    children: applyTagFacetCountsToTree(node.children, tagFacetCounts, hasTagSelection),
+  }));
+}
+
+function buildTagTreeVisibility(
+  roots: LibraryTagTreeNodeRecord[],
+  selectedTagPaths: string[],
+  tagFacetCounts: Record<string, number>,
+): { visiblePathSet: Set<string> } {
+  const visiblePathSet = new Set<string>();
+  const selectedSet = new Set(selectedTagPaths);
+  const markAncestorsVisible = (pathValue: string) => {
+    for (const ancestorPath of buildTagAncestorPaths(pathValue)) {
+      visiblePathSet.add(ancestorPath);
+    }
+  };
+
+  const visit = (node: LibraryTagTreeNodeRecord): boolean => {
+    const nodeFacetCount = tagFacetCounts[node.path] ?? 0;
+    const selectedRelated = selectedTagPaths.some((selectedPath) => (
+      selectedPath === node.path ||
+      selectedPath.startsWith(`${node.path}/`) ||
+      node.path.startsWith(`${selectedPath}/`)
+    ));
+    const directVisible = selectedRelated || nodeFacetCount > 0;
+    let childVisible = false;
+    node.children.forEach((child) => {
+      if (visit(child)) {
+        childVisible = true;
+      }
+    });
+    const visible = directVisible || childVisible || selectedTagPaths.length === 0;
+    if (visible) {
+      visiblePathSet.add(node.path);
+      if (selectedSet.has(node.path)) {
+        markAncestorsVisible(node.path);
+      }
+    }
+    return visible;
+  };
+
+  roots.forEach((root) => visit(root));
+  return { visiblePathSet };
+}
+
+function filterTagTreeByVisibility(
+  nodes: LibraryTagTreeNodeRecord[],
+  visiblePathSet: Set<string>,
+): LibraryTagTreeNodeRecord[] {
+  return nodes
+    .filter((node) => visiblePathSet.has(node.path))
+    .map((node) => ({
+      ...node,
+      children: filterTagTreeByVisibility(node.children, visiblePathSet),
+    }));
+}
+
+function isDefaultLibraryTagPath(path: string): boolean {
+  return path === "时间" || path.startsWith("时间/") || path === "类型" || path.startsWith("类型/");
+}
+
+function filterLibraryTagTree(
+  nodes: LibraryTagTreeNodeRecord[],
+  query: string,
+): LibraryTagTreeNodeRecord[] {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) {
+    return nodes;
+  }
+
+  return nodes.flatMap((node) => {
+    const children = filterLibraryTagTree(node.children, normalizedQuery);
+    if (node.label.toLowerCase().includes(normalizedQuery) || node.path.toLowerCase().includes(normalizedQuery) || children.length > 0) {
+      return [{ ...node, children }];
+    }
+    return [];
+  });
+}
+
+function buildTagAncestorPaths(path: string): string[] {
+  const parts = path.split("/").filter(Boolean);
+  return parts.slice(0, -1).map((_, index) => parts.slice(0, index + 1).join("/"));
+}
+
+function readLibraryTagTreeState(): LibraryTagTreeState {
+  try {
+    const raw = window.localStorage.getItem(LIBRARY_TAG_TREE_STATE_KEY);
+    if (!raw) {
+      return { expandedPaths: [] };
+    }
+    const parsed = JSON.parse(raw) as Partial<LibraryTagTreeState>;
+    return {
+      expandedPaths: Array.isArray(parsed.expandedPaths)
+        ? parsed.expandedPaths.filter((item): item is string => typeof item === "string")
+        : [],
+    };
+  } catch {
+    return { expandedPaths: [] };
+  }
+}
+
+function writeLibraryTagTreeState(state: LibraryTagTreeState): void {
+  try {
+    window.localStorage.setItem(LIBRARY_TAG_TREE_STATE_KEY, JSON.stringify(state));
+  } catch {
+    // localStorage 不可用时忽略，树默认折叠即可。
+  }
+}
+
+function areStringArraysEqual(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((item, index) => item === right[index]);
+}
+
+function normalizeFavoriteTagPaths(tagPaths: string[]): string[] {
+  return Array.from(new Set(tagPaths.map((item) => item.trim()).filter(Boolean)));
+}
+
+function buildTagFilterFavoritePath(tagPaths: string[]): string {
+  return normalizeFavoriteTagPaths(tagPaths).join("|");
 }
 
 function resolveFavoriteKindLabel(kind: LibraryFavoriteKind): string {
@@ -4396,6 +5896,13 @@ function handleFolderClick(library: LibraryState, path: string): void {
     return;
   }
   library.selectFolderEntry(path);
+}
+
+function resolveLibraryEntryKey(entry: LibraryEntry): string {
+  if (entry.kind === "document") {
+    return `document:${entry.documentId}`;
+  }
+  return `${entry.kind}:${entry.path}`;
 }
 
 function resolveContextPath(target: LibraryContextMenuTarget): string {
@@ -4694,6 +6201,74 @@ function getParentPath(path: string): string | null {
   return segments.length ? segments.join("/") : null;
 }
 
+function resolveAssignedTagIds(
+  details: LibraryDocumentTagDetails | LibraryFolderTagDetails,
+): string[] {
+  return "manualTagIds" in details ? details.manualTagIds : details.bindingTagIds;
+}
+
+function isAssignableLibraryTag(tag: LibraryTagNode | LibraryTagDetailWithRules): boolean {
+  const detail = tag as LibraryTagDetailWithRules;
+  if (detail.status && detail.status !== "active") {
+    return false;
+  }
+  const rootType = tag.rootType.trim().toLowerCase();
+  return rootType !== "类型" && rootType !== "type" && rootType !== "时间" && rootType !== "time";
+}
+
+function normalizeTagPathInput(value: string): string {
+  return value
+    .trim()
+    .replace(/^\/+/, "")
+    .replace(/\/+$/g, "")
+    .split("/")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .join("/");
+}
+
+function compactDocumentTagPaths(paths: string[]): string[] {
+  const uniquePaths = Array.from(new Set(paths.map((tagPath) => tagPath.trim()).filter(Boolean)));
+  const recentTimeTags = uniquePaths
+    .map((tagPath) => ({ path: tagPath, days: resolveRecentTimeTagDays(tagPath) }))
+    .filter((item): item is { path: string; days: number } => item.days !== null);
+  const keptRecentPath = recentTimeTags.length > 0
+    ? recentTimeTags.reduce((smallest, item) => item.days < smallest.days ? item : smallest).path
+    : null;
+  return uniquePaths.filter((tagPath) => {
+    const days = resolveRecentTimeTagDays(tagPath);
+    return days === null || tagPath === keptRecentPath;
+  });
+}
+
+function resolveRecentTimeTagDays(path: string): number | null {
+  const normalized = path.trim();
+  const matched = /^时间\/最近(\d+)天$/.exec(normalized) ?? /^time\/recent-(\d+)-days$/i.exec(normalized);
+  if (!matched) {
+    return null;
+  }
+  const days = Number.parseInt(matched[1] ?? "", 10);
+  return Number.isFinite(days) ? days : null;
+}
+
+function uniqueStringList(values: string[]): string[] {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+}
+
+function buildTagColorStyle(path: string): CSSProperties {
+  return {
+    "--affairs-tag-hue": String(resolveTagHue(path)),
+  } as CSSProperties;
+}
+
+function resolveTagHue(value: string): number {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) % 360;
+  }
+  return hash;
+}
+
 function splitTagInput(value: string): string[] {
   return value
     .split(/[,\n，]/)
@@ -4793,6 +6368,173 @@ function renderDocumentShape(filePath: string, mode: "grid" | "row" = "grid") {
       <span className="affairs-document-lines" />
       <span className="affairs-document-badge">{visual.badge}</span>
     </span>
+  );
+}
+
+function renderXFileBrandIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M4 7.5A2.5 2.5 0 0 1 6.5 5H10l2 2h5.5A2.5 2.5 0 0 1 20 9.5v8A2.5 2.5 0 0 1 17.5 20h-11A2.5 2.5 0 0 1 4 17.5z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.9"
+      />
+      <path d="M4 9h16" fill="none" stroke="currentColor" strokeWidth="1.9" />
+    </svg>
+  );
+}
+
+function renderTagManagerIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      <path
+        d="M2.2 7.2V3.5c0-.7.6-1.3 1.3-1.3h3.7c.4 0 .7.1 1 .4l5.4 5.4a1.4 1.4 0 0 1 0 2l-3.6 3.6a1.4 1.4 0 0 1-2 0L2.6 8.2c-.3-.3-.4-.6-.4-1Z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.3"
+      />
+      <path d="M10.9 3.2v3M9.4 4.7h3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+      <circle cx="5.3" cy="5.3" r="0.9" fill="currentColor" />
+    </svg>
+  );
+}
+
+function renderResetFilterIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function renderFavoriteIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      <path
+        d="M8 2.1l1.7 3.4 3.8.6-2.8 2.7.7 3.8L8 10.8l-3.4 1.8.7-3.8-2.8-2.7 3.8-.6z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function resolveDocumentFolderPath(filePath: string): string | null {
+  const segments = filePath.split("/").filter(Boolean);
+  if (segments.length <= 1) {
+    return null;
+  }
+  return segments.slice(0, -1).join("/");
+}
+
+function renderHighlightedText(value: string, keyword: string): ReactNode {
+  const keywords = splitLibrarySearchKeywords(keyword);
+  if (keywords.length === 0) {
+    return value;
+  }
+
+  const lowerValue = value.toLowerCase();
+  const parts: ReactNode[] = [];
+  let cursor = 0;
+
+  while (cursor < value.length) {
+    const nextMatch = findNextLibrarySearchHighlight(lowerValue, keywords, cursor);
+    if (!nextMatch) {
+      parts.push(value.slice(cursor));
+      break;
+    }
+    if (nextMatch.index > cursor) {
+      parts.push(value.slice(cursor, nextMatch.index));
+    }
+    parts.push(
+      <mark key={`${nextMatch.index}:${nextMatch.keyword}`} className="library-search-highlight">
+        {value.slice(nextMatch.index, nextMatch.index + nextMatch.keyword.length)}
+      </mark>,
+    );
+    cursor = nextMatch.index + nextMatch.keyword.length;
+  }
+
+  return parts.length ? parts : value;
+}
+
+function splitLibrarySearchKeywords(value: string): string[] {
+  const seen = new Set<string>();
+  return value
+    .trim()
+    .split(/\s+/)
+    .map((item) => item.trim().toLowerCase())
+    .filter((item) => item.length > 0)
+    .filter((item) => {
+      if (seen.has(item)) {
+        return false;
+      }
+      seen.add(item);
+      return true;
+    });
+}
+
+function findNextLibrarySearchHighlight(
+  lowerValue: string,
+  keywords: string[],
+  cursor: number,
+): { index: number; keyword: string } | null {
+  let matchedIndex = -1;
+  let matchedKeyword = "";
+  for (const keyword of keywords) {
+    const index = lowerValue.indexOf(keyword, cursor);
+    if (index < 0) {
+      continue;
+    }
+    if (
+      matchedIndex < 0 ||
+      index < matchedIndex ||
+      (index === matchedIndex && keyword.length > matchedKeyword.length)
+    ) {
+      matchedIndex = index;
+      matchedKeyword = keyword;
+    }
+  }
+  return matchedIndex < 0 ? null : { index: matchedIndex, keyword: matchedKeyword };
+}
+
+function renderTagTreeChevronIcon(expanded: boolean) {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      <path
+        d={expanded ? "M4.2 6.2 8 10l3.8-3.8" : "M6.2 4.2 10 8l-3.8 3.8"}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function renderDetachWindowIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+      <path
+        d="M5 3.5h7.5V11M12.5 3.5 7.8 8.2M3.5 6.5v6h6"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function renderPlusIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+    </svg>
   );
 }
 

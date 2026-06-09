@@ -10,12 +10,14 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@x-file/shared": "workspace:*",
     "@tauri-apps/api": "^2.2.0",
     "@vitejs/plugin-react": "^4.3.4",
-    "vite": "^6.0.7",
+    "@x-file/shared": "workspace:*",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "vite": "^6.0.7"
   },
   "devDependencies": {
     "@types/react": "^19.0.2",
