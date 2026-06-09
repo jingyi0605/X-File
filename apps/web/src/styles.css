@@ -2026,6 +2026,46 @@ body[data-workbench-macos-vibrancy="true"] #root {
   gap: 6px;
 }
 
+.library-tag-manager-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.9fr) minmax(280px, 1.1fr);
+  gap: 16px;
+  min-height: 420px;
+}
+
+.library-tag-manager-list {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  max-height: 420px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.library-tag-manager-list button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 34px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-secondary);
+  text-align: left;
+}
+
+.library-tag-manager-list button.active,
+.library-tag-manager-list button:hover {
+  border-color: color-mix(in srgb, var(--accent) 18%, var(--panel-border));
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  color: var(--text-primary);
+}
+
+.library-tag-manager-list small {
+  color: var(--text-tertiary);
+}
+
 .workbench-shell[data-os-family="macos"][data-overlay-titlebar="true"] .affairs-library-context-menu,
 .workbench-shell[data-os-family="macos"][data-overlay-titlebar="true"] .affairs-library-context-submenu-panel,
 body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] .affairs-library-context-menu,

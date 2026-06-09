@@ -8,10 +8,11 @@ import type {
   LibraryFavoriteRecord,
   LibraryFolderTagDetails,
   LibraryIndexState,
-  LibraryPreview
+  LibraryPreview,
+  LibraryTagDetailWithRules
 } from "@x-file/shared";
 
-import { browseHostDirectories, getDocumentTagDetails, getFolderTagDetails, saveDocumentTags, saveFolderTags } from "../../api/library";
+import { browseHostDirectories, createLibraryTag, deleteLibraryTag, getDocumentTagDetails, getFolderTagDetails, listLibraryTagDetails, saveDocumentTags, saveFolderTags, updateLibraryTag } from "../../api/library";
 import { toApiErrorMessage } from "../../api/http";
 import { t } from "../../i18n";
 import { formatBytes, formatDateTime, getPathName } from "../../shared/format";
@@ -128,6 +129,7 @@ export function LibraryPage({ onOpenSettings, onOpenHealth, platformData }: Libr
   const [pendingRename, setPendingRename] = useState<PendingRenameState | null>(null);
   const [pendingDelete, setPendingDelete] = useState<LibraryContextMenuTarget | null>(null);
   const [pendingTagAssignment, setPendingTagAssignment] = useState<PendingTagAssignmentTarget | null>(null);
+  const [tagManagerOpen, setTagManagerOpen] = useState(false);
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -305,7 +307,7 @@ export function LibraryPage({ onOpenSettings, onOpenHealth, platformData }: Libr
   return (
     <main className="app-shell workbench-shell xfile-workbench-shell" data-runtime-platform={platformData.runtimePlatform} data-os-family={platformData.osFamily} data-overlay-titlebar={platformData.overlayTitlebar ? "true" : undefined}>
       <section className="workbench-window xfile-workbench-window">
-        <LibraryDesktopSidebar library={library} onOpenSettings={onOpenSettings} onOpenHealth={onOpenHealth} />
+        <LibraryDesktopSidebar library={library} onOpenSettings={onOpenSettings} onOpenHealth={onOpenHealth} onOpenTagManager={() => setTagManagerOpen(true)} />
         <section className="affairs-main-panel">
           {library.error ? (
             <div className="affairs-library-error-strip">
@@ -346,6 +348,7 @@ export function LibraryPage({ onOpenSettings, onOpenHealth, platformData }: Libr
       {pendingRename ? <LibraryRenameModal library={library} state={pendingRename} onChange={setPendingRename} onClose={() => setPendingRename(null)} /> : null}
       {pendingDelete ? <LibraryDeleteModal library={library} target={pendingDelete} onClose={() => setPendingDelete(null)} /> : null}
       {pendingTagAssignment ? <LibraryTagAssignmentModal library={library} target={pendingTagAssignment} onClose={() => setPendingTagAssignment(null)} /> : null}
+      {tagManagerOpen ? <LibraryTagManagerModal library={library} onClose={() => setTagManagerOpen(false)} /> : null}
     </main>
   );
 }
@@ -353,11 +356,13 @@ export function LibraryPage({ onOpenSettings, onOpenHealth, platformData }: Libr
 function LibraryDesktopSidebar({
   library,
   onOpenSettings,
-  onOpenHealth
+  onOpenHealth,
+  onOpenTagManager
 }: {
   library: LibraryState;
   onOpenSettings: () => void;
   onOpenHealth: () => void;
+  onOpenTagManager: () => void;
 }) {
   const snapshot = library.snapshot;
   const currentFolder = library.viewState.selectedFolderPath;
@@ -426,6 +431,7 @@ function LibraryDesktopSidebar({
                   </span>
                   <span className="affairs-sidebar-block-count">{tags.length}</span>
                 </div>
+                <button type="button" className="affairs-sidebar-footer-button" onClick={onOpenTagManager}>{renderTagIcon()}{t("libraryTagManagerAction")}</button>
                 <div className="affairs-sidebar-list affairs-sidebar-list-plain affairs-tag-tree-list">
                   <SidebarPlainItem
                     active={library.viewState.browseMode === "tag" && !selectedTagPath}
@@ -2086,6 +2092,188 @@ function LibraryTagAssignmentModal({ library, target, onClose }: { library: Libr
   );
 }
 
+function LibraryTagManagerModal({ library, onClose }: { library: LibraryState; onClose: () => void }) {
+  const [tags, setTags] = useState<LibraryTagDetailWithRules[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [parentId, setParentId] = useState<string | null>(null);
+  const [status, setStatus] = useState<"active" | "disabled">("active");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const selected = tags.find((tag) => tag.id === selectedId) ?? null;
+
+  async function loadTags(nextSelectedId = selectedId): Promise<void> {
+    setLoading(true);
+    setError(null);
+    try {
+      const items = await listLibraryTagDetails(true);
+      setTags(items);
+      const nextSelected = items.find((tag) => tag.id === nextSelectedId) ?? items[0] ?? null;
+      applySelectedTag(nextSelected);
+    } catch (err) {
+      setError(toApiErrorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function applySelectedTag(tag: LibraryTagDetailWithRules | null): void {
+    setSelectedId(tag?.id ?? null);
+    setName(tag?.name ?? "");
+    setDescription(tag?.description ?? "");
+    setParentId(tag?.parentId ?? null);
+    setStatus(tag?.status ?? "active");
+  }
+
+  useEffect(() => {
+    void loadTags(null);
+  }, []);
+
+  async function createRootTag(): Promise<void> {
+    setSaving(true);
+    setError(null);
+    try {
+      const tag = await createLibraryTag({ name: t("libraryTagNewName"), parentId: null, description: null, status: "active" });
+      await loadTags(tag.id);
+    } catch (err) {
+      setError(toApiErrorMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function createChildTag(): Promise<void> {
+    if (!selected) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const tag = await createLibraryTag({ name: t("libraryTagNewChildName"), parentId: selected.id, description: null, status: "active" });
+      await loadTags(tag.id);
+    } catch (err) {
+      setError(toApiErrorMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveSelected(): Promise<void> {
+    if (!selected) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const tag = await updateLibraryTag(selected.id, {
+        name,
+        parentId,
+        description: description.trim() || null,
+        status
+      });
+      await loadTags(tag.id);
+      await library.reload();
+      await library.reloadDocuments(true);
+    } catch (err) {
+      setError(toApiErrorMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteSelected(): Promise<void> {
+    if (!selected || !window.confirm(t("libraryTagDeleteConfirm", { tag: selected.path }))) {
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await deleteLibraryTag(selected.id);
+      await loadTags(null);
+      await library.reload();
+      await library.reloadDocuments(true);
+    } catch (err) {
+      setError(toApiErrorMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const parentOptions = tags.filter((tag) => tag.id !== selectedId && !isTagDescendant(tags, tag.id, selectedId));
+
+  return (
+    <DesktopModal
+      title={t("libraryTagManagerTitle")}
+      description={t("libraryTagManagerDescription")}
+      onClose={onClose}
+      dismissible={!saving}
+      footer={(
+        <ModalActions>
+          <button type="button" className="secondary-button" disabled={saving} onClick={onClose}>{t("actionClose")}</button>
+        </ModalActions>
+      )}
+    >
+      {error ? <div className="affairs-binding-hint affairs-create-error">{error}</div> : null}
+      <div className="library-tag-manager-grid">
+        <ModalSection
+          heading={t("libraryTagTreeSectionTitle")}
+          actions={<button type="button" className="secondary-button" disabled={saving} onClick={() => void createRootTag()}>{t("libraryTagCreateRootAction")}</button>}
+        >
+          {loading ? <ModalEmptyState title={t("libraryTagAssignmentLoading")} compact /> : null}
+          {!loading && tags.length === 0 ? <ModalEmptyState title={t("libraryTagTreeEmpty")} compact /> : null}
+          <div className="library-tag-manager-list">
+            {tags.map((tag) => (
+              <button
+                key={tag.id}
+                type="button"
+                className={selectedId === tag.id ? "active" : undefined}
+                style={{ paddingLeft: `${12 + tag.path.split("/").length * 12}px` }}
+                onClick={() => applySelectedTag(tag)}
+              >
+                <span>{tag.name}</span>
+                <small>{tag.status === "disabled" ? t("libraryTagDisabled") : `${tag.documentCount}`}</small>
+              </button>
+            ))}
+          </div>
+        </ModalSection>
+
+        <ModalSection
+          heading={selected ? t("libraryTagEditorEditTitle") : t("libraryTagEditorEmptyTitle")}
+          actions={selected ? <button type="button" className="secondary-button" disabled={saving} onClick={() => void createChildTag()}>{t("libraryTagCreateChildAction")}</button> : null}
+        >
+          {!selected ? <ModalEmptyState title={t("libraryTagEditorEmptyDescription")} compact /> : (
+            <>
+              <ModalField label={t("libraryTagNameLabel")}>
+                <input value={name} onChange={(event) => setName(event.target.value)} />
+              </ModalField>
+              <ModalField label={t("libraryTagParentLabel")}>
+                <select value={parentId ?? ""} onChange={(event) => setParentId(event.target.value || null)}>
+                  <option value="">{t("libraryTagParentRootOption")}</option>
+                  {parentOptions.map((tag) => (
+                    <option key={tag.id} value={tag.id}>{tag.path}</option>
+                  ))}
+                </select>
+              </ModalField>
+              <ModalField label={t("libraryTagDescriptionLabel")}>
+                <textarea value={description} rows={3} onChange={(event) => setDescription(event.target.value)} />
+              </ModalField>
+              <ModalField label={t("libraryTagStatusLabel")}>
+                <select value={status} onChange={(event) => setStatus(event.target.value === "disabled" ? "disabled" : "active")}>
+                  <option value="active">{t("libraryTagStatusActive")}</option>
+                  <option value="disabled">{t("libraryTagStatusDisabled")}</option>
+                </select>
+              </ModalField>
+              <ModalActions align="between">
+                <button type="button" className="danger-button" disabled={saving} onClick={() => void deleteSelected()}>{t("libraryTagDeleteAction")}</button>
+                <button type="button" className="primary-button" disabled={saving} onClick={() => void saveSelected()}>{saving ? t("settingsSaving") : t("libraryTagSaveAction")}</button>
+              </ModalActions>
+            </>
+          )}
+        </ModalSection>
+      </div>
+    </DesktopModal>
+  );
+}
+
 function PreviewPanel({ preview, loading, error }: { preview: LibraryPreview | null; loading: boolean; error: string | null }) {
   if (loading) {
     return <div className="preview-box">{t("libraryDocumentsLoading")}</div>;
@@ -2523,7 +2711,7 @@ function getParentPath(path: string): string | null {
 }
 
 function splitTagInput(value: string): string[] {
-  return value.split(",").map((item) => item.trim()).filter(Boolean);
+  return value.split(/[,\n，]/).map((item) => item.trim()).filter(Boolean);
 }
 
 function resolveTagAssignmentInitialValue(details: LibraryDocumentTagDetails | LibraryFolderTagDetails): string {
@@ -2535,6 +2723,20 @@ function resolveTagAssignmentInitialValue(details: LibraryDocumentTagDetails | L
 
 function appendTagPath(current: string, tagPath: string): string {
   return [...new Set([...splitTagInput(current), tagPath.trim()].filter(Boolean))].join(", ");
+}
+
+function isTagDescendant(tags: LibraryTagDetailWithRules[], candidateId: string, ancestorId: string | null): boolean {
+  if (!ancestorId) {
+    return false;
+  }
+  let current = tags.find((tag) => tag.id === candidateId) ?? null;
+  while (current?.parentId) {
+    if (current.parentId === ancestorId) {
+      return true;
+    }
+    current = tags.find((tag) => tag.id === current?.parentId) ?? null;
+  }
+  return false;
 }
 
 function resolveStatusDotState(state: LibraryIndexState | undefined): string {
