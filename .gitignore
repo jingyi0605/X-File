@@ -1,0 +1,14 @@
+node_modules/
+dist/
+build/
+target/
+.out/
+.turbo/
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+.x-file/
+apps/desktop/src-tauri/resources/x-file-server/
+apps/desktop/src-tauri/resources/x-file-runtime/
