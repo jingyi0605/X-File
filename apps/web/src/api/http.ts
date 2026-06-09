@@ -70,6 +70,10 @@ function resolveApiUrl(path: string): string {
     return path;
   }
 
+  if (import.meta.env.DEV) {
+    return new URL(path, DEFAULT_API_BASE_URL).toString();
+  }
+
   return new URL(path, DEFAULT_API_BASE_URL).toString();
 }
 
