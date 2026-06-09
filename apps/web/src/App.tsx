@@ -40,7 +40,6 @@ export function App() {
         <LibraryPage
           key={libraryReloadKey}
           onOpenSettings={() => setSettingsOpen(true)}
-          onOpenHealth={() => setSection("health")}
           platformData={platformData}
         />
         {settingsOpen ? (

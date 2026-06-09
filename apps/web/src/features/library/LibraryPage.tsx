@@ -67,7 +67,6 @@ export interface WorkbenchPlatformData {
 
 interface LibraryPageProps {
   onOpenSettings: () => void;
-  onOpenHealth: () => void;
   platformData: WorkbenchPlatformData;
 }
 
@@ -151,7 +150,6 @@ interface FinderResizeState {
 
 export function LibraryPage({
   onOpenSettings,
-  onOpenHealth,
   platformData,
 }: LibraryPageProps) {
   const library = useLibraryState();
@@ -394,7 +392,6 @@ export function LibraryPage({
         <LibraryDesktopSidebar
           library={library}
           onOpenSettings={onOpenSettings}
-          onOpenHealth={onOpenHealth}
           onOpenTagManager={() => setTagManagerOpen(true)}
         />
         <section className="affairs-main-panel">
@@ -488,12 +485,10 @@ export function LibraryPage({
 function LibraryDesktopSidebar({
   library,
   onOpenSettings,
-  onOpenHealth,
   onOpenTagManager,
 }: {
   library: LibraryState;
   onOpenSettings: () => void;
-  onOpenHealth: () => void;
   onOpenTagManager: () => void;
 }) {
   const snapshot = library.snapshot;
@@ -503,50 +498,6 @@ function LibraryDesktopSidebar({
 
   return (
     <aside className="workbench-sidebar affairs-layout-sidebar">
-      <div className="workbench-traffic-lights" aria-hidden="true">
-        <span className="red" />
-        <span className="yellow" />
-        <span className="green" />
-      </div>
-      <div className="workbench-sidebar-tools" aria-label={t("appTitle")}>
-        <button
-          type="button"
-          className="workbench-tool-icon"
-          aria-label={t("navLibrary")}
-        >
-          {renderSidebarGlyph("library")}
-        </button>
-        <button
-          type="button"
-          className="workbench-tool-icon"
-          aria-label={t("navHealth")}
-          onClick={onOpenHealth}
-        >
-          {renderSidebarGlyph("health")}
-        </button>
-        <button
-          type="button"
-          className="workbench-tool-icon"
-          aria-label={t("navSettings")}
-          onClick={onOpenSettings}
-        >
-          {renderSidebarGlyph("settings")}
-        </button>
-      </div>
-
-      <div
-        className="workbench-mode-switch"
-        role="group"
-        aria-label={t("xfileModeSwitchLabel")}
-      >
-        <button type="button" disabled>
-          {t("xfileCodeMode")}
-        </button>
-        <button type="button" className="active">
-          {t("xfileLibraryMode")}
-        </button>
-      </div>
-
       <div className="affairs-sidebar-panel">
         <div className="affairs-sidebar-shell">
           <div className="affairs-sidebar-content">
@@ -665,10 +616,9 @@ function LibraryDesktopSidebar({
               className="workbench-sidebar-footer-button"
               onClick={onOpenSettings}
             >
-              {renderSidebarGlyph("settings")}
+              {renderSettingsIcon()}
               {t("navSettings")}
             </button>
-            <span className="workbench-device-pill">{t("appTitle")}</span>
           </footer>
         </div>
       </div>
@@ -4872,24 +4822,6 @@ function renderTagIcon() {
       <circle cx="5.3" cy="5.3" r="1" fill="currentColor" />
     </svg>
   );
-}
-
-function renderSidebarGlyph(kind: "library" | "health" | "settings") {
-  if (kind === "settings") return renderSettingsIcon();
-  if (kind === "health")
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path
-          d="M2.5 8.5h2.2l1.2-3.1 2.2 6.2 1.7-4.1h3.7"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
-    );
-  return renderMiniFolderIcon();
 }
 
 function renderHomeIcon() {
