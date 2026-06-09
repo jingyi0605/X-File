@@ -1,12 +1,25 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::env;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::menu::{MenuBuilder, MenuEvent, MenuItemBuilder};
+use tauri::menu::{
+    Menu, MenuBuilder, MenuEvent, MenuItemBuilder, SubmenuBuilder,
+};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, WindowEvent};
+
+#[cfg(target_os = "macos")]
+use {
+    objc2::MainThreadMarker,
+    objc2_app_kit::{
+        NSAppearance, NSAppearanceCustomization, NSAppearanceNameVibrantLight, NSAutoresizingMaskOptions,
+        NSViewLayerContentsRedrawPolicy, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
+        NSVisualEffectState, NSVisualEffectView, NSWindow, NSWindowOrderingMode,
+    },
+    objc2_foundation::{NSPoint, NSRect, NSSize},
+};
 
 const MAIN_WINDOW_LABEL: &str = "main";
 const MENU_SHOW_WINDOW: &str = "show_window";
@@ -16,6 +29,22 @@ const MENU_DISABLE_PERSISTENCE: &str = "disable_persistence";
 const MENU_START_BACKEND: &str = "start_backend";
 const MENU_STOP_BACKEND: &str = "stop_backend";
 const MENU_QUIT: &str = "quit";
+const LIBRARY_CONTEXT_MENU_ID_PREFIX: &str = "xfile_library_context:";
+const LIBRARY_CONTEXT_MENU_ACTION_EVENT: &str = "x-file-library-context-menu-action";
+
+#[cfg(target_os = "macos")]
+const MACOS_NATIVE_LEFT_SIDEBAR_WIDTH: f64 = 272.0;
+
+#[cfg(target_os = "macos")]
+const MACOS_NATIVE_RIGHT_SIDEBAR_WIDTH: f64 = 340.0;
+
+#[cfg(target_os = "macos")]
+const MACOS_NATIVE_LEFT_SIDEBAR_AUTOREZING_MASK: NSAutoresizingMaskOptions =
+    NSAutoresizingMaskOptions::ViewMaxXMargin.union(NSAutoresizingMaskOptions::ViewHeightSizable);
+
+#[cfg(target_os = "macos")]
+const MACOS_NATIVE_RIGHT_SIDEBAR_AUTOREZING_MASK: NSAutoresizingMaskOptions =
+    NSAutoresizingMaskOptions::ViewMinXMargin.union(NSAutoresizingMaskOptions::ViewHeightSizable);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -260,6 +289,7 @@ struct DesktopState {
     backend_persistent: bool,
     is_quitting: bool,
     backend: BackendProcessManager,
+    native_context_menu_selection: Option<String>,
 }
 
 impl DesktopState {
@@ -268,6 +298,7 @@ impl DesktopState {
             backend_persistent: false,
             is_quitting: false,
             backend: BackendProcessManager::from_env(),
+            native_context_menu_selection: None,
         }
     }
 }
@@ -302,6 +333,31 @@ struct BackendPolicy {
 struct DesktopShellStatus {
     policy: BackendPolicy,
     backend_process: BackendProcessSnapshot,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeContextMenuItem {
+    id: String,
+    label: String,
+    disabled: Option<bool>,
+    items: Option<Vec<NativeContextMenuItem>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeContextMenuRequest {
+    items: Vec<NativeContextMenuItem>,
+    x: Option<f64>,
+    y: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeContextMenuResult {
+    supported: bool,
+    selected_action_id: Option<String>,
+    fallback_reason: Option<String>,
 }
 
 #[tauri::command]
@@ -351,6 +407,169 @@ fn http_service_hint() -> BackendArchitecture {
         tray_implemented: true,
         note: "桌面壳已实现托盘菜单、关闭窗口隐藏和后端子进程托管入口；发布包会优先使用随包携带的 Node 运行时和生产后端资源。",
     }
+}
+
+#[tauri::command]
+fn open_path(path: String) -> Result<(), String> {
+    let normalized = path.trim();
+    if normalized.is_empty() {
+        return Err("路径不能为空".to_string());
+    }
+
+    let mut command = build_open_path_command(normalized);
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("打开本机路径失败：{error}"))
+}
+
+#[tauri::command]
+fn show_library_context_menu(
+    app: AppHandle,
+    state: tauri::State<'_, Mutex<DesktopState>>,
+    request: NativeContextMenuRequest,
+) -> Result<NativeContextMenuResult, String> {
+    if request.items.is_empty() {
+        return Ok(NativeContextMenuResult {
+            supported: true,
+            selected_action_id: None,
+            fallback_reason: Some("菜单项为空，已跳过原生菜单。".to_string()),
+        });
+    }
+
+    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        return Ok(NativeContextMenuResult {
+            supported: false,
+            selected_action_id: None,
+            fallback_reason: Some("找不到主窗口，回退到 Web 右键菜单。".to_string()),
+        });
+    };
+
+    {
+        let mut state = lock_desktop_state(&state);
+        state.native_context_menu_selection = None;
+    }
+
+    let menu = build_native_context_menu(&app, &request.items)?;
+    let popup_result = match (request.x, request.y) {
+        (Some(x), Some(y)) => window.popup_menu_at(&menu, tauri::LogicalPosition::new(x, y)),
+        _ => window.popup_menu(&menu),
+    };
+
+    if let Err(error) = popup_result {
+        return Ok(NativeContextMenuResult {
+            supported: false,
+            selected_action_id: None,
+            fallback_reason: Some(format!("原生菜单打开失败，回退到 Web 右键菜单：{error}")),
+        });
+    }
+
+    let selected_action_id = {
+        let mut state = lock_desktop_state(&state);
+        state.native_context_menu_selection.take()
+    };
+
+    Ok(NativeContextMenuResult {
+        supported: true,
+        selected_action_id,
+        fallback_reason: None,
+    })
+}
+
+fn build_native_context_menu(
+    app: &AppHandle,
+    items: &[NativeContextMenuItem],
+) -> Result<Menu<tauri::Wry>, String> {
+    let menu = Menu::new(app).map_err(|error| format!("创建原生菜单失败：{error}"))?;
+    append_native_context_menu_items(app, &menu, items)?;
+    Ok(menu)
+}
+
+fn append_native_context_menu_items(
+    app: &AppHandle,
+    menu: &Menu<tauri::Wry>,
+    items: &[NativeContextMenuItem],
+) -> Result<(), String> {
+    for item in items {
+        if item.items.as_ref().is_some_and(|children| !children.is_empty()) {
+            let submenu = build_native_context_submenu(app, item)?;
+            menu.append(&submenu)
+                .map_err(|error| format!("添加原生子菜单失败：{error}"))?;
+            continue;
+        }
+
+        let menu_item = MenuItemBuilder::with_id(
+            format!("{LIBRARY_CONTEXT_MENU_ID_PREFIX}{}", item.id),
+            item.label.as_str(),
+        )
+        .enabled(!item.disabled.unwrap_or(false))
+        .build(app)
+        .map_err(|error| format!("创建原生菜单项失败：{error}"))?;
+
+        menu.append(&menu_item)
+            .map_err(|error| format!("添加原生菜单项失败：{error}"))?;
+    }
+
+    Ok(())
+}
+
+fn build_native_context_submenu(
+    app: &AppHandle,
+    item: &NativeContextMenuItem,
+) -> Result<tauri::menu::Submenu<tauri::Wry>, String> {
+    let submenu = SubmenuBuilder::with_id(
+        app,
+        format!("{LIBRARY_CONTEXT_MENU_ID_PREFIX}{}", item.id),
+        item.label.as_str(),
+    )
+    .enabled(!item.disabled.unwrap_or(false))
+    .build()
+    .map_err(|error| format!("创建原生子菜单失败：{error}"))?;
+
+    for child in item.items.as_deref().unwrap_or(&[]) {
+        if child.items.as_ref().is_some_and(|children| !children.is_empty()) {
+            let child_submenu = build_native_context_submenu(app, child)?;
+            submenu
+                .append(&child_submenu)
+                .map_err(|error| format!("添加原生子菜单失败：{error}"))?;
+            continue;
+        }
+
+        let child_item = MenuItemBuilder::with_id(
+            format!("{LIBRARY_CONTEXT_MENU_ID_PREFIX}{}", child.id),
+            child.label.as_str(),
+        )
+        .enabled(!child.disabled.unwrap_or(false))
+        .build(app)
+        .map_err(|error| format!("创建原生子菜单项失败：{error}"))?;
+
+        submenu
+            .append(&child_item)
+            .map_err(|error| format!("添加原生子菜单项失败：{error}"))?;
+    }
+
+    Ok(submenu)
+}
+
+#[cfg(target_os = "macos")]
+fn build_open_path_command(path: &str) -> Command {
+    let mut command = Command::new("open");
+    command.arg(path);
+    command
+}
+
+#[cfg(target_os = "windows")]
+fn build_open_path_command(path: &str) -> Command {
+    let mut command = Command::new("cmd");
+    command.args(["/C", "start", "", path]);
+    command
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+fn build_open_path_command(path: &str) -> Command {
+    let mut command = Command::new("xdg-open");
+    command.arg(path);
+    command
 }
 
 fn backend_policy(persistent: bool) -> BackendPolicy {
@@ -452,7 +671,17 @@ fn quit_application(app: &AppHandle) {
 }
 
 fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
-    match event.id().as_ref() {
+    let id = event.id().as_ref();
+    if let Some(action_id) = id.strip_prefix(LIBRARY_CONTEXT_MENU_ID_PREFIX) {
+        if let Some(state) = app.try_state::<Mutex<DesktopState>>() {
+            let mut state = state.lock().expect("桌面状态锁已损坏");
+            state.native_context_menu_selection = Some(action_id.to_string());
+        }
+        let _ = app.emit(LIBRARY_CONTEXT_MENU_ACTION_EVENT, action_id);
+        return;
+    }
+
+    match id {
         MENU_SHOW_WINDOW => show_main_window(app),
         MENU_HIDE_WINDOW => hide_main_window(app),
         MENU_ENABLE_PERSISTENCE => {
@@ -546,6 +775,73 @@ fn configure_backend_process(app: &tauri::App) {
     }
 }
 
+
+#[cfg(target_os = "macos")]
+fn configure_macos_native_glass_sidebars(app: &tauri::App) -> tauri::Result<()> {
+    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        return Ok(());
+    };
+
+    let window_for_glass = window.clone();
+
+    window
+        .run_on_main_thread(move || unsafe {
+            let Ok(ns_window_ptr) = window_for_glass.ns_window() else {
+                return;
+            };
+            let ns_window: &NSWindow = &*ns_window_ptr.cast();
+            let Some(content_view) = ns_window.contentView() else {
+                return;
+            };
+            let content_frame = content_view.frame();
+            let content_width = content_frame.size.width.max(0.0);
+            let content_height = content_frame.size.height.max(0.0);
+            let appearance = NSAppearance::appearanceNamed(NSAppearanceNameVibrantLight);
+
+            let left_frame = NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(MACOS_NATIVE_LEFT_SIDEBAR_WIDTH.min(content_width), content_height),
+            );
+            let right_width = MACOS_NATIVE_RIGHT_SIDEBAR_WIDTH.min(content_width);
+            let right_frame = NSRect::new(
+                NSPoint::new((content_width - right_width).max(0.0), 0.0),
+                NSSize::new(right_width, content_height),
+            );
+
+            add_macos_native_sidebar_view(
+                &content_view,
+                left_frame,
+                MACOS_NATIVE_LEFT_SIDEBAR_AUTOREZING_MASK,
+                appearance.as_deref(),
+            );
+            add_macos_native_sidebar_view(
+                &content_view,
+                right_frame,
+                MACOS_NATIVE_RIGHT_SIDEBAR_AUTOREZING_MASK,
+                appearance.as_deref(),
+            );
+        })
+        .map_err(|error| tauri::Error::Anyhow(error.into()))
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn add_macos_native_sidebar_view(
+    content_view: &objc2_app_kit::NSView,
+    frame: NSRect,
+    autoresizing_mask: NSAutoresizingMaskOptions,
+    appearance: Option<&NSAppearance>,
+) {
+    let mtm = MainThreadMarker::new().expect("创建 macOS 原生侧栏必须在主线程执行");
+    let effect_view = NSVisualEffectView::initWithFrame(mtm.alloc(), frame);
+    effect_view.setMaterial(NSVisualEffectMaterial::Sidebar);
+    effect_view.setBlendingMode(NSVisualEffectBlendingMode::WithinWindow);
+    effect_view.setState(NSVisualEffectState::FollowsWindowActiveState);
+    effect_view.setAppearance(appearance);
+    effect_view.setAutoresizingMask(autoresizing_mask);
+    effect_view.setLayerContentsRedrawPolicy(NSViewLayerContentsRedrawPolicy::DuringViewResize);
+    content_view.addSubview_positioned_relativeTo(&effect_view, NSWindowOrderingMode::Below, None);
+}
+
 fn should_autostart_backend() -> bool {
     env::var("X_FILE_BACKEND_AUTOSTART")
         .map(|value| value != "0" && value.to_lowercase() != "false")
@@ -559,6 +855,8 @@ pub fn run() {
         .setup(|app| {
             setup_tray(app)?;
             configure_backend_process(app);
+            #[cfg(target_os = "macos")]
+            configure_macos_native_glass_sidebars(app)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -567,8 +865,11 @@ pub fn run() {
             start_managed_backend,
             stop_managed_backend,
             desktop_shell_status,
-            http_service_hint
+            http_service_hint,
+            open_path,
+            show_library_context_menu
         ])
+        .on_menu_event(handle_menu_event)
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let desktop_state = window.state::<Mutex<DesktopState>>();

@@ -13,15 +13,26 @@
     "windows": [
       {
         "title": "X-File",
-        "width": 1200,
-        "height": 800,
-        "minWidth": 960,
-        "minHeight": 640
+        "width": 1440,
+        "height": 920,
+        "minWidth": 1100,
+        "minHeight": 720,
+        "label": "main",
+        "resizable": true,
+        "acceptFirstMouse": true,
+        "transparent": false,
+        "hiddenTitle": true,
+        "titleBarStyle": "Overlay",
+        "trafficLightPosition": {
+          "x": 18,
+          "y": 15
+        }
       }
     ],
     "security": {
       "csp": null
-    }
+    },
+    "macOSPrivateApi": true
   },
   "bundle": {
     "active": true,
