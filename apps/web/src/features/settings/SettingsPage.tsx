@@ -20,6 +20,8 @@ import {
 } from "../../api/library";
 import { toApiErrorMessage } from "../../api/http";
 import { t } from "../../i18n";
+import { LanguageSwitcher } from "../../shared/i18n/LanguageSwitcher";
+import { ThemeSwitcher } from "../../shared/theme/ThemeSwitcher";
 import { formatDateTime, joinCommaList, splitCommaList } from "../../shared/format";
 
 interface SettingsPageProps {
@@ -251,6 +253,23 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
 
       {message ? <section className="inline-success">{message}</section> : null}
       {error ? <section className="inline-alert">{error}</section> : null}
+
+      <section className="settings-section settings-appearance-section">
+        <h2>{t("settingsAppearanceTitle")}</h2>
+        <p>{t("settingsAppearanceDescription")}</p>
+        <div className="settings-appearance-grid">
+          <div className="settings-appearance-card">
+            <h3>{t("settingsLanguageTitle")}</h3>
+            <p>{t("settingsLanguageDescription")}</p>
+            <LanguageSwitcher />
+          </div>
+          <div className="settings-appearance-card">
+            <h3>{t("settingsThemeTitle")}</h3>
+            <p>{t("settingsThemeDescription")}</p>
+            <ThemeSwitcher />
+          </div>
+        </div>
+      </section>
 
       <section className="settings-grid">
         <form className="settings-section" onSubmit={(event) => void submitBinding(event)}>
