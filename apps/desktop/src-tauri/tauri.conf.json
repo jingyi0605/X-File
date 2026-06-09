@@ -20,7 +20,7 @@
         "label": "main",
         "resizable": true,
         "acceptFirstMouse": true,
-        "transparent": false,
+        "transparent": true,
         "hiddenTitle": true,
         "titleBarStyle": "Overlay",
         "trafficLightPosition": {

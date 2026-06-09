@@ -35,7 +35,17 @@ export function ThemeSwitcher() {
       </div>
       <label className="switch-row theme-auto-row">
         <span>{t("theme.auto")}</span>
-        <input type="checkbox" checked={autoTheme} onChange={(event) => setAutoTheme(event.target.checked)} />
+        <button
+          type="button"
+          className="mac-switch"
+          role="switch"
+          aria-label={t("theme.auto")}
+          aria-checked={autoTheme}
+          data-checked={autoTheme ? "true" : "false"}
+          onClick={() => setAutoTheme(!autoTheme)}
+        >
+          <span aria-hidden="true" />
+        </button>
       </label>
       <p className="settings-helper-text">{t("theme.autoDescription")}</p>
     </div>
