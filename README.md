@@ -16,12 +16,21 @@ X-File 是从 CodingNS 拆出的文档库独立应用。当前仓库已经建立
 pnpm install
 pnpm build
 pnpm typecheck
+pnpm dev
 pnpm dev:server
 pnpm dev:web
 pnpm dev:desktop
 pnpm build:macos
 pnpm build:windows
 ```
+
+`pnpm dev` 会同时启动前端和后端调试服务，默认都绑定 `0.0.0.0`：
+
+- 前端：`http://0.0.0.0:17320`
+- 后端：`http://0.0.0.0:17321`
+- 前端 `/api/*` 会代理到本机后端 `http://127.0.0.1:17321`。
+
+可通过环境变量覆盖：`X_FILE_WEB_HOST`、`X_FILE_WEB_PORT`、`X_FILE_SERVER_HOST`、`X_FILE_SERVER_PORT`。调试脚本会显式设置 `X_FILE_ALLOW_PUBLIC_HOST=1`，并把 HTTP 状态写到仓库内 `.x-file-dev/http-server-state.json`，避免污染正式用户配置。
 
 `pnpm dev:desktop` 会启动后端开发进程，并输出前端开发地址。正式桌面骨架校验使用 `pnpm --filter @x-file/desktop build`，它会跑 TypeScript 编译和 Tauri Rust `cargo check`。
 
