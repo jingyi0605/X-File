@@ -20,7 +20,16 @@ test("预览、下载和写入沿用文档库安全边界", () => {
   fs.writeFileSync(path.join(rootDir, "note.md"), "# 标题\n", "utf8");
 
   const service = new LibraryService(new LibraryBindingStore({ dataDir }));
-  service.saveBinding({ rootDir });
+  assert.equal(service.getSnapshot().requiresInitialization, true);
+  assert.equal(service.getSnapshot().initializationRedirectPath, "/init");
+
+  const pendingBinding = service.saveBinding({ rootDir });
+  assert.equal(pendingBinding.initialized, false);
+  assert.equal(service.getSnapshot().requiresInitialization, true);
+
+  const initializedBinding = service.saveBinding({ rootDir, completeInitialization: true });
+  assert.equal(initializedBinding.initialized, true);
+  assert.equal(service.getSnapshot().requiresInitialization, false);
 
   const preview = service.previewFile({ path: "note.md" });
   assert.equal(preview.supported, true);
@@ -74,7 +83,7 @@ test("文件操作支持创建、复制、移动和删除", () => {
   fs.mkdirSync(rootDir, { recursive: true });
 
   const service = new LibraryService(new LibraryBindingStore({ dataDir }));
-  service.saveBinding({ rootDir });
+  service.saveBinding({ rootDir, completeInitialization: true });
 
   service.operateFile({ opType: "create_directory", dstPath: "docs" });
   service.operateFile({ opType: "create_file", dstPath: "docs/a.txt", content: "A" });
@@ -103,7 +112,7 @@ test("读快照和列表只读取 export，不触发索引刷新", () => {
     new LibraryExportReader(),
     new FailingIndexService(new TaskManager(), new IndexRuntimeStore())
   );
-  service.saveBinding({ rootDir });
+  service.saveBinding({ rootDir, completeInitialization: true });
 
   assert.equal(service.getSnapshot().documentCount, 2);
   assert.equal(service.listDocuments({ browseMode: "folder", selectedFolderPath: "docs" }).items.length, 1);
@@ -122,7 +131,7 @@ test("刷新任务按同 rootDir 同类任务去重", () => {
     new LibraryExportReader(),
     indexService
   );
-  service.saveBinding({ rootDir });
+  service.saveBinding({ rootDir, completeInitialization: true });
 
   const first = service.requestRefresh({ reason: "manual" });
   const second = service.requestRefresh({ reason: "manual" });
@@ -146,7 +155,7 @@ test("文件操作完成后只把刷新放进后台任务", () => {
     new LibraryExportReader(),
     indexService
   );
-  service.saveBinding({ rootDir });
+  service.saveBinding({ rootDir, completeInitialization: true });
 
   service.operateFile({ opType: "create_file", dstPath: "docs/a.md", content: "A" });
   const status = service.getSnapshot().status;
@@ -163,7 +172,7 @@ test("从临时 export 读取文档、标签和文件夹", () => {
   writeExportFixture(rootDir);
 
   const service = new LibraryService(new LibraryBindingStore({ dataDir }));
-  service.saveBinding({ rootDir });
+  service.saveBinding({ rootDir, completeInitialization: true });
 
   const snapshot = service.getSnapshot();
   assert.equal(snapshot.documentCount, 2);

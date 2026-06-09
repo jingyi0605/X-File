@@ -25,6 +25,7 @@ import {
   MAX_TEXT_FILE_BYTES
 } from "./file-preview.js";
 import type { LibraryBindingStore } from "../storage/library-binding-store.js";
+import { LibraryConfigStore } from "../storage/library-config-store.js";
 import { IndexRuntimeStore } from "../storage/index-runtime-store.js";
 import { LibraryExportReader } from "../storage/library-export-reader.js";
 import { LibraryError } from "./library-errors.js";
@@ -48,6 +49,7 @@ const DEFAULT_ALLOWED_EXTENSIONS = [
 
 export interface SaveLibraryBindingInput {
   rootDir?: string;
+  completeInitialization?: boolean;
 }
 
 export interface ListLibraryDocumentsInput {
@@ -102,7 +104,8 @@ export class LibraryService {
   constructor(
     private readonly bindingStore: LibraryBindingStore,
     private readonly exportReader = new LibraryExportReader(),
-    private readonly indexService: LibraryIndexService | null = createDefaultIndexService()
+    private readonly indexService: LibraryIndexService | null = createDefaultIndexService(),
+    private readonly configStore = new LibraryConfigStore()
   ) {}
 
   getBinding(): LibraryBinding | null {
@@ -119,6 +122,9 @@ export class LibraryService {
     assertReadableDirectory(resolvedRootDir);
 
     const existing = this.bindingStore.read();
+    const now = new Date().toISOString();
+    const keepsExistingInitialization = existing?.initialized === true && existing.rootDir === resolvedRootDir;
+    const completesInitialization = input.completeInitialization === true;
     const binding: LibraryBinding = {
       libraryId: existing?.libraryId ?? DEFAULT_LIBRARY_ID,
       rootDir: resolvedRootDir,
@@ -131,9 +137,12 @@ export class LibraryService {
       folderOpenBehavior: existing?.folderOpenBehavior ?? "double_click",
       configRelativePath: existing?.configRelativePath ?? DEFAULT_CONFIG_RELATIVE_PATH,
       exportMode: "v2",
-      updatedAt: new Date().toISOString()
+      initialized: keepsExistingInitialization || completesInitialization,
+      initializedAt: keepsExistingInitialization ? existing.initializedAt : completesInitialization ? now : null,
+      updatedAt: now
     };
 
+    this.configStore.writeForBinding(binding);
     return this.bindingStore.write(binding);
   }
 

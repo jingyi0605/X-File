@@ -22,8 +22,8 @@ export class LibraryBindingStore {
     }
 
     const raw = fs.readFileSync(this.filePath, "utf8");
-    const parsed = JSON.parse(raw) as LibraryBinding;
-    return parsed;
+    const parsed = JSON.parse(raw) as Partial<LibraryBinding>;
+    return normalizeBinding(parsed);
   }
 
   write(binding: LibraryBinding): LibraryBinding {
@@ -43,4 +43,12 @@ function resolveDataDir(explicitDataDir: string | undefined): string {
   }
 
   return path.join(process.cwd(), ".x-file");
+}
+
+function normalizeBinding(binding: Partial<LibraryBinding>): LibraryBinding {
+  return {
+    ...(binding as LibraryBinding),
+    initialized: binding.initialized === true,
+    initializedAt: typeof binding.initializedAt === "string" && binding.initializedAt.trim() ? binding.initializedAt : null
+  };
 }

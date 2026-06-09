@@ -16,7 +16,7 @@ test("tag ensure 使用 libraryId/rootDir 存储并创建层级标签", () => {
   fs.mkdirSync(rootDir, { recursive: true });
 
   const bindingStore = new LibraryBindingStore({ dataDir });
-  new LibraryService(bindingStore).saveBinding({ rootDir });
+  new LibraryService(bindingStore).saveBinding({ rootDir, completeInitialization: true });
   const tagService = new TagService(bindingStore, new TagStore({ dataDir }));
 
   const ensured = tagService.ensureTag({ path: " 项目 / 设计 " });

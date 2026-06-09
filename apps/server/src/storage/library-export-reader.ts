@@ -5,6 +5,7 @@ import type {
   LibraryBinding,
   LibraryDocumentList,
   LibraryDocumentRecord,
+  LibraryFavoriteRecord,
   LibraryFolderNode,
   LibraryIndexStatus,
   LibrarySnapshot,
@@ -16,9 +17,11 @@ export interface ReadLibraryDocumentsInput {
   selectedFolderPath?: string | null;
   selectedTagPath?: string | null;
   selectedTagPaths?: string[] | null;
+  selectedFavoriteId?: string | null;
   keyword?: string | null;
   offset: number;
   limit: number;
+  favorites?: LibraryFavoriteRecord[];
 }
 
 interface ManifestFile {
@@ -72,13 +75,15 @@ interface MetaShardFile {
 }
 
 export class LibraryExportReader {
-  readSnapshot(binding: LibraryBinding | null, fallbackStatus: LibraryIndexStatus): LibrarySnapshot {
-    if (!binding) {
+  readSnapshot(binding: LibraryBinding | null, fallbackStatus: LibraryIndexStatus, favorites: LibraryFavoriteRecord[] = []): LibrarySnapshot {
+    if (!binding || !binding.initialized) {
       return {
         binding,
+        requiresInitialization: true,
+        initializationRedirectPath: "/init",
         status: fallbackStatus,
         tags: [],
-        favorites: [],
+        favorites,
         folders: [],
         documentCount: 0,
         lastError: null
@@ -88,7 +93,7 @@ export class LibraryExportReader {
     const exportDir = resolveExportDir(binding.rootDir);
     const manifest = readJson<ManifestFile>(path.join(exportDir, "manifest.json"));
     if (!manifest) {
-      return emptySnapshot(binding, fallbackStatus);
+      return emptySnapshot(binding, fallbackStatus, favorites);
     }
 
     const statusFile = readJson<StatusFile>(path.join(exportDir, manifest.entries?.status ?? "status.json"));
@@ -96,13 +101,15 @@ export class LibraryExportReader {
     const tagCounts = countTags(documents);
     return {
       binding,
+      requiresInitialization: false,
+      initializationRedirectPath: "/init",
       status: {
         ...fallbackStatus,
         lastCompletedAt: fallbackStatus.lastCompletedAt ?? statusFile?.exported_at ?? manifest.generated_at ?? null,
         dirtyReasons: fallbackStatus.dirtyReasons
       },
       tags: readTags(exportDir, manifest, tagCounts),
-      favorites: [],
+      favorites,
       folders: readFolders(exportDir, manifest),
       documentCount: statusFile?.document_count ?? documents.length,
       lastError: fallbackStatus.errorSummary
@@ -121,7 +128,7 @@ export class LibraryExportReader {
     }
 
     const allDocuments = this.readDocumentsFromManifest(exportDir, manifest);
-    const filtered = filterDocuments(allDocuments, input);
+    const filtered = filterDocuments(markFavoriteDocuments(allDocuments, input.favorites ?? []), input);
     return {
       total: filtered.length,
       visibleEntryTotal: filtered.length,
@@ -170,12 +177,14 @@ function resolveExportDir(rootDir: string): string {
   return path.join(rootDir, ".ai-index", "exports");
 }
 
-function emptySnapshot(binding: LibraryBinding, status: LibraryIndexStatus): LibrarySnapshot {
+function emptySnapshot(binding: LibraryBinding, status: LibraryIndexStatus, favorites: LibraryFavoriteRecord[] = []): LibrarySnapshot {
   return {
     binding,
+    requiresInitialization: false,
+    initializationRedirectPath: "/init",
     status,
     tags: [],
-    favorites: [],
+    favorites,
     folders: [],
     documentCount: 0,
     lastError: status.errorSummary
@@ -221,6 +230,7 @@ function readFolders(exportDir: string, manifest: ManifestFile): LibraryFolderNo
 
 function filterDocuments(documents: LibraryDocumentRecord[], input: ReadLibraryDocumentsInput): LibraryDocumentRecord[] {
   const folderPath = normalizeFolderPath(input.selectedFolderPath ?? "");
+  const selectedFavorite = resolveSelectedFavorite(input.favorites ?? [], input.selectedFavoriteId);
   const selectedTags = input.selectedTagPaths?.length
     ? input.selectedTagPaths
     : input.selectedTagPath
@@ -229,6 +239,10 @@ function filterDocuments(documents: LibraryDocumentRecord[], input: ReadLibraryD
   const keyword = input.keyword?.trim().toLowerCase() ?? "";
 
   return documents.filter((document) => {
+    if (selectedFavorite && !matchesFavorite(document, selectedFavorite)) {
+      return false;
+    }
+
     if (input.browseMode !== "tag" && folderPath && folderPath !== ".") {
       const documentDir = normalizeFolderPath(path.posix.dirname(document.path));
       if (documentDir !== folderPath && !documentDir.startsWith(`${folderPath}/`)) {
@@ -252,6 +266,41 @@ function filterDocuments(documents: LibraryDocumentRecord[], input: ReadLibraryD
 
     return true;
   });
+}
+
+function markFavoriteDocuments(documents: LibraryDocumentRecord[], favorites: LibraryFavoriteRecord[]): LibraryDocumentRecord[] {
+  if (favorites.length === 0) {
+    return documents;
+  }
+  return documents.map((document) => ({
+    ...document,
+    isFavorite: favorites.some((favorite) => favorite.kind !== "folder" && matchesFavorite(document, favorite))
+  }));
+}
+
+function resolveSelectedFavorite(favorites: LibraryFavoriteRecord[], selectedFavoriteId: string | null | undefined): LibraryFavoriteRecord | null {
+  const id = selectedFavoriteId?.trim();
+  if (!id) {
+    return null;
+  }
+  return favorites.find((favorite) => favorite.path === id) ?? null;
+}
+
+function matchesFavorite(document: LibraryDocumentRecord, favorite: LibraryFavoriteRecord): boolean {
+  if (favorite.kind === "folder") {
+    const folderPath = normalizeFolderPath(favorite.path);
+    if (!folderPath || folderPath === ".") {
+      return true;
+    }
+    const documentDir = normalizeFolderPath(path.posix.dirname(document.path));
+    return documentDir === folderPath || documentDir.startsWith(`${folderPath}/`);
+  }
+
+  const requiredTags = favorite.kind === "tag_filter"
+    ? (favorite.tagPaths?.length ? favorite.tagPaths : favorite.path.split("|"))
+    : [favorite.path];
+  const documentTags = new Set([...document.tags, ...document.derivedTags]);
+  return requiredTags.map((item) => item.trim()).filter(Boolean).every((tagPath) => documentTags.has(tagPath));
 }
 
 function countTags(documents: LibraryDocumentRecord[]): Record<string, number> {

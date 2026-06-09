@@ -81,7 +81,7 @@ function createOnlyOfficeFixture(): {
     new LibraryExportReader(),
     new LibraryIndexService(new TaskManager(), new IndexRuntimeStore())
   );
-  libraryService.saveBinding({ rootDir });
+  libraryService.saveBinding({ rootDir, completeInitialization: true });
 
   const settingsStore = new OnlyOfficeSettingsStore({ dataDir });
   settingsStore.write({

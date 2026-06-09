@@ -18,7 +18,7 @@ test("配置保存同步更新 binding 和资料库内配置文件", () => {
   const bindingStore = new LibraryBindingStore({ dataDir });
   const libraryService = new LibraryService(bindingStore);
   const configService = new LibraryConfigService(bindingStore, new LibraryConfigStore());
-  libraryService.saveBinding({ rootDir });
+  libraryService.saveBinding({ rootDir, completeInitialization: true });
 
   const config = configService.saveConfig({
     mirrorRoot: " /tmp/mirror ",

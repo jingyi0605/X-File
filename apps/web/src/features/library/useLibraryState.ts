@@ -39,6 +39,8 @@ const FILE_LIST_LIMIT = 200;
 export interface LibraryState {
   viewState: LibraryViewState;
   snapshot: LibrarySnapshot | null;
+  requiresInitialization: boolean;
+  initializationRedirectPath: string;
   tags: LibraryTagNode[];
   documentPage: LibraryDocumentList | null;
   fileItems: LibraryFileNode[];
@@ -59,6 +61,7 @@ export interface LibraryState {
   loadMore: () => Promise<void>;
   refresh: () => Promise<void>;
   selectFolder: (path: string | null) => void;
+  selectFolderEntry: (path: string | null) => void;
   selectTag: (path: string | null) => void;
   selectFavorite: (favorite: LibraryFavoriteRecord) => void;
   selectDocument: (documentId: string) => void;
@@ -94,6 +97,8 @@ export function useLibraryState(): LibraryState {
     [entries, viewState.selectedDocumentId]
   );
 
+  const requiresInitialization = snapshot?.requiresInitialization === true;
+  const initializationRedirectPath = snapshot?.initializationRedirectPath ?? "/init";
   const hasMore = (documentPage?.items.length ?? 0) < (documentPage?.total ?? 0);
 
   function setViewState(updater: LibraryViewState | ((current: LibraryViewState) => LibraryViewState)): void {
@@ -108,7 +113,7 @@ export function useLibraryState(): LibraryState {
     setLoading(true);
     setError(null);
     try {
-      const binding = await saveLibraryBinding({ rootDir });
+      const binding = await saveLibraryBinding({ rootDir, completeInitialization: true });
       setSnapshot((current) => current ? { ...current, binding } : current);
       setViewState(readLibraryViewState(binding.libraryId));
       await reload();
@@ -144,7 +149,7 @@ export function useLibraryState(): LibraryState {
   }
 
   async function reloadDocuments(reset = true): Promise<void> {
-    if (!snapshot?.binding?.enabled) {
+    if (requiresInitialization || !snapshot?.binding?.enabled) {
       setDocumentPage(null);
       setFileItems([]);
       return;
@@ -224,6 +229,16 @@ export function useLibraryState(): LibraryState {
       selectedTagPath: null,
       selectedTagPaths: [],
       selectedFavoriteId: null,
+      selectedDocumentId: null
+    }));
+  }
+
+  function selectFolderEntry(path: string | null): void {
+    setPreview(null);
+    setPreviewError(null);
+    setViewState((current) => ({
+      ...current,
+      selectedFolderEntryPath: path,
       selectedDocumentId: null
     }));
   }
@@ -315,6 +330,7 @@ export function useLibraryState(): LibraryState {
       await reloadDocuments(true);
     } catch (err) {
       setError(toApiErrorMessage(err));
+      throw err;
     }
   }
 
@@ -356,6 +372,8 @@ export function useLibraryState(): LibraryState {
   return {
     viewState,
     snapshot,
+    requiresInitialization,
+    initializationRedirectPath,
     tags,
     documentPage,
     fileItems,
@@ -376,6 +394,7 @@ export function useLibraryState(): LibraryState {
     loadMore,
     refresh,
     selectFolder,
+    selectFolderEntry,
     selectTag,
     selectFavorite,
     selectDocument,

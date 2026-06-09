@@ -49,6 +49,8 @@ function createBinding(rootDir: string): LibraryBinding {
     folderOpenBehavior: "double_click",
     configRelativePath: ".ai-index/doc-semantic-index.config.json",
     exportMode: "v2",
+    initialized: true,
+    initializedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
 }
