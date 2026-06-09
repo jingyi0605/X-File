@@ -5,6 +5,23 @@ import { readViewSnapshot, writeViewSnapshot } from "../../shared/view-snapshot"
 export type LibraryViewMode = "grid" | "list";
 export type LibrarySortMode = "recent" | "name" | "type" | "size" | "createdAt";
 export type LibrarySortDirection = "asc" | "desc";
+export type FinderColumnKey = "name" | "size" | "updatedAt" | "type" | "createdAt";
+
+export const FINDER_COLUMN_MIN_WIDTHS: Record<FinderColumnKey, number> = {
+  name: 240,
+  size: 88,
+  updatedAt: 156,
+  type: 120,
+  createdAt: 156
+};
+
+export const DEFAULT_FINDER_COLUMN_WIDTHS: Record<FinderColumnKey, number> = {
+  name: 320,
+  size: 96,
+  updatedAt: 176,
+  type: 132,
+  createdAt: 176
+};
 
 export interface LibrarySortState {
   mode: LibrarySortMode;
@@ -23,6 +40,7 @@ export interface LibraryViewState {
   selectedFavoriteId: string | null;
   keyword: string;
   librarySort: LibrarySortState;
+  finderColumnWidths: Record<FinderColumnKey, number>;
 }
 
 export type LibraryEntry =
@@ -52,7 +70,8 @@ const DEFAULT_STATE: Omit<LibraryViewState, "libraryId"> = {
   selectedDocumentId: null,
   selectedFavoriteId: null,
   keyword: "",
-  librarySort: DEFAULT_SORT
+  librarySort: DEFAULT_SORT,
+  finderColumnWidths: DEFAULT_FINDER_COLUMN_WIDTHS
 };
 
 function buildStateKey(libraryId: string): string {
@@ -117,8 +136,29 @@ function normalizeLibraryViewState(libraryId: string, value: Partial<LibraryView
     selectedDocumentId: normalizeNullable(value.selectedDocumentId),
     selectedFavoriteId: normalizeNullable(value.selectedFavoriteId),
     keyword: value.keyword?.trim() ?? "",
-    librarySort: normalizeLibrarySortState(value.librarySort)
+    librarySort: normalizeLibrarySortState(value.librarySort),
+    finderColumnWidths: normalizeFinderColumnWidths(value.finderColumnWidths)
   };
+}
+
+export function normalizeFinderColumnWidths(
+  value: Partial<Record<FinderColumnKey, number>> | null | undefined
+): Record<FinderColumnKey, number> {
+  return {
+    name: normalizeFinderColumnWidth("name", value?.name),
+    size: normalizeFinderColumnWidth("size", value?.size),
+    updatedAt: normalizeFinderColumnWidth("updatedAt", value?.updatedAt),
+    type: normalizeFinderColumnWidth("type", value?.type),
+    createdAt: normalizeFinderColumnWidth("createdAt", value?.createdAt)
+  };
+}
+
+function normalizeFinderColumnWidth(column: FinderColumnKey, value: number | null | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_FINDER_COLUMN_WIDTHS[column];
+  }
+  const nextValue = value;
+  return Math.max(FINDER_COLUMN_MIN_WIDTHS[column], Math.round(nextValue));
 }
 
 function normalizeNullable(value: string | null | undefined): string | null {

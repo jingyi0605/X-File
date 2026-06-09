@@ -24,6 +24,7 @@ import { formatDateTime, joinCommaList, splitCommaList } from "../../shared/form
 
 interface SettingsPageProps {
   onSaved?: () => void;
+  onClose?: () => void;
 }
 
 interface BindingFormState {
@@ -53,7 +54,7 @@ interface ServerFormState {
   port: string;
 }
 
-export function SettingsPage({ onSaved }: SettingsPageProps) {
+export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
   const [binding, setBinding] = useState<LibraryBinding | null>(null);
   const [libraryConfig, setLibraryConfig] = useState<LibraryConfig | null>(null);
   const [onlyOffice, setOnlyOffice] = useState<OnlyOfficeSettings | null>(null);
@@ -235,7 +236,7 @@ export function SettingsPage({ onSaved }: SettingsPageProps) {
     void loadSettings();
   }, []);
 
-  return (
+  const content = (
     <main className="settings-page">
       <section className="page-heading">
         <div>
@@ -392,6 +393,25 @@ export function SettingsPage({ onSaved }: SettingsPageProps) {
         </form>
       </section>
     </main>
+  );
+
+  if (!onClose) {
+    return content;
+  }
+
+  return (
+    <div className="desktop-modal-layer settings-modal-layer" role="presentation" onPointerDown={onClose}>
+      <section className="desktop-modal-card settings-modal-card" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title" onPointerDown={(event) => event.stopPropagation()}>
+        <header className="desktop-modal-header">
+          <div>
+            <h2 id="settings-modal-title">{t("settingsTitle")}</h2>
+            <p>{t("settingsSubtitle")}</p>
+          </div>
+          <button type="button" className="desktop-modal-close" aria-label={t("actionClose")} onClick={onClose}>×</button>
+        </header>
+        <div className="desktop-modal-body settings-modal-body">{content}</div>
+      </section>
+    </div>
   );
 }
 
