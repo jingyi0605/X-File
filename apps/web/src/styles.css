@@ -14,7 +14,61 @@
   --section-gap: var(--space-4);
   --control-height-sm: 28px;
   --control-height-md: 32px;
+  --control-height-lg: 34px;
   --toolbar-button-height: 30px;
+  /* 统一 UI 体系：元素、组件、模态框全部只能消费这些 token，不允许散落魔法值。 */
+  --bg-primary: #fafafa;
+  --bg-surface: #ffffff;
+  --bg-hover: rgba(0, 0, 0, 0.03);
+  --bg-active: rgba(0, 122, 255, 0.08);
+  --border-primary: rgba(0, 0, 0, 0.06);
+  --border-subtle: rgba(0, 0, 0, 0.04);
+  --error: #ef4444;
+  --surface-overlay-highlight: rgba(255, 255, 255, 0.88);
+  --app-button-height: 30px;
+  --app-button-padding-x: 12px;
+  --app-button-radius: 9px;
+  --app-button-bg: var(--bg-primary);
+  --app-button-bg-hover: var(--bg-hover);
+  --app-button-border: var(--border-primary);
+  --app-button-border-hover: var(--accent);
+  --app-button-color: var(--text-primary);
+  --app-button-primary-bg: color-mix(in srgb, var(--accent) 92%, white 8%);
+  --app-button-primary-bg-hover: var(--accent-hover);
+  --app-button-primary-border: color-mix(in srgb, var(--accent) 72%, white 28%);
+  --app-button-primary-border-hover: var(--accent-hover);
+  --app-button-primary-color: #ffffff;
+  --app-button-danger-bg: color-mix(in srgb, var(--error) 10%, var(--bg-primary));
+  --app-button-danger-bg-hover: color-mix(in srgb, var(--error) 14%, var(--bg-primary));
+  --app-button-danger-border: color-mix(in srgb, var(--error) 30%, var(--border-primary));
+  --app-button-danger-border-hover: color-mix(in srgb, var(--error) 48%, var(--border-primary));
+  --app-button-danger-color: var(--error);
+  --modal-backdrop-bg: rgba(9, 15, 27, 0.34);
+  --modal-backdrop-blur: 12px;
+  --modal-frame-filter: blur(14px) saturate(102%);
+  --modal-frame-border: rgba(255, 255, 255, 0.42);
+  --modal-frame-surface: linear-gradient(180deg, rgba(244, 246, 249, 0.78), rgba(206, 210, 216, 0.9));
+  --modal-frame-shadow: 0 18px 36px rgba(15, 23, 42, 0.09), 0 6px 14px rgba(15, 23, 42, 0.04), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  --modal-panel-border: rgba(255, 255, 255, 0.58);
+  --modal-panel-filter: blur(10px);
+  --modal-panel-surface: linear-gradient(180deg, rgba(250, 251, 252, 0.97), rgba(222, 226, 232, 0.92));
+  --modal-panel-surface-strong: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(238, 240, 244, 0.94));
+  --modal-panel-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.68), 0 4px 10px rgba(15, 23, 42, 0.03);
+  --modal-control-border: color-mix(in srgb, var(--border-primary) 82%, transparent);
+  --modal-control-surface: linear-gradient(180deg, color-mix(in srgb, var(--bg-surface) 92%, var(--bg-primary) 8%), color-mix(in srgb, var(--bg-primary) 82%, var(--bg-hover) 18%));
+  --modal-control-surface-hover: linear-gradient(180deg, color-mix(in srgb, var(--bg-surface) 95%, var(--bg-hover) 5%), color-mix(in srgb, var(--bg-primary) 80%, var(--bg-hover) 20%));
+  --modal-control-border-focus: color-mix(in srgb, var(--accent) 34%, var(--border-primary));
+  --modal-control-focus-ring: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
+  --modal-button-secondary-bg: var(--app-button-bg);
+  --modal-button-secondary-bg-hover: var(--app-button-bg-hover);
+  --modal-button-secondary-color: var(--app-button-color);
+  --modal-button-primary-bg: var(--app-button-primary-bg);
+  --modal-button-primary-bg-hover: var(--app-button-primary-bg-hover);
+  --modal-button-primary-color: var(--app-button-primary-color);
+  --modal-button-danger-bg: var(--app-button-danger-bg);
+  --modal-button-danger-bg-hover: var(--app-button-danger-bg-hover);
+  --modal-button-danger-color: var(--app-button-danger-color);
+  --desktop-modal-width-standard: min(max(60vw, 720px), calc(100% - 32px));
   --app-bg: #ececeb;
   --panel-bg: rgba(248, 248, 247, 0.92);
   --panel-bg-strong: rgba(255, 255, 255, 0.96);
@@ -153,17 +207,39 @@ input,
 select,
 textarea {
   min-width: 0;
-  border: 1px solid var(--panel-border);
-  border-radius: 10px;
-  background: var(--panel-bg);
+  border: 1px solid var(--modal-control-border);
+  border-radius: var(--radius-control);
+  background: var(--modal-control-surface);
   color: var(--text-primary);
   outline: none;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
+}
+
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]),
+select {
+  min-height: var(--control-height-md);
+  padding: 0 10px;
+}
+
+textarea {
+  padding: 10px;
+  line-height: 1.55;
+}
+
+input:hover:not(:disabled),
+select:hover:not(:disabled),
+textarea:hover:not(:disabled) {
+  background: var(--modal-control-surface-hover);
 }
 
 input:focus,
 select:focus,
 textarea:focus {
-  border-color: color-mix(in srgb, var(--accent) 38%, var(--panel-border));
+  border-color: var(--modal-control-border-focus);
+  box-shadow: var(--modal-control-focus-ring);
 }
 
 h1,
@@ -223,86 +299,6 @@ p {
       rgba(230, 221, 207, 0.86) 100%
     ),
     var(--sidebar-surface);
-}
-
-.workbench-traffic-lights {
-  position: absolute;
-  top: 16px;
-  left: 16px;
-  display: inline-flex;
-  gap: 8px;
-  z-index: 2;
-}
-
-.workbench-traffic-lights span {
-  width: 14px;
-  height: 14px;
-  border-radius: 999px;
-  box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.12);
-}
-
-.workbench-traffic-lights .red {
-  background: #ff5f57;
-}
-.workbench-traffic-lights .yellow {
-  background: #ffbd2e;
-}
-.workbench-traffic-lights .green {
-  background: #28c840;
-}
-
-.workbench-sidebar-tools {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 18px;
-  height: 38px;
-  margin: 12px 12px 0 96px;
-  color: var(--text-tertiary);
-}
-
-.workbench-tool-icon {
-  display: inline-flex;
-  width: 22px;
-  height: 22px;
-  align-items: center;
-  justify-content: center;
-  border-radius: 7px;
-  color: inherit;
-}
-
-.workbench-tool-icon:hover {
-  color: var(--text-primary);
-  background: rgba(120, 120, 128, 0.08);
-}
-
-.workbench-tool-icon svg {
-  width: 15px;
-  height: 15px;
-}
-
-.workbench-mode-switch {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0;
-  height: 34px;
-  margin: 0 14px 10px;
-  padding: 3px;
-  border-radius: 12px;
-  background: rgba(120, 120, 128, 0.09);
-}
-
-.workbench-mode-switch button {
-  border-radius: 9px;
-  color: var(--text-secondary);
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.workbench-mode-switch button.active {
-  background: rgba(140, 145, 164, 0.22);
-  color: var(--text-primary);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.24);
 }
 
 .affairs-layout-sidebar {
@@ -519,19 +515,6 @@ p {
 .workbench-sidebar-footer-button svg {
   width: 15px;
   height: 15px;
-}
-
-.workbench-device-pill {
-  min-width: 0;
-  overflow: hidden;
-  border-radius: 999px;
-  padding: 4px 10px;
-  background: rgba(10, 132, 255, 0.12);
-  color: color-mix(in srgb, var(--accent) 80%, var(--text-primary));
-  font-size: 11px;
-  font-weight: 700;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .affairs-main-panel {
@@ -1583,33 +1566,55 @@ mark {
 .primary-button,
 .secondary-button,
 .danger-button {
-  min-height: 30px;
-  padding: 0 12px;
-  border-radius: 9px;
-  border: 1px solid var(--panel-border);
-  background: var(--panel-bg);
-  color: var(--text-primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: var(--app-button-height);
+  padding: 0 var(--app-button-padding-x);
+  border: 1px solid var(--app-button-border);
+  border-radius: var(--app-button-radius);
+  background: var(--app-button-bg);
+  color: var(--app-button-color);
   font-size: 12px;
   font-weight: 700;
+  line-height: 1;
+  box-shadow: none;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast),
+    opacity var(--transition-fast);
+}
+
+.primary-button:hover:not(:disabled),
+.secondary-button:hover:not(:disabled) {
+  background: var(--app-button-bg-hover);
+  border-color: var(--app-button-border-hover);
 }
 
 .primary-button {
-  background: color-mix(in srgb, var(--accent) 92%, white 8%);
-  border-color: color-mix(in srgb, var(--accent) 72%, white 28%);
-  color: white;
+  border-color: var(--app-button-primary-border);
+  background: var(--app-button-primary-bg);
+  color: var(--app-button-primary-color);
 }
-.secondary-button:hover {
-  background: var(--panel-bg-strong);
-  border-color: color-mix(in srgb, var(--accent) 24%, var(--panel-border));
+
+.primary-button:hover:not(:disabled) {
+  border-color: var(--app-button-primary-border-hover);
+  background: var(--app-button-primary-bg-hover);
+  color: var(--app-button-primary-color);
 }
+
 .danger-button {
-  color: var(--danger-fg);
-  background: color-mix(in srgb, var(--status-danger) 8%, var(--panel-bg));
-  border-color: color-mix(
-    in srgb,
-    var(--status-danger) 18%,
-    var(--panel-border)
-  );
+  border-color: var(--app-button-danger-border);
+  background: var(--app-button-danger-bg);
+  color: var(--app-button-danger-color);
+}
+
+.danger-button:hover:not(:disabled) {
+  border-color: var(--app-button-danger-border-hover);
+  background: var(--app-button-danger-bg-hover);
+  color: var(--app-button-danger-color);
 }
 
 .preview-box,
@@ -1728,10 +1733,12 @@ mark {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 280px;
   gap: 18px;
+  align-items: start;
 }
 .library-init-form {
   display: grid;
   gap: 12px;
+  align-content: start;
 }
 .library-init-form label {
   display: grid;
@@ -1741,7 +1748,7 @@ mark {
   font-weight: 700;
 }
 .library-init-form input {
-  height: 34px;
+  min-height: var(--control-height-md);
   padding: 0 12px;
 }
 .library-init-path-row {
@@ -1750,8 +1757,12 @@ mark {
   gap: 8px;
   align-items: center;
 }
-.library-init-path-row .secondary-button {
-  min-height: 34px;
+.library-init-page .primary-button,
+.library-init-page .secondary-button {
+  height: var(--app-button-height);
+  min-height: var(--app-button-height);
+  max-height: var(--app-button-height);
+  padding-block: 0;
   white-space: nowrap;
 }
 .host-directory-browser {
@@ -1881,7 +1892,14 @@ mark {
 .button-row {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
+}
+
+.button-row > .primary-button,
+.button-row > .secondary-button,
+.button-row > .danger-button {
+  flex: 0 0 auto;
 }
 .inline-alert {
   border: 1px solid
@@ -2120,49 +2138,6 @@ body[data-workbench-macos-vibrancy="true"] #root {
 }
 
 .workbench-shell[data-os-family="macos"][data-overlay-titlebar="true"]
-  .workbench-traffic-lights {
-  display: inline-flex;
-  top: 16px;
-  left: 16px;
-  opacity: 0.72;
-  pointer-events: none;
-}
-
-.workbench-shell[data-os-family="macos"][data-overlay-titlebar="true"]
-  .workbench-sidebar-tools {
-  height: 44px;
-  margin: 11px 12px 0 96px;
-  transform: translateY(0);
-}
-
-.workbench-shell[data-os-family="macos"][data-overlay-titlebar="true"]
-  .workbench-mode-switch {
-  margin: 0 12px 10px;
-  border: 0;
-  background: var(--mac-segmented-shell-bg);
-  box-shadow: var(--mac-segmented-shell-shadow);
-  backdrop-filter: var(--mac-segmented-shell-blur);
-  -webkit-backdrop-filter: var(--mac-segmented-shell-blur);
-}
-
-.workbench-shell[data-os-family="macos"][data-overlay-titlebar="true"]
-  .workbench-mode-switch
-  button {
-  color: var(--mac-segmented-label);
-}
-
-.workbench-shell[data-os-family="macos"][data-overlay-titlebar="true"]
-  .workbench-mode-switch
-  button.active {
-  border: 0;
-  background: var(--mac-segmented-active-bg);
-  color: var(--mac-segmented-label-active);
-  box-shadow: var(--mac-segmented-active-shadow);
-  backdrop-filter: var(--mac-segmented-active-blur);
-  -webkit-backdrop-filter: var(--mac-segmented-active-blur);
-}
-
-.workbench-shell[data-os-family="macos"][data-overlay-titlebar="true"]
   .affairs-sidebar-item.active,
 .workbench-shell[data-os-family="macos"][data-overlay-titlebar="true"]
   .affairs-finder-row.active,
@@ -2176,8 +2151,6 @@ body[data-workbench-macos-vibrancy="true"] #root {
 .workbench-shell[data-os-family="macos"][data-overlay-titlebar="true"]
   .affairs-sidebar-item:hover,
 .workbench-shell[data-os-family="macos"][data-overlay-titlebar="true"]
-  .workbench-tool-icon:hover,
-.workbench-shell[data-os-family="macos"][data-overlay-titlebar="true"]
   .workbench-sidebar-footer-button:hover {
   background: rgba(120, 120, 128, 0.08);
 }
@@ -2187,9 +2160,7 @@ body[data-workbench-macos-vibrancy="true"] #root {
 .workbench-shell[data-os-family="macos"][data-overlay-titlebar="true"]
   .affairs-sidebar-item-title,
 .workbench-shell[data-os-family="macos"][data-overlay-titlebar="true"]
-  .workbench-sidebar-footer-button,
-.workbench-shell[data-os-family="macos"][data-overlay-titlebar="true"]
-  .workbench-tool-icon {
+  .workbench-sidebar-footer-button {
   text-shadow: 0 0.5px 0 rgba(255, 255, 255, 0.28);
 }
 
@@ -2199,11 +2170,7 @@ body[data-workbench-macos-vibrancy="true"] #root {
   .preview-box,
 .workbench-shell[data-os-family="macos"][data-overlay-titlebar="true"]
   .tag-editor
-  input,
-.workbench-shell[data-os-family="macos"][data-overlay-titlebar="true"]
-  .secondary-button,
-.workbench-shell[data-os-family="macos"][data-overlay-titlebar="true"]
-  .danger-button {
+  input {
   background: transparent;
   border-color: transparent;
   box-shadow: none;
@@ -2333,15 +2300,15 @@ body[data-workbench-macos-vibrancy="true"] #root {
   padding: 0;
   border: 0;
   border-radius: 0;
-  background: rgba(0, 0, 0, 0.18);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  background: var(--modal-backdrop-bg);
+  backdrop-filter: blur(var(--modal-backdrop-blur));
+  -webkit-backdrop-filter: blur(var(--modal-backdrop-blur));
 }
 
 .desktop-modal-layer:not(:has(.workbench-modal-backdrop)) {
-  background: rgba(0, 0, 0, 0.18);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  background: var(--modal-backdrop-bg);
+  backdrop-filter: blur(var(--modal-backdrop-blur));
+  -webkit-backdrop-filter: blur(var(--modal-backdrop-blur));
 }
 
 .desktop-modal-layer[data-backdrop-visible="false"] .workbench-modal-backdrop {
@@ -2353,15 +2320,17 @@ body[data-workbench-macos-vibrancy="true"] #root {
 .desktop-modal-card {
   position: relative;
   display: flex;
-  width: min(720px, max(60vw, 520px));
+  width: min(var(--desktop-modal-width-standard), calc(100vw - 48px));
   max-width: calc(100vw - 48px);
   max-height: calc(100vh - 48px);
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid var(--panel-border);
+  border: 1px solid var(--modal-frame-border);
   border-radius: 16px;
-  background: var(--panel-bg-strong);
-  box-shadow: 0 28px 70px rgba(15, 23, 42, 0.18);
+  background: var(--modal-frame-surface);
+  box-shadow: var(--modal-frame-shadow);
+  backdrop-filter: var(--modal-frame-filter);
+  -webkit-backdrop-filter: var(--modal-frame-filter);
 }
 
 .desktop-modal-card[data-size="full"] {
@@ -2462,6 +2431,33 @@ body[data-workbench-macos-vibrancy="true"] #root {
   gap: 10px;
 }
 
+.desktop-modal-card .secondary-button {
+  background: var(--modal-button-secondary-bg);
+  color: var(--modal-button-secondary-color);
+}
+
+.desktop-modal-card .secondary-button:hover:not(:disabled) {
+  background: var(--modal-button-secondary-bg-hover);
+}
+
+.desktop-modal-card .primary-button {
+  background: var(--modal-button-primary-bg);
+  color: var(--modal-button-primary-color);
+}
+
+.desktop-modal-card .primary-button:hover:not(:disabled) {
+  background: var(--modal-button-primary-bg-hover);
+}
+
+.desktop-modal-card .danger-button {
+  background: var(--modal-button-danger-bg);
+  color: var(--modal-button-danger-color);
+}
+
+.desktop-modal-card .danger-button:hover:not(:disabled) {
+  background: var(--modal-button-danger-bg-hover);
+}
+
 .modal-actions[data-align="start"] {
   justify-content: flex-start;
 }
@@ -2503,20 +2499,27 @@ body[data-workbench-macos-vibrancy="true"] #root {
   line-height: 1.5;
 }
 
-.modal-field input {
-  height: 34px;
+.modal-field input,
+.modal-field select {
+  min-height: var(--control-height-lg);
   padding: 0 12px;
+  font-size: 13px;
+}
+
+.modal-field textarea {
+  min-height: 86px;
+  padding: 10px 12px;
   font-size: 13px;
 }
 
 .modal-empty-state {
   display: grid;
   gap: 4px;
-  border: 1px solid var(--panel-border);
+  border: 1px solid var(--modal-panel-border);
   border-radius: 12px;
   padding: 14px;
   color: var(--text-secondary);
-  background: color-mix(in srgb, var(--panel-bg) 74%, transparent);
+  background: var(--modal-panel-surface);
   font-size: 12px;
   line-height: 1.6;
 }
@@ -2583,9 +2586,9 @@ body[data-workbench-macos-vibrancy="true"] #root {
   align-items: center;
   min-height: 22px;
   padding: 0 8px;
-  border: 1px solid color-mix(in srgb, var(--panel-border) 88%, transparent);
+  border: 1px solid color-mix(in srgb, var(--modal-panel-border) 88%, transparent);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--panel-bg) 82%, transparent);
+  background: color-mix(in srgb, var(--modal-panel-surface-strong) 82%, transparent);
   color: var(--text-secondary);
   font-size: 11px;
   font-weight: 700;
