@@ -1,4 +1,4 @@
-import { t } from "../i18n";
+import { getLocaleForIntl, t } from "../i18n";
 
 export function formatBytes(value: number | null | undefined): string {
   if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -32,7 +32,7 @@ export function formatDateTime(value: string | null | undefined): string {
     return value;
   }
 
-  return new Intl.DateTimeFormat("zh-CN", {
+  return new Intl.DateTimeFormat(getLocaleForIntl(), {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",

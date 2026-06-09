@@ -5,6 +5,7 @@ import { toApiErrorMessage } from "./api/http";
 import { LibraryPage, type WorkbenchPlatformData } from "./features/library/LibraryPage";
 import { SettingsPage } from "./features/settings/SettingsPage";
 import { t } from "./i18n";
+import { usePreferencesSelector } from "./preferences/preferences-store";
 import "./styles.css";
 
 type AppSection = "library" | "health";
@@ -20,6 +21,7 @@ export function App() {
   const [libraryReloadKey, setLibraryReloadKey] = useState(0);
   const [health, setHealth] = useState<HealthState>({ status: "checking" });
   const platformData = useWorkbenchPlatformData();
+  usePreferencesSelector((state) => state.profile.language);
 
   async function checkHealth() {
     setHealth({ status: "checking" });

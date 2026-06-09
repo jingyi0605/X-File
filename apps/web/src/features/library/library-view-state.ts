@@ -1,6 +1,7 @@
 import type { LibraryDocumentRecord } from "@x-file/shared";
 
 import { readViewSnapshot, writeViewSnapshot } from "../../shared/view-snapshot";
+import { getLocaleForIntl } from "../../i18n";
 
 export type LibraryViewMode = "grid" | "list";
 export type LibrarySortMode = "recent" | "name" | "type" | "size" | "createdAt";
@@ -168,11 +169,11 @@ function normalizeNullable(value: string | null | undefined): string | null {
 
 function compareEntryValue(left: LibraryEntry, right: LibraryEntry, mode: LibrarySortMode): number {
   if (mode === "name") {
-    return getEntryName(left).localeCompare(getEntryName(right), "zh-CN");
+    return getEntryName(left).localeCompare(getEntryName(right), getLocaleForIntl());
   }
 
   if (mode === "type") {
-    return getEntryExtension(left).localeCompare(getEntryExtension(right), "zh-CN");
+    return getEntryExtension(left).localeCompare(getEntryExtension(right), getLocaleForIntl());
   }
 
   if (mode === "size") {
