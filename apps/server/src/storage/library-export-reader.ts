@@ -12,6 +12,8 @@ import type {
   LibraryTagNode,
 } from "@x-file/shared";
 
+import { resolveDefaultLibraryRootDir } from "./library-binding-store.js";
+
 export interface ReadLibraryDocumentsInput {
   browseMode?: string;
   selectedFolderPath?: string | null;
@@ -108,6 +110,7 @@ export class LibraryExportReader {
     if (!binding || !binding.initialized) {
       return {
         binding,
+        defaultRootDir: resolveDefaultLibraryRootDir(),
         requiresInitialization: true,
         initializationRedirectPath: "/init",
         status: fallbackStatus,
@@ -134,6 +137,7 @@ export class LibraryExportReader {
     const tagCounts = countTags(documents);
     return {
       binding,
+      defaultRootDir: resolveDefaultLibraryRootDir(),
       requiresInitialization: false,
       initializationRedirectPath: "/init",
       status: {
@@ -243,6 +247,7 @@ function emptySnapshot(
 ): LibrarySnapshot {
   return {
     binding,
+    defaultRootDir: resolveDefaultLibraryRootDir(),
     requiresInitialization: false,
     initializationRedirectPath: "/init",
     status,

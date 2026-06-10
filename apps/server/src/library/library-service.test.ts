@@ -24,10 +24,11 @@ test("预览、下载和写入沿用文档库安全边界", () => {
   const service = new LibraryService(new LibraryBindingStore({ dataDir }));
   assert.equal(service.getSnapshot().requiresInitialization, true);
   assert.equal(service.getSnapshot().initializationRedirectPath, "/init");
+  assert.equal(service.getSnapshot().defaultRootDir, path.join(os.homedir(), "X-File"));
 
   const pendingBinding = service.saveBinding({ rootDir });
-  assert.equal(pendingBinding.initialized, false);
-  assert.equal(service.getSnapshot().requiresInitialization, true);
+  assert.equal(pendingBinding.initialized, true);
+  assert.equal(service.getSnapshot().requiresInitialization, false);
 
   const initializedBinding = service.saveBinding({ rootDir, completeInitialization: true });
   assert.equal(initializedBinding.initialized, true);
@@ -77,6 +78,33 @@ test("预览、下载和写入沿用文档库安全边界", () => {
     (error) => error instanceof LibraryError && error.errorCode === "INVALID_FILE_OPERATION"
   );
 });
+
+test("默认资料库根目录使用用户主目录 X-File，且首次绑定会自动创建", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "x-file-default-root-home-"));
+  const dataDir = path.join(tempDir, "data");
+  const previousHome = process.env.HOME;
+  process.env.HOME = tempDir;
+  const service = new LibraryService(new LibraryBindingStore({ dataDir }));
+
+  try {
+    const defaultRootDir = path.join(tempDir, "X-File");
+    const snapshot = service.getSnapshot();
+    assert.equal(snapshot.defaultRootDir, defaultRootDir);
+    assert.equal(fs.existsSync(defaultRootDir), false);
+
+    const binding = service.saveBinding({ rootDir: defaultRootDir, completeInitialization: true });
+    assert.equal(binding.rootDir, defaultRootDir);
+    assert.equal(binding.initialized, true);
+    assert.equal(fs.statSync(defaultRootDir).isDirectory(), true);
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHome;
+    }
+  }
+});
+
 
 test("文件操作支持创建、复制、移动和删除", () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "x-file-library-ops-"));

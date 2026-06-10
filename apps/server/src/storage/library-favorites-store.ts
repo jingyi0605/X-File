@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import type { LibraryFavoriteRecord } from "@x-file/shared";
@@ -89,12 +90,12 @@ function storeKey(libraryId: string, rootDir: string): string {
 
 function resolveDataDir(explicitDataDir: string | undefined): string {
   if (explicitDataDir?.trim()) {
-    return explicitDataDir;
+    return path.resolve(explicitDataDir);
   }
 
   if (process.env.X_FILE_DATA_DIR?.trim()) {
-    return process.env.X_FILE_DATA_DIR;
+    return path.resolve(process.env.X_FILE_DATA_DIR);
   }
 
-  return path.join(process.cwd(), ".x-file");
+  return path.join(os.homedir(), ".x-file");
 }

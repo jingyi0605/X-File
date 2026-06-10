@@ -168,6 +168,8 @@ export interface LibraryFolderNode {
 
 export interface LibrarySnapshot {
   binding: LibraryBinding | null;
+  /** 首次初始化建议使用的资料库根目录；后端按当前用户环境统一给出。 */
+  defaultRootDir: string;
   /**
    * 后端统一给出的初始化状态。
    * binding 不存在或 binding.initialized 不是 true 时必须为 true，前端据此固定进入初始化页面。

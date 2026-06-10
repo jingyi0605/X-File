@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import type { LibraryBinding } from "@x-file/shared";
@@ -35,20 +36,30 @@ export class LibraryBindingStore {
 
 function resolveDataDir(explicitDataDir: string | undefined): string {
   if (explicitDataDir?.trim()) {
-    return explicitDataDir;
+    return path.resolve(explicitDataDir);
   }
 
   if (process.env.X_FILE_DATA_DIR?.trim()) {
-    return process.env.X_FILE_DATA_DIR;
+    return path.resolve(process.env.X_FILE_DATA_DIR);
   }
 
-  return path.join(process.cwd(), ".x-file");
+  return path.join(os.homedir(), ".x-file");
+}
+
+export function resolveDefaultLibraryRootDir(): string {
+  return path.join(os.homedir(), "X-File");
 }
 
 function normalizeBinding(binding: Partial<LibraryBinding>): LibraryBinding {
+  const rootDir = typeof binding.rootDir === "string" ? binding.rootDir : "";
+  const initialized = rootDir.trim().length > 0;
   return {
     ...(binding as LibraryBinding),
-    initialized: binding.initialized === true,
-    initializedAt: typeof binding.initializedAt === "string" && binding.initializedAt.trim() ? binding.initializedAt : null
+    initialized,
+    initializedAt: typeof binding.initializedAt === "string" && binding.initializedAt.trim()
+      ? binding.initializedAt
+      : initialized && typeof binding.updatedAt === "string"
+        ? binding.updatedAt
+        : null
   };
 }

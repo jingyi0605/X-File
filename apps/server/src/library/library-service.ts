@@ -25,6 +25,7 @@ import {
   MAX_TEXT_FILE_BYTES
 } from "./file-preview.js";
 import type { LibraryBindingStore } from "../storage/library-binding-store.js";
+import { resolveDefaultLibraryRootDir } from "../storage/library-binding-store.js";
 import { LibraryConfigStore } from "../storage/library-config-store.js";
 import { IndexRuntimeStore } from "../storage/index-runtime-store.js";
 import { LibraryExportReader } from "../storage/library-export-reader.js";
@@ -121,12 +122,12 @@ export class LibraryService {
     }
 
     const resolvedRootDir = path.resolve(rootDir);
+    ensureDefaultLibraryRootDir(resolvedRootDir);
     assertReadableDirectory(resolvedRootDir);
 
     const existing = this.bindingStore.read();
     const now = new Date().toISOString();
     const keepsExistingInitialization = existing?.initialized === true && existing.rootDir === resolvedRootDir;
-    const completesInitialization = input.completeInitialization === true;
     const binding: LibraryBinding = {
       libraryId: existing?.libraryId ?? DEFAULT_LIBRARY_ID,
       rootDir: resolvedRootDir,
@@ -139,8 +140,8 @@ export class LibraryService {
       folderOpenBehavior: existing?.folderOpenBehavior ?? "double_click",
       configRelativePath: existing?.configRelativePath ?? DEFAULT_CONFIG_RELATIVE_PATH,
       exportMode: "v2",
-      initialized: keepsExistingInitialization || completesInitialization,
-      initializedAt: keepsExistingInitialization ? existing.initializedAt : completesInitialization ? now : null,
+      initialized: true,
+      initializedAt: keepsExistingInitialization ? existing.initializedAt : now,
       updatedAt: now
     };
 
@@ -587,6 +588,14 @@ function assertReadableDirectory(rootDir: string): void {
     }
     throw new LibraryError(400, "LIBRARY_PATH_INVALID", "文档库根目录不存在或不可读", "rootDir");
   }
+}
+
+function ensureDefaultLibraryRootDir(rootDir: string): void {
+  if (rootDir !== path.resolve(resolveDefaultLibraryRootDir())) {
+    return;
+  }
+
+  fs.mkdirSync(rootDir, { recursive: true });
 }
 
 function normalizeRelativePath(value: string, allowRoot = true): string {
