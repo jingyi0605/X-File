@@ -1027,13 +1027,15 @@ function LibraryBindingPanel({
   const [browserRoots, setBrowserRoots] = useState<HostDirectoryOption[]>([]);
   const [browserItems, setBrowserItems] = useState<HostDirectoryOption[]>([]);
   const pendingBindingRootDir = library.snapshot?.binding?.rootDir ?? "";
+  const defaultRootDir = library.snapshot?.defaultRootDir ?? "";
   const busy = saving || browserLoading;
 
   useEffect(() => {
-    if (!rootDir.trim() && pendingBindingRootDir) {
-      setRootDir(pendingBindingRootDir);
+    const suggestedRootDir = pendingBindingRootDir || defaultRootDir;
+    if (!rootDir.trim() && suggestedRootDir) {
+      setRootDir(suggestedRootDir);
     }
-  }, [pendingBindingRootDir, rootDir]);
+  }, [defaultRootDir, pendingBindingRootDir, rootDir]);
 
   async function loadHostDirectory(targetPath?: string | null): Promise<void> {
     setBrowserLoading(true);
@@ -1139,6 +1141,9 @@ function LibraryBindingPanel({
                 </div>
               </label>
               <p className="muted-copy">{t("libraryBindingInlineHint")}</p>
+              <p className="muted-copy">
+                {t("libraryInitDefaultRootHint", { rootDir: defaultRootDir || rootDir })}
+              </p>
               {error ? (
                 <div className="inline-alert compact">{error}</div>
               ) : null}

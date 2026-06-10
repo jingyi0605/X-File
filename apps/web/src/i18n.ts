@@ -197,6 +197,8 @@ export const zhCN = {
   libraryInitTitle: "先选一个资料目录",
   libraryInitSubtitle:
     "X-File 会把这个目录作为你的文档库。选择后就能在本机浏览、索引、预览和操作文件。",
+  libraryInitDefaultRootHint:
+    "默认资料库根目录是 {rootDir}。如果你的常用文件在桌面、文档或其它工作目录，请先修改成那个路径，再建立文档库。",
   libraryInitSubmit: "建立文档库",
   libraryInitOpenAdvanced: "高级设置",
   libraryInitPreviewTitle: "独立文档库",
@@ -724,6 +726,7 @@ export const enUS = {
   libraryInitPill: "First setup",
   libraryInitTitle: "Choose a materials folder first",
   libraryInitSubtitle: "X-File uses this folder as your document library. After selection, you can browse, index, preview, and operate local files.",
+  libraryInitDefaultRootHint: "The default library root is {rootDir}. If your common files live in Desktop, Documents, or another work folder, change this path before creating the library.",
   libraryInitSubmit: "Create library",
   libraryInitOpenAdvanced: "Advanced settings",
   libraryInitPreviewTitle: "Standalone document library",

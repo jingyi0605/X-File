@@ -138,10 +138,10 @@ export function useLibraryState(): LibraryState {
     setLoading(true);
     setError(null);
     try {
-      const [nextSnapshot, nextTags] = await Promise.all([
-        getLibrarySnapshot(),
-        listLibraryTags().catch(() => [] as LibraryTagNode[])
-      ]);
+      const nextSnapshot = await getLibrarySnapshot();
+      const nextTags = nextSnapshot.requiresInitialization
+        ? []
+        : await listLibraryTags().catch(() => [] as LibraryTagNode[]);
       setSnapshot(nextSnapshot);
       setTags(nextTags.length ? nextTags : nextSnapshot.tags);
       const nextLibraryId = nextSnapshot.binding?.libraryId ?? "default";
