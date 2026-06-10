@@ -4,6 +4,7 @@ import path from "node:path";
 
 import type { HostDirectoryBrowseResult, HostDirectoryOption } from "@x-file/shared";
 
+import { resolveDefaultLibraryRootDir } from "../storage/library-binding-store.js";
 import { LibraryError } from "./library-errors.js";
 
 const HOST_DIRECTORY_BROWSE_LIMIT = 200;
@@ -13,8 +14,6 @@ export class HostDirectoryBrowserService {
     const roots = listHostDirectoryRoots();
     const fallbackPath = resolveDefaultHostBrowsePath(roots);
     const currentPath = resolveHostBrowsePath(requestedPath, fallbackPath);
-
-    assertReadableHostDirectory(currentPath, "path");
 
     return {
       currentPath,
@@ -71,18 +70,25 @@ function resolveDefaultHostBrowsePath(roots: HostDirectoryOption[]): string {
 
 function resolveHostBrowsePath(requestedPath: string | null | undefined, fallbackPath: string): string {
   const trimmedPath = requestedPath?.trim();
-  return trimmedPath ? path.resolve(trimmedPath) : fallbackPath;
+  if (!trimmedPath) {
+    return fallbackPath;
+  }
+
+  const resolvedPath = path.resolve(trimmedPath);
+  if (isReadableDirectory(resolvedPath)) {
+    return resolvedPath;
+  }
+
+  if (resolvedPath === path.resolve(resolveDefaultLibraryRootDir())) {
+    return fallbackPath;
+  }
+
+  throw new LibraryError(400, "NOT_A_DIRECTORY", "路径不是可读取目录", "path");
 }
 
 function resolveHostParentPath(currentPath: string): string | null {
   const parentPath = path.dirname(currentPath);
   return parentPath === currentPath ? null : parentPath;
-}
-
-function assertReadableHostDirectory(targetPath: string, field: string): void {
-  if (!isReadableDirectory(targetPath)) {
-    throw new LibraryError(400, "NOT_A_DIRECTORY", "路径不是可读取目录", field);
-  }
 }
 
 function isReadableDirectory(targetPath: string): boolean {
