@@ -934,9 +934,9 @@ function LibraryDesktopSidebar({
                         key={`${favorite.kind}:${favorite.path}`}
                         active={library.viewState.selectedFavoriteId === favorite.path}
                         title={favorite.label || favorite.path || t("libraryRootFolder")}
-                        count={resolveFavoriteKindLabel(favorite.kind)}
                         icon={favorite.kind === "folder" ? "folder" : "tag"}
                         onClick={() => library.selectFavorite(favorite)}
+                        onRemoveFavorite={() => void library.toggleFavorite(favorite)}
                       />
                     ))}
                   </div>
@@ -1219,19 +1219,53 @@ function SidebarPlainItem({
   count,
   icon,
   onClick,
+  onRemoveFavorite,
 }: {
   active: boolean;
   title: string;
-  count: string | number;
+  count?: string | number;
   icon: "folder" | "tag";
   onClick: () => void;
+  /** 存在时渲染右侧取消收藏星标按钮 */
+  onRemoveFavorite?: () => void;
 }) {
+  const itemClassName = active ? "affairs-sidebar-item active" : "affairs-sidebar-item";
+
+  // 收藏项：左侧导航按钮 + 右侧取消收藏星标
+  if (onRemoveFavorite) {
+    return (
+      <div className={itemClassName}>
+        <button type="button" className="affairs-sidebar-item-button" onClick={onClick}>
+          <span className="affairs-sidebar-item-row">
+            <span className="affairs-sidebar-leading-icon" aria-hidden="true">
+              {icon === "folder" ? renderMiniFolderIcon() : renderTagIcon()}
+            </span>
+            <span className="affairs-sidebar-item-title" title={title}>
+              {title}
+            </span>
+          </span>
+        </button>
+        <div className="affairs-sidebar-item-actions">
+          <button
+            type="button"
+            className="affairs-favorite-toggle active"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRemoveFavorite();
+            }}
+          >
+            {renderFilledStarIcon()}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // 普通侧边栏项
   return (
     <button
       type="button"
-      className={
-        active ? "affairs-sidebar-item active" : "affairs-sidebar-item"
-      }
+      className={itemClassName}
       onClick={onClick}
     >
       <span className="affairs-sidebar-item-button">
@@ -7087,6 +7121,21 @@ function renderResetFilterIcon() {
   return (
     <svg viewBox="0 0 16 16" aria-hidden="true">
       <path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** 实心五角星，用于收藏项的取消收藏按钮 */
+function renderFilledStarIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      <path
+        d="M8 2.1l1.7 3.4 3.8.6-2.8 2.7.7 3.8L8 10.8l-3.4 1.8.7-3.8-2.8-2.7 3.8-.6z"
+        fill="currentColor"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }

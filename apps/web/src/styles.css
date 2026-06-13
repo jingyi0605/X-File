@@ -3668,6 +3668,54 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   gap: 6px;
 }
 
+/* 收藏面板：flex 布局使导航按钮和星标操作区并排 */
+.affairs-favorites-panel .affairs-sidebar-item {
+  display: flex;
+  align-items: center;
+}
+
+.affairs-favorites-panel .affairs-sidebar-item-button {
+  appearance: none;
+  -webkit-appearance: none;
+  font: inherit;
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  /* 与标签树行的 padding-left 对齐，使图标中心线一致 */
+  padding-left: calc(var(--workbench-sidebar-icon-inset) - 6px);
+}
+
+.affairs-favorites-panel .affairs-sidebar-item-actions {
+  padding-right: 6px;
+  margin-left: auto;
+}
+
+/* 收藏切换按钮（实心星标，点击取消收藏） */
+.affairs-favorite-toggle {
+  border: 0;
+  background: transparent;
+  color: color-mix(in srgb, var(--warning, #f59e0b) 78%, var(--text-primary) 22%);
+  cursor: pointer;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  flex: 0 0 22px;
+}
+
+.affairs-favorite-toggle:hover {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.affairs-favorite-toggle svg {
+  width: 14px;
+  height: 14px;
+}
+
 .affairs-sidebar-empty-plain {
   min-height: 0;
   align-items: flex-start;
