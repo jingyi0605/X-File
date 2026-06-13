@@ -43,7 +43,7 @@ export function ModalSection({ heading, description, actions, tone = "default", 
       {heading || description || actions ? (
         <div className="modal-section-header">
           <div className="modal-section-copy">
-            {heading ? <strong className="modal-section-heading modal-section-title">{heading}</strong> : null}
+            {heading ? <h3 className="modal-section-heading modal-section-title">{heading}</h3> : null}
             {description ? <p className="modal-section-description">{description}</p> : null}
           </div>
           {actions ? <div className="modal-section-actions">{actions}</div> : null}

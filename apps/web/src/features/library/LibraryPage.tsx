@@ -1,6 +1,7 @@
 import {
   Fragment,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -21,6 +22,7 @@ import type {
   LibraryFavoriteKind,
   LibraryFavoriteRecord,
   LibraryFolderTagDetails,
+  LibraryIndexStatus,
   LibraryIndexState,
   LibraryPreview,
   LibraryTagNode,
@@ -90,6 +92,7 @@ interface LibraryPageProps {
 
 type LibraryDocumentEntry = Extract<LibraryEntry, { kind: "document" }>;
 type LibraryFolderEntry = Extract<LibraryEntry, { kind: "folder" }>;
+type LibraryDirectoryEntry = Extract<LibraryEntry, { kind: "folder" | "tag-directory" }>;
 
 type LibraryContextMenuTarget =
   | { kind: "blank"; folderPath: string | null }
@@ -110,6 +113,10 @@ type LibraryContextActionId =
   | "locate"
   | "open-local-app"
   | "download"
+  | "new-directory"
+  | "new-markdown"
+  | "new-text"
+  | "new-file"
   | "copy-file"
   | "copy-file-name"
   | "copy-absolute-path"
@@ -122,7 +129,7 @@ type LibraryContextActionId =
   | "properties";
 
 interface NativeLibraryContextMenuItem {
-  id: LibraryContextActionId | "copy-group";
+  id: LibraryContextActionId | "copy-group" | "new-group";
   label: string;
   disabled?: boolean;
   items?: NativeLibraryContextMenuItem[];
@@ -161,6 +168,14 @@ type PendingTagAssignmentTarget =
   | { kind: "document"; documentId: string; path: string; title: string }
   | { kind: "folder"; folderPath: string; title: string };
 
+interface LibraryTagAssignmentTaskState {
+  readonly id: string;
+  readonly kind: "document" | "folder";
+  readonly targetPath: string;
+  readonly status: "running" | "completed" | "failed";
+  readonly message: string | null;
+}
+
 interface LibraryViewerState {
   filePath: string;
   title: string;
@@ -181,6 +196,7 @@ interface LibraryTagTreeNodeRecord {
 
 interface LibraryTagTreeState {
   expandedPaths: string[];
+  expandedMorePaths: string[];
 }
 
 interface PendingTagFilterFavoriteState {
@@ -189,8 +205,44 @@ interface PendingTagFilterFavoriteState {
   error: string | null;
 }
 
-const LIBRARY_TAG_TREE_ROOTS = new Set(["时间", "类型", "time", "type"]);
+const LIBRARY_TAG_TREE_DEFAULT_ROOTS = new Set(["时间", "类型", "time", "type"]);
+const LIBRARY_TAG_TREE_NOISE_ROOTS = new Set([
+  "来源",
+  "主题",
+  "状态",
+  "source",
+  "topic",
+  "status",
+]);
+const LIBRARY_TAG_TREE_VISIBLE_LIMIT = 5;
 const LIBRARY_TAG_TREE_STATE_KEY = "x-file.library.tag-tree";
+const SIMPLE_PINYIN_MAP: Record<string, string> = {
+  合: "he",
+  同: "tong",
+  售: "shou",
+  前: "qian",
+  文: "wen",
+  档: "dang",
+  项: "xiang",
+  目: "mu",
+  系: "xi",
+  统: "tong",
+  集: "ji",
+  成: "cheng",
+  类: "lei",
+  型: "xing",
+  时: "shi",
+  间: "jian",
+  最: "zui",
+  近: "jin",
+  天: "tian",
+  高: "gao",
+  频: "pin",
+  低: "di",
+  子: "zi",
+  标: "biao",
+  签: "qian",
+};
 
 export function LibraryPage({
   onOpenSettings,
@@ -199,6 +251,7 @@ export function LibraryPage({
   const library = useLibraryState();
   const binding = library.snapshot?.binding ?? null;
   const shouldShowInitialization = library.requiresInitialization || !binding;
+  const shouldShowDisabled = Boolean(binding && !binding.enabled);
   const [contextMenu, setContextMenu] =
     useState<LibraryContextMenuState | null>(null);
   const [libraryClipboard, setLibraryClipboard] =
@@ -213,6 +266,10 @@ export function LibraryPage({
     useState<LibraryContextMenuTarget | null>(null);
   const [pendingTagAssignment, setPendingTagAssignment] =
     useState<PendingTagAssignmentTarget | null>(null);
+  const [tagAssignmentTask, setTagAssignmentTask] =
+    useState<LibraryTagAssignmentTaskState | null>(null);
+  const [tagAssignmentTaskExpanded, setTagAssignmentTaskExpanded] =
+    useState(false);
   const [viewerState, setViewerState] = useState<LibraryViewerState | null>(null);
   const [tagManagerOpen, setTagManagerOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -221,7 +278,7 @@ export function LibraryPage({
   function openLibraryViewer(entry: LibraryDocumentEntry): void {
     setViewerState({
       filePath: entry.path,
-      title: entry.title || getPathName(entry.path),
+      title: resolveLibraryDocumentDisplayName(entry),
     });
   }
 
@@ -301,6 +358,25 @@ export function LibraryPage({
           await library.downloadSelected(target.entry.path);
         }
         return;
+      case "new-directory":
+      case "new-markdown":
+      case "new-text":
+      case "new-file": {
+        const kind =
+          actionId === "new-directory"
+            ? "directory"
+            : actionId === "new-markdown"
+              ? "markdown"
+              : actionId === "new-text"
+                ? "text"
+                : "custom";
+        setPendingCreate({
+          kind,
+          folderPath: resolvePasteDestinationFolder(target),
+          fileName: resolveDefaultCreateName(kind),
+        });
+        return;
+      }
       case "copy-file":
       case "copy-relative-path":
         if (target.kind !== "blank") {
@@ -435,6 +511,16 @@ export function LibraryPage({
     );
   }
 
+  if (shouldShowDisabled) {
+    return (
+      <LibraryDisabledPanel
+        library={library}
+        onOpenSettings={onOpenSettings}
+        platformData={platformData}
+      />
+    );
+  }
+
   return (
     <main
       className="app-shell workbench-shell xfile-workbench-shell"
@@ -449,6 +535,15 @@ export function LibraryPage({
           onOpenTagManager={() => setTagManagerOpen(true)}
         />
         <section className="affairs-main-panel">
+          {tagAssignmentTask ? (
+            <LibraryTagTaskEntry
+              task={tagAssignmentTask}
+              expanded={tagAssignmentTaskExpanded}
+              onToggle={() =>
+                setTagAssignmentTaskExpanded((current) => !current)
+              }
+            />
+          ) : null}
           {library.error ? (
             <div className="affairs-library-error-strip">
               <strong>{t("libraryErrorTitle")}</strong>
@@ -479,6 +574,9 @@ export function LibraryPage({
             setPendingRename({ path, fileName: getPathName(path) })
           }
           onRequestDelete={(target) => setPendingDelete(target)}
+          onRequestTagAssignment={(target) =>
+            setPendingTagAssignment(resolvePendingTagAssignmentTarget(target))
+          }
         />
       </section>
       {contextMenu ? (
@@ -545,6 +643,10 @@ export function LibraryPage({
           library={library}
           target={pendingTagAssignment}
           onClose={() => setPendingTagAssignment(null)}
+          onTaskChange={(task) => {
+            setTagAssignmentTask(task);
+            setTagAssignmentTaskExpanded(false);
+          }}
         />
       ) : null}
       {viewerState ? (
@@ -562,6 +664,118 @@ export function LibraryPage({
       ) : null}
     </main>
   );
+}
+
+
+function LibraryDisabledPanel({
+  library,
+  onOpenSettings,
+  platformData,
+}: {
+  library: LibraryState;
+  onOpenSettings: () => void;
+  platformData: WorkbenchPlatformData;
+}) {
+  return (
+    <main
+      className="app-shell workbench-shell xfile-workbench-shell"
+      data-runtime-platform={platformData.runtimePlatform}
+      data-os-family={platformData.osFamily}
+      data-overlay-titlebar={platformData.overlayTitlebar ? "true" : undefined}
+    >
+      <section className="workbench-window xfile-workbench-window">
+        <aside className="workbench-sidebar affairs-layout-sidebar">
+          <div className="affairs-sidebar-panel">
+            <div className="xfile-sidebar-brand" aria-label={t("appTitle")}>
+              <span className="xfile-sidebar-brand-icon" aria-hidden="true">
+                {renderXFileBrandIcon()}
+              </span>
+              <span className="xfile-sidebar-brand-copy">
+                <strong>{t("appTitle")}</strong>
+                <span>{t("appTagline")}</span>
+              </span>
+            </div>
+            <footer className="workbench-sidebar-footer">
+              <button
+                type="button"
+                className="workbench-sidebar-footer-button"
+                onClick={onOpenSettings}
+                aria-label={t("navSettings")}
+                title={t("navSettings")}
+              >
+                {renderSettingsIcon()}
+                <span>{t("navSettings")}</span>
+              </button>
+            </footer>
+          </div>
+        </aside>
+        <section className="affairs-main-panel">
+          <section className="affairs-stage-panel">
+            <div className="affairs-stage-content" aria-label={t("libraryDocumentList")}>
+              <div className="affairs-stage-empty">
+                <strong>{t("librarySummaryDisabled")}</strong>
+                <span>{library.snapshot?.binding?.rootDir ?? ""}</span>
+                <button type="button" className="primary-button" onClick={onOpenSettings}>
+                  {t("navSettings")}
+                </button>
+              </div>
+            </div>
+          </section>
+        </section>
+        <LibraryDetail
+          library={library}
+          onRequestRename={() => undefined}
+          onRequestDelete={() => undefined}
+          onRequestTagAssignment={() => undefined}
+        />
+      </section>
+    </main>
+  );
+}
+
+function LibraryTagTaskEntry({
+  task,
+  expanded,
+  onToggle,
+}: {
+  task: LibraryTagAssignmentTaskState;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const statusText = resolveLibraryTagTaskStatusText(task.status);
+  return (
+    <div className="library-tag-task-entry">
+      <button
+        type="button"
+        className="library-tag-task-trigger"
+        aria-label={t("libraryTagTaskEntryLabel", { status: statusText })}
+        aria-expanded={expanded}
+        onClick={onToggle}
+      >
+        <span>{t("libraryTagTaskEntryTitle")}</span>
+        <strong>{statusText}</strong>
+      </button>
+      {expanded ? (
+        <div
+          className="library-tag-task-panel"
+          role="status"
+          aria-label={t("libraryTagTaskRecentLabel")}
+        >
+          <span>{task.targetPath}</span>
+          <strong>{statusText}</strong>
+          {task.message ? <small>{task.message}</small> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function resolveLibraryTagTaskStatusText(
+  status: LibraryTagAssignmentTaskState["status"],
+): string {
+  if (status === "completed") return t("libraryTagTaskCompleted");
+  if (status === "failed") return t("libraryTagTaskFailed");
+  return t("libraryTagTaskRunning");
 }
 
 function LibraryDesktopSidebar({
@@ -620,7 +834,7 @@ function LibraryDesktopSidebar({
       );
       return areStringArraysEqual(current.expandedPaths, nextExpandedPaths)
         ? current
-        : { expandedPaths: nextExpandedPaths };
+        : { ...current, expandedPaths: nextExpandedPaths };
     });
   }, [selectedTagPaths]);
 
@@ -637,6 +851,16 @@ function LibraryDesktopSidebar({
       expandedPaths: current.expandedPaths.includes(path)
         ? current.expandedPaths.filter((item) => item !== path)
         : [...current.expandedPaths, path],
+      expandedMorePaths: current.expandedMorePaths,
+    }));
+  }
+
+  function toggleExpandedMoreTagPath(path: string): void {
+    setTagTreeState((current) => ({
+      expandedPaths: current.expandedPaths,
+      expandedMorePaths: current.expandedMorePaths.includes(path)
+        ? current.expandedMorePaths.filter((item) => item !== path)
+        : [...current.expandedMorePaths, path],
     }));
   }
 
@@ -694,20 +918,16 @@ function LibraryDesktopSidebar({
         <div className="affairs-sidebar-shell">
           <div className="affairs-sidebar-content">
             <div className="affairs-sidebar-groups affairs-library-sidebar-groups">
-              <div className="affairs-sidebar-group affairs-sidebar-group-plain affairs-favorites-panel">
-                <div className="affairs-sidebar-group-header">
-                  <span>{t("libraryFavorites")}</span>
-                  <span className="affairs-sidebar-block-count">
-                    {snapshot?.favorites.length ?? 0}
-                  </span>
-                </div>
-                <div className="affairs-sidebar-list affairs-sidebar-list-plain">
-                  {(snapshot?.favorites.length ?? 0) === 0 ? (
-                    <p className="affairs-sidebar-empty compact">
-                      {t("libraryEmptyFavorite")}
-                    </p>
-                  ) : (
-                    snapshot?.favorites.map((favorite) => (
+              {(snapshot?.favorites.length ?? 0) > 0 ? (
+                <div className="affairs-sidebar-group affairs-sidebar-group-plain affairs-favorites-panel">
+                  <div className="affairs-sidebar-group-header">
+                    <span>{t("libraryFavorites")}</span>
+                    <span className="affairs-sidebar-block-count">
+                      {snapshot?.favorites.length ?? 0}
+                    </span>
+                  </div>
+                  <div className="affairs-sidebar-list affairs-sidebar-list-plain">
+                    {snapshot?.favorites.map((favorite) => (
                       <SidebarPlainItem
                         key={`${favorite.kind}:${favorite.path}`}
                         active={library.viewState.selectedFavoriteId === favorite.path}
@@ -716,10 +936,10 @@ function LibraryDesktopSidebar({
                         icon={favorite.kind === "folder" ? "folder" : "tag"}
                         onClick={() => library.selectFavorite(favorite)}
                       />
-                    ))
-                  )}
+                    ))}
+                  </div>
                 </div>
-              </div>
+              ) : null}
 
               <section className="affairs-sidebar-group affairs-sidebar-group-plain affairs-tag-tree-panel">
                 <header className="affairs-sidebar-group-header">
@@ -801,9 +1021,11 @@ function LibraryDesktopSidebar({
                         node={node}
                         selectedTagPaths={selectedTagPaths}
                         expandedPaths={tagTreeState.expandedPaths}
+                        expandedMorePaths={tagTreeState.expandedMorePaths}
                         forceExpanded={tagSearchQuery.trim().length > 0}
                         onSelect={library.selectTag}
                         onToggleExpand={toggleExpandedTagPath}
+                        onToggleMore={toggleExpandedMoreTagPath}
                       />
                     ))}
                   </div>
@@ -897,26 +1119,36 @@ function LibraryTagTreeNode({
   node,
   selectedTagPaths,
   expandedPaths,
+  expandedMorePaths,
   forceExpanded,
   onSelect,
   onToggleExpand,
+  onToggleMore,
   depth = 0,
 }: {
   node: LibraryTagTreeNodeRecord;
   selectedTagPaths: string[];
   expandedPaths: string[];
+  expandedMorePaths: string[];
   forceExpanded: boolean;
   onSelect: (path: string | null) => void;
   onToggleExpand: (path: string) => void;
+  onToggleMore: (path: string) => void;
   depth?: number;
 }) {
   const hasChildren = node.children.length > 0;
   const expanded = forceExpanded || (hasChildren && expandedPaths.includes(node.path));
   const active = selectedTagPaths.includes(node.path);
+  const showAllChildren = forceExpanded || expandedMorePaths.includes(node.path);
+  const visibleChildren = showAllChildren
+    ? node.children
+    : node.children.slice(0, LIBRARY_TAG_TREE_VISIBLE_LIMIT);
+  const hiddenChildCount = Math.max(0, node.children.length - visibleChildren.length);
   return (
     <div
       className="affairs-tag-tree-node"
       role="treeitem"
+      aria-label={node.label}
       aria-expanded={hasChildren ? expanded : undefined}
       data-depth={depth}
     >
@@ -950,18 +1182,29 @@ function LibraryTagTreeNode({
       </div>
       {expanded ? (
         <div className="affairs-tag-tree-children" role="group">
-          {node.children.map((child) => (
+          {visibleChildren.map((child) => (
             <LibraryTagTreeNode
               key={child.path}
               node={child}
               selectedTagPaths={selectedTagPaths}
               expandedPaths={expandedPaths}
+              expandedMorePaths={expandedMorePaths}
               forceExpanded={forceExpanded}
               onSelect={onSelect}
               onToggleExpand={onToggleExpand}
+              onToggleMore={onToggleMore}
               depth={depth + 1}
             />
           ))}
+          {hiddenChildCount > 0 ? (
+            <button
+              type="button"
+              className="affairs-tag-tree-more"
+              onClick={() => onToggleMore(node.path)}
+            >
+              {t("libraryTagTreeShowMore", { count: hiddenChildCount })}
+            </button>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -1359,6 +1602,7 @@ function LibraryStage({
       />
       <div
         className="affairs-stage-content"
+        aria-label={t("libraryDocumentList")}
         onContextMenu={(event) => onOpenContextMenu(event, blankTarget)}
       >
         {library.loading || library.documentsLoading ? (
@@ -1525,16 +1769,7 @@ function LibraryStageToolbar({
         >
           {renderRefreshIcon()}
         </button>
-        <button
-          type="button"
-          className="affairs-stage-status-trigger"
-          title={resolveIndexStatusLabel(library.snapshot?.status.state)}
-        >
-          <span className={`affairs-stage-status-dot state-${resolveStatusDotState(library.snapshot?.status.state)}`} />
-          <span className="affairs-stage-status-text">
-            {resolveIndexStatusShortLabel(library.snapshot?.status.state)}
-          </span>
-        </button>
+        <LibraryIndexStatusPopover status={library.snapshot?.status ?? null} />
         <button
           type="button"
           className="affairs-stage-toolbar-icon"
@@ -1566,7 +1801,7 @@ function BreadcrumbItems({
 }: {
   path: string | null;
   browseMode: "folder" | "tag";
-  onSelectFolder: (path: string | null) => void;
+  onSelectFolder: (path: string | null, selectedEntryPath?: string | null) => void;
   onSelectTag: (path: string | null) => void;
 }) {
   const segments = path?.split("/").filter(Boolean) ?? [];
@@ -1577,6 +1812,7 @@ function BreadcrumbItems({
     <>
       {segments.map((segment, index) => {
         const nextPath = segments.slice(0, index + 1).join("/");
+        const sourceEntryPath = segments.slice(0, index + 2).join("/");
         const current = index === segments.length - 1;
         return (
           <span key={nextPath} className="affairs-stage-breadcrumb-fragment">
@@ -1595,7 +1831,7 @@ function BreadcrumbItems({
               }
               onClick={() =>
                 browseMode === "folder"
-                  ? onSelectFolder(nextPath)
+                  ? onSelectFolder(nextPath, sourceEntryPath || null)
                   : onSelectTag(nextPath)
               }
             >
@@ -1737,8 +1973,9 @@ function VirtualLibraryGrid({
         columnGap: VIRTUAL_GRID_COLUMN_GAP,
       }),
   );
+  const virtualItemCount = Math.max(entries.length, library.visibleEntryTotal);
   const metrics = computeVirtualGridMetrics(
-    entries.length,
+    virtualItemCount,
     viewport.width,
     viewport.height,
     viewport.scrollTop,
@@ -1751,7 +1988,7 @@ function VirtualLibraryGrid({
     },
   );
   const shouldVirtualize = shouldVirtualizeAffairsGrid(
-    entries.length,
+    virtualItemCount,
     viewport.width,
     viewport.height,
     {
@@ -1877,13 +2114,14 @@ function VirtualLibraryFinderList({
   useLayoutEffect(() => {
     const element = viewportRef.current;
     if (!element) return;
+    const itemCount = Math.max(entries.length, library.visibleEntryTotal);
     const sync = () =>
       setViewport((current) => ({
         ...current,
         height: element.clientHeight,
         scrollTop: clampScrollTop(
           element.scrollTop,
-          entries.length,
+          itemCount,
           measuredRowHeight,
           element.clientHeight,
         ),
@@ -1893,7 +2131,7 @@ function VirtualLibraryFinderList({
       typeof ResizeObserver === "undefined" ? null : new ResizeObserver(sync);
     observer?.observe(element);
     return () => observer?.disconnect();
-  }, [entries.length, measuredRowHeight]);
+  }, [entries.length, library.visibleEntryTotal, measuredRowHeight]);
 
   useLayoutEffect(() => {
     const element = viewportRef.current;
@@ -1921,8 +2159,9 @@ function VirtualLibraryFinderList({
     };
   }, [entries.length, measuredRowHeight]);
 
+  const virtualItemCount = Math.max(entries.length, library.visibleEntryTotal);
   const metrics = computeVirtualListMetrics(
-    entries.length,
+    virtualItemCount,
     viewport.height,
     viewport.scrollTop,
     { rowHeight: measuredRowHeight },
@@ -1936,7 +2175,7 @@ function VirtualLibraryFinderList({
   function handleScroll(element: HTMLDivElement): void {
     const nextScrollTop = clampScrollTop(
       element.scrollTop,
-      entries.length,
+      virtualItemCount,
       measuredRowHeight,
       element.clientHeight,
     );
@@ -1957,8 +2196,15 @@ function VirtualLibraryFinderList({
         Math.max(viewport.height, measuredRowHeight) / measuredRowHeight,
       ),
     );
+    const currentMetrics = computeVirtualListMetrics(
+      virtualItemCount,
+      element.clientHeight,
+      nextScrollTop,
+      { rowHeight: measuredRowHeight },
+    );
+    const loadedEndIndex = Math.min(currentMetrics.endIndex, entries.length);
     if (
-      metrics.endIndex >= entries.length - preloadRows ||
+      loadedEndIndex >= entries.length - preloadRows ||
       remaining <= VIRTUAL_LOAD_MORE_DISTANCE
     ) {
       void library.loadMore();
@@ -2521,9 +2767,9 @@ function LibraryEntryCard({
       <div className="affairs-doc-icon">{renderDocumentShape(entry.path)}</div>
       <div
         className="affairs-doc-title"
-        title={entry.title || t("libraryUntitled")}
+        title={resolveLibraryDocumentDisplayName(entry)}
       >
-        {entry.title || t("libraryUntitled")}
+        {resolveLibraryDocumentDisplayName(entry)}
       </div>
       <div className="affairs-doc-footer">
         <span className="affairs-doc-muted">
@@ -2616,19 +2862,19 @@ function LibraryFinderRow({
         </span>
         <span
           className="affairs-finder-name"
-          title={entry.title || t("libraryUntitled")}
+          title={resolveLibraryDocumentDisplayName(entry)}
         >
-          {entry.title || t("libraryUntitled")}
+          {resolveLibraryDocumentDisplayName(entry)}
         </span>
       </span>
       <span className="affairs-finder-cell">
-        {formatBytes(entry.sizeBytes)}
+        {formatFinderBytes(entry.sizeBytes)}
       </span>
       <span className="affairs-finder-cell">
         {formatDateTime(entry.updatedAt)}
       </span>
       <span className="affairs-finder-cell">
-        {resolveDocumentVisual(entry.path).extension.toUpperCase()}
+        {resolveFinderKindLabel(entry.path)}
       </span>
       <span className="affairs-finder-cell">
         {formatDateTime(entry.createdAt)}
@@ -2641,16 +2887,28 @@ function LibraryDetail({
   library,
   onRequestRename,
   onRequestDelete,
+  onRequestTagAssignment,
 }: {
   library: LibraryState;
   onRequestRename: (path: string) => void;
   onRequestDelete: (target: LibraryContextMenuTarget) => void;
+  onRequestTagAssignment: (target: LibraryContextMenuTarget) => void;
 }) {
   const selected = library.selectedDocument;
+  const selectedLocalPath = selected
+    ? resolveDocumentLocalPath(library, selected.path)
+    : null;
+  const selectedFolder = !selected
+    ? library.entries.find(
+        (entry): entry is LibraryDirectoryEntry =>
+          isLibraryDirectoryEntry(entry) &&
+          entry.path === library.viewState.selectedFolderEntryPath,
+      ) ?? null
+    : null;
   const preview = library.preview;
 
   return (
-    <aside className="affairs-detail-panel library-detail">
+    <aside className="affairs-detail-panel library-detail" aria-label={t("libraryDetails")}>
       <header
         className="affairs-detail-tabs"
         role="tablist"
@@ -2663,9 +2921,41 @@ function LibraryDetail({
           {t("libraryAssistant")}
         </button>
       </header>
-      {!selected ? (
+      {!selected && !selectedFolder ? (
         <div className="affairs-detail-empty">{t("libraryNoSelection")}</div>
-      ) : (
+      ) : selectedFolder ? (
+        <div className="affairs-detail-scroll">
+          <section className="affairs-detail-block affairs-detail-summary-block">
+            <span className="affairs-detail-eyebrow">
+              {t("libraryDirectoryDetail")}
+            </span>
+            <div className="affairs-detail-title-block">
+              <div className="affairs-doc-icon detail-doc-icon">
+                {renderFolderShape("row")}
+              </div>
+              <h2>{selectedFolder.name}</h2>
+              <LibraryDetailSummary
+                summary={library.documentPage?.directoryStatus?.staleReason ?? ""}
+              />
+            </div>
+            <DetailRow label={t("libraryMetaPath")} value={selectedFolder.path} />
+            <DetailRow
+              label={t("libraryMetaUpdatedAt")}
+              value={formatDateTime(selectedFolder.updatedAt)}
+            />
+            <DetailRow
+              label={t("libraryMetaKind")}
+              value={t("libraryFinderKindFolder")}
+            />
+            <DetailRow
+              label={t("libraryMetaTags")}
+              value={t("libraryCountDocuments", {
+                count: selectedFolder.documentCount,
+              })}
+            />
+          </section>
+        </div>
+      ) : selected ? (
         <div className="affairs-detail-scroll">
           <section className="affairs-detail-block affairs-detail-summary-block">
             <span className="affairs-detail-eyebrow">
@@ -2675,13 +2965,13 @@ function LibraryDetail({
               <div className="affairs-doc-icon detail-doc-icon">
                 {renderDocumentShape(selected.path, "row")}
               </div>
-              <h2>{selected.title || t("libraryUntitled")}</h2>
-              {selected.summary ? <p>{selected.summary}</p> : null}
+              <h2>{resolveLibraryDocumentDisplayName(selected)}</h2>
+              <LibraryDetailSummary summary={selected.summary} />
             </div>
-            <button type="button" className="affairs-detail-link-button">
-              {t("libraryExpandText")}
-            </button>
-            <DetailRow label={t("libraryMetaPath")} value={selected.path} />
+            <DetailPathRow
+              path={selected.path}
+              onSelectFolder={library.selectFolder}
+            />
             <DetailRow
               label={t("libraryMetaSize")}
               value={formatBytes(selected.sizeBytes)}
@@ -2694,6 +2984,12 @@ function LibraryDetail({
               label={t("libraryMetaUpdatedAt")}
               value={formatDateTime(selected.updatedAt)}
             />
+            {selectedLocalPath ? (
+              <DetailRow
+                label={t("libraryMetaLocalPath")}
+                value={selectedLocalPath}
+              />
+            ) : null}
           </section>
 
           <section className="affairs-detail-block">
@@ -2702,11 +2998,15 @@ function LibraryDetail({
               <p>{t("libraryTagRecommend")}</p>
             </div>
             <TagPills items={[...selected.tags, ...selected.derivedTags]} />
-            <DocumentTagEditor
-              key={selected.documentId}
-              library={library}
-              documentId={selected.documentId}
-            />
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() =>
+                onRequestTagAssignment({ kind: "document", entry: selected })
+              }
+            >
+              {t("libraryEditTags")}
+            </button>
           </section>
 
           <section className="affairs-detail-block">
@@ -2732,6 +3032,15 @@ function LibraryDetail({
               >
                 {t("libraryRename")}
               </button>
+              {selectedLocalPath ? (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => void openPathInDesktop(selectedLocalPath)}
+                >
+                  {t("libraryContextOpenLocalApp")}
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="danger-button"
@@ -2755,8 +3064,42 @@ function LibraryDetail({
             />
           </section>
         </div>
-      )}
+      ) : null}
     </aside>
+  );
+}
+
+function isLibraryDirectoryEntry(entry: LibraryEntry): entry is LibraryDirectoryEntry {
+  return entry.kind === "folder" || entry.kind === "tag-directory";
+}
+
+const DETAIL_SUMMARY_COLLAPSE_LENGTH = 96;
+
+function LibraryDetailSummary({ summary }: { summary: string | null | undefined }) {
+  const [expanded, setExpanded] = useState(false);
+  const normalized = summary?.trim() ?? "";
+  if (!normalized) {
+    return null;
+  }
+
+  const shouldCollapse = normalized.length > DETAIL_SUMMARY_COLLAPSE_LENGTH;
+  const visibleSummary = shouldCollapse && !expanded
+    ? `${normalized.slice(0, DETAIL_SUMMARY_COLLAPSE_LENGTH)}…`
+    : normalized;
+
+  return (
+    <div className="affairs-detail-summary">
+      <p className="affairs-detail-summary-text">{visibleSummary}</p>
+      {shouldCollapse ? (
+        <button
+          type="button"
+          className="affairs-detail-link-button"
+          onClick={() => setExpanded((current) => !current)}
+        >
+          {expanded ? t("libraryCollapseText") : t("libraryExpandText")}
+        </button>
+      ) : null}
+    </div>
   );
 }
 
@@ -3346,7 +3689,7 @@ function LibrarySearchModal({
                   onClick={() => onOpenDocument(entry)}
                 >
                   <span className="library-search-result-title">
-                    {renderHighlightedText(entry.title || getPathName(entry.path), activeKeyword)}
+                    {renderHighlightedText(resolveLibraryDocumentDisplayName(entry), activeKeyword)}
                   </span>
                   <span className="library-search-result-path">
                     {renderHighlightedText(entry.path, activeKeyword)}
@@ -3399,6 +3742,7 @@ function LibraryCreateModal({
 }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const fileNameInputId = useId();
 
   async function submit(): Promise<void> {
     const fileName = normalizeCreateFileName(state.fileName, state.kind);
@@ -3456,8 +3800,10 @@ function LibraryCreateModal({
       <ModalField
         label={t("libraryCreateNameLabel")}
         description={resolveCreateKindLabel(state.kind)}
+        htmlFor={fileNameInputId}
       >
         <input
+          id={fileNameInputId}
           value={state.fileName}
           autoFocus
           placeholder={resolveCreatePlaceholder(state.kind)}
@@ -3621,10 +3967,12 @@ function LibraryTagAssignmentModal({
   library,
   target,
   onClose,
+  onTaskChange,
 }: {
   library: LibraryState;
   target: PendingTagAssignmentTarget;
   onClose: () => void;
+  onTaskChange: (task: LibraryTagAssignmentTaskState) => void;
 }) {
   const [details, setDetails] = useState<
     LibraryDocumentTagDetails | LibraryFolderTagDetails | null
@@ -3665,18 +4013,33 @@ function LibraryTagAssignmentModal({
     createTagPaths: string[] = [],
   ): Promise<void> {
     setError(null);
-    const nextDetails = target.kind === "document"
-      ? await saveDocumentTags(target.documentId, {
-        tagIds: nextTagIds,
-        createTagPaths,
-      })
-      : await saveFolderTags({
-        folderPath: target.folderPath,
-        tagIds: nextTagIds,
-        createTagPaths,
-      });
-    setDetails(nextDetails);
-    await Promise.all([library.reload(), library.reloadDocuments(true)]);
+    const task: LibraryTagAssignmentTaskState = {
+      id: `tag-assignment-${Date.now()}`,
+      kind: target.kind,
+      targetPath: target.kind === "document" ? target.path : target.folderPath,
+      status: "running",
+      message: null,
+    };
+    onTaskChange(task);
+    try {
+      const nextDetails = target.kind === "document"
+        ? await saveDocumentTags(target.documentId, {
+          tagIds: nextTagIds,
+          createTagPaths,
+        })
+        : await saveFolderTags({
+          folderPath: target.folderPath,
+          tagIds: nextTagIds,
+          createTagPaths,
+        });
+      setDetails(nextDetails);
+      onTaskChange({ ...task, status: "completed" });
+      await Promise.all([library.reload(), library.reloadDocuments(true)]);
+    } catch (err) {
+      const message = toApiErrorMessage(err);
+      onTaskChange({ ...task, status: "failed", message });
+      throw err;
+    }
   }
 
   const assignedTagIds = details ? resolveAssignedTagIds(details) : [];
@@ -4418,12 +4781,14 @@ function LibraryTagManagerModal({
             <>
               <ModalField label={t("libraryTagNameLabel")}>
                 <input
+                  aria-label={t("libraryTagNameLabel")}
                   value={name}
                   onChange={(event) => setName(event.target.value)}
                 />
               </ModalField>
               <ModalField label={t("libraryTagParentLabel")}>
                 <select
+                  aria-label={t("libraryTagParentLabel")}
                   value={parentId ?? ""}
                   onChange={(event) => setParentId(event.target.value || null)}
                 >
@@ -4437,6 +4802,7 @@ function LibraryTagManagerModal({
               </ModalField>
               <ModalField label={t("libraryTagDescriptionLabel")}>
                 <textarea
+                  aria-label={t("libraryTagDescriptionLabel")}
                   value={description}
                   rows={3}
                   onChange={(event) => setDescription(event.target.value)}
@@ -4444,6 +4810,7 @@ function LibraryTagManagerModal({
               </ModalField>
               <ModalField label={t("libraryTagStatusLabel")}>
                 <select
+                  aria-label={t("libraryTagStatusLabel")}
                   value={status}
                   onChange={(event) =>
                     setStatus(
@@ -4457,6 +4824,10 @@ function LibraryTagManagerModal({
                   </option>
                 </select>
               </ModalField>
+              <div className="library-tag-manager-meta">
+                <span>{t("libraryTagDocumentCountLabel")}</span>
+                <strong>{selected.documentCount}</strong>
+              </div>
               <ModalSection
                 className="library-tag-smart-rules-section"
                 heading={t("libraryTagSmartRulesSectionTitle")}
@@ -4537,6 +4908,7 @@ function LibraryTagManagerModal({
                             label={t("libraryTagSmartRuleRelationLabel")}
                           >
                             <select
+                              aria-label={t("libraryTagSmartRuleRelationLabel")}
                               value={rule.relation}
                               disabled={saving}
                               onChange={(event) => {
@@ -4564,6 +4936,7 @@ function LibraryTagManagerModal({
                           </ModalField>
                           <ModalField label={t("libraryTagSmartRuleTypeLabel")}>
                             <select
+                              aria-label={t("libraryTagSmartRuleTypeLabel")}
                               value={rule.ruleType}
                               disabled={saving}
                               onChange={(event) => {
@@ -4608,6 +4981,7 @@ function LibraryTagManagerModal({
                               label={t("libraryTagSmartRuleKeywordLabel")}
                             >
                               <input
+                                aria-label={t("libraryTagSmartRuleKeywordLabel")}
                                 value={String(
                                   (rule.matcher as { keyword?: string })
                                     .keyword ?? "",
@@ -4634,6 +5008,9 @@ function LibraryTagManagerModal({
                               label={t("libraryTagSmartRuleExtensionsLabel")}
                             >
                               <input
+                                aria-label={t(
+                                  "libraryTagSmartRuleExtensionsLabel",
+                                )}
                                 value={
                                   Array.isArray(
                                     (rule.matcher as { extensions?: string[] })
@@ -4676,6 +5053,9 @@ function LibraryTagManagerModal({
                                 )}
                               >
                                 <input
+                                  aria-label={t(
+                                    "libraryTagSmartRuleModifiedStartLabel",
+                                  )}
                                   type="datetime-local"
                                   value={String(
                                     (rule.matcher as { start?: string })
@@ -4707,6 +5087,9 @@ function LibraryTagManagerModal({
                                 label={t("libraryTagSmartRuleModifiedEndLabel")}
                               >
                                 <input
+                                  aria-label={t(
+                                    "libraryTagSmartRuleModifiedEndLabel",
+                                  )}
                                   type="datetime-local"
                                   value={String(
                                     (rule.matcher as { end?: string }).end ??
@@ -4741,6 +5124,9 @@ function LibraryTagManagerModal({
                               label={t("libraryTagSmartRuleFolderPathLabel")}
                             >
                               <input
+                                aria-label={t(
+                                  "libraryTagSmartRuleFolderPathLabel",
+                                )}
                                 value={String(
                                   (
                                     rule.matcher as {
@@ -5174,7 +5560,7 @@ function LibraryFileViewerSurface({
 }
 
 function getLibraryPreviewForViewer(path: string): Promise<LibraryPreview> {
-  return getLibraryPreview(path, "reading");
+  return getLibraryPreview(path);
 }
 
 interface HtmlPresentationModeInput {
@@ -5599,6 +5985,49 @@ function DetailRow({ label, value }: { label: string; value: string }) {
   );
 }
 
+function DetailPathRow({
+  path,
+  onSelectFolder,
+}: {
+  path: string;
+  onSelectFolder: (path: string | null, selectedEntryPath?: string | null) => void;
+}) {
+  const segments = path.split("/").filter(Boolean);
+  if (segments.length <= 1) {
+    return (
+      <DetailRow label={t("libraryMetaPath")} value={path} />
+    );
+  }
+
+  return (
+    <div className="detail-row" data-testid="library-detail-path-row">
+      <span>{t("libraryMetaPath")}</span>
+      <strong className="detail-path-segments">
+        {segments.map((segment, index) => {
+          const currentPath = segments.slice(0, index + 1).join("/");
+          const isFileName = index === segments.length - 1;
+          return (
+            <Fragment key={currentPath}>
+              {index > 0 ? <span className="detail-path-separator">/</span> : null}
+              {isFileName ? (
+                <span>{segment}</span>
+              ) : (
+                <button
+                  type="button"
+                  className="affairs-detail-link-button detail-path-button"
+                  onClick={() => onSelectFolder(currentPath)}
+                >
+                  {segment}
+                </button>
+              )}
+            </Fragment>
+          );
+        })}
+      </strong>
+    </div>
+  );
+}
+
 function TagPills({ items }: { items: string[] }) {
   const visibleItems = compactDocumentTagPaths(items);
   return (
@@ -5609,6 +6038,90 @@ function TagPills({ items }: { items: string[] }) {
         <small>{t("libraryNoTags")}</small>
       )}
     </div>
+  );
+}
+
+function LibraryIndexStatusPopover({ status }: { status: LibraryIndexStatus | null }) {
+  const [open, setOpen] = useState(false);
+  const stateLabel = resolveIndexStatusLabel(status?.state);
+  const stageLabel = resolveIndexStageLabel(status?.runningStage ?? null);
+  const progress = status?.progress ?? null;
+  const technicalRows = [
+    [t("libraryStatusLastRequested"), formatNullableDateTime(status?.lastRequestedAt ?? null)],
+    [t("libraryStatusLastStarted"), formatNullableDateTime(status?.lastStartedAt ?? null)],
+    [t("libraryStatusLastCompleted"), formatNullableDateTime(status?.lastCompletedAt ?? null)],
+    [t("libraryStatusLastFailed"), formatNullableDateTime(status?.lastFailedAt ?? null)],
+    [t("libraryStatusDirtyReasons"), status?.dirtyReasons?.join(", ") || "--"],
+    [t("libraryStatusErrorSummary"), status?.errorSummary || "--"],
+  ];
+
+  return (
+    <span
+      className="library-index-status-anchor"
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      <button
+        type="button"
+        className="affairs-stage-status-trigger"
+        title={stateLabel}
+        aria-label={`${t("libraryStatusTitle")}：${stateLabel}`}
+        aria-expanded={open}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
+      >
+        <span className={`affairs-stage-status-dot state-${resolveStatusDotState(status?.state)}`} />
+        <span className="affairs-stage-status-text">
+          {resolveIndexStatusShortLabel(status?.state)}
+        </span>
+      </button>
+      {open ? (
+        <div
+          role="dialog"
+          aria-label={t("libraryIndexStatusDetailsTitle")}
+          className="library-index-status-popover"
+        >
+          <strong>{t("libraryIndexStatusDetailsTitle")}</strong>
+          <dl className="library-index-status-summary">
+            <div>
+              <dt>{t("libraryIndexStatusCurrentLabel")}</dt>
+              <dd>{stateLabel}</dd>
+            </div>
+            {status?.runningStage ? (
+              <div>
+                <dt>{t("libraryStatusRunningStage")}</dt>
+                <dd>{stageLabel}</dd>
+              </div>
+            ) : null}
+            {progress ? (
+              <div>
+                <dt>{t("libraryStatusProgress")}</dt>
+                <dd>{t("libraryProgressSummary", {
+                  scanned: progress.scannedCount,
+                  indexed: progress.indexedCount,
+                  failed: progress.failedCount,
+                })}</dd>
+              </div>
+            ) : null}
+          </dl>
+          <div
+            className="library-index-status-technical"
+            data-testid="library-index-status-technical"
+            style={{
+              maxHeight: "min(220px, calc(100vh - 180px))",
+              overflowY: "auto",
+            }}
+          >
+            {technicalRows.map(([label, value]) => (
+              <div key={label}>
+                <span>{label}</span>
+                <code>{value}</code>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </span>
   );
 }
 
@@ -5653,6 +6166,24 @@ function resolveIndexStatusShortLabel(state: LibraryIndexState | undefined): str
   }
 }
 
+function resolveIndexStageLabel(stage: string | null): string {
+  const labels: Record<string, string> = {
+    load_config: t("libraryIndexStageLoadConfig"),
+    init_catalog: t("libraryIndexStageInitCatalog"),
+    incremental_index: t("libraryIndexStageIncrementalIndex"),
+    index: t("libraryIndexStageIndex"),
+    index_text: t("libraryIndexStageIndexText"),
+    export_snapshot: t("libraryIndexStageExportSnapshot"),
+    export_search: t("libraryIndexStageExportSearch"),
+    sqlite: t("libraryIndexStageSqlite"),
+  };
+  return stage ? labels[stage] ?? stage : "--";
+}
+
+function formatNullableDateTime(value: string | null): string {
+  return value ? formatDateTime(value) : "--";
+}
+
 function resolveDirectoryStateLabel(state: LibraryDirectoryState): string {
   const labels: Record<LibraryDirectoryState, string> = {
     idle: t("libraryDirectoryStateIdle"),
@@ -5681,7 +6212,7 @@ function buildLibraryTagTree(tags: LibraryTagNode[]): LibraryTagTreeNodeRecord[]
   const roots: LibraryTagTreeNodeRecord[] = [];
 
   for (const tag of tags) {
-    if (!LIBRARY_TAG_TREE_ROOTS.has(tag.name) && !LIBRARY_TAG_TREE_ROOTS.has(tag.rootType) && !isDefaultLibraryTagPath(tag.path)) {
+    if (isNoiseLibraryTag(tag)) {
       continue;
     }
     nodes.set(tag.path, {
@@ -5706,9 +6237,18 @@ function buildLibraryTagTree(tags: LibraryTagNode[]): LibraryTagTreeNodeRecord[]
   }
 
   const compare = (left: LibraryTagTreeNodeRecord, right: LibraryTagTreeNodeRecord) => {
-    const leftOrder = left.label === "时间" ? 0 : left.label === "类型" ? 1 : 2;
-    const rightOrder = right.label === "时间" ? 0 : right.label === "类型" ? 1 : 2;
-    return leftOrder === rightOrder ? left.label.localeCompare(right.label, "zh-CN") : leftOrder - rightOrder;
+    const leftOrder = getLibraryTagRootOrder(left.path);
+    const rightOrder = getLibraryTagRootOrder(right.path);
+    if (leftOrder !== rightOrder) {
+      return leftOrder - rightOrder;
+    }
+    if (isTimeLibraryTagPath(left.path) && isTimeLibraryTagPath(right.path)) {
+      return getTimeTagOrder(left.label) - getTimeTagOrder(right.label);
+    }
+    if (left.count !== right.count) {
+      return right.count - left.count;
+    }
+    return left.label.localeCompare(right.label, "zh-CN");
   };
   const sortNodes = (items: LibraryTagTreeNodeRecord[]) => {
     items.sort(compare);
@@ -5716,6 +6256,31 @@ function buildLibraryTagTree(tags: LibraryTagNode[]): LibraryTagTreeNodeRecord[]
   };
   sortNodes(roots);
   return roots;
+}
+
+function isNoiseLibraryTag(tag: LibraryTagNode): boolean {
+  const rootName = tag.path.split("/").filter(Boolean)[0] ?? tag.name;
+  return LIBRARY_TAG_TREE_NOISE_ROOTS.has(rootName) || LIBRARY_TAG_TREE_NOISE_ROOTS.has(tag.rootType);
+}
+
+function getLibraryTagRootOrder(path: string): number {
+  if (isTimeLibraryTagPath(path)) return 0;
+  const root = path.split("/").filter(Boolean)[0] ?? path;
+  if (root === "类型" || root === "type") return 1;
+  return 2;
+}
+
+function isTimeLibraryTagPath(path: string): boolean {
+  const root = path.split("/").filter(Boolean)[0] ?? path;
+  return root === "时间" || root === "time";
+}
+
+function getTimeTagOrder(label: string): number {
+  if (label.includes("最近7天") || label.toLowerCase().includes("last 7")) return 0;
+  if (label.includes("今天")) return 1;
+  if (label.includes("昨天")) return 2;
+  if (label.includes("更早")) return 99;
+  return 10;
 }
 
 
@@ -5802,11 +6367,26 @@ function filterLibraryTagTree(
 
   return nodes.flatMap((node) => {
     const children = filterLibraryTagTree(node.children, normalizedQuery);
-    if (node.label.toLowerCase().includes(normalizedQuery) || node.path.toLowerCase().includes(normalizedQuery) || children.length > 0) {
+    if (matchesLibraryTagQuery(node, normalizedQuery) || children.length > 0) {
       return [{ ...node, children }];
     }
     return [];
   });
+}
+
+function matchesLibraryTagQuery(node: LibraryTagTreeNodeRecord, normalizedQuery: string): boolean {
+  const label = node.label.toLowerCase();
+  const pathValue = node.path.toLowerCase();
+  return (
+    label.includes(normalizedQuery) ||
+    pathValue.includes(normalizedQuery) ||
+    toSimplePinyin(label).includes(normalizedQuery) ||
+    toSimplePinyin(pathValue).includes(normalizedQuery)
+  );
+}
+
+function toSimplePinyin(value: string): string {
+  return Array.from(value).map((char) => SIMPLE_PINYIN_MAP[char] ?? char).join("").toLowerCase();
 }
 
 function buildTagAncestorPaths(path: string): string[] {
@@ -5818,16 +6398,19 @@ function readLibraryTagTreeState(): LibraryTagTreeState {
   try {
     const raw = window.localStorage.getItem(LIBRARY_TAG_TREE_STATE_KEY);
     if (!raw) {
-      return { expandedPaths: [] };
+      return { expandedPaths: [], expandedMorePaths: [] };
     }
     const parsed = JSON.parse(raw) as Partial<LibraryTagTreeState>;
     return {
       expandedPaths: Array.isArray(parsed.expandedPaths)
         ? parsed.expandedPaths.filter((item): item is string => typeof item === "string")
         : [],
+      expandedMorePaths: Array.isArray(parsed.expandedMorePaths)
+        ? parsed.expandedMorePaths.filter((item): item is string => typeof item === "string")
+        : [],
     };
   } catch {
-    return { expandedPaths: [] };
+    return { expandedPaths: [], expandedMorePaths: [] };
   }
 }
 
@@ -5891,7 +6474,7 @@ function resolveContextMenuPosition(
   };
 }
 
-function handleFolderClick(library: LibraryState, path: string): void {
+export function handleFolderClick(library: LibraryState, path: string): void {
   const openBehavior =
     library.snapshot?.binding?.folderOpenBehavior === "single_click"
       ? "single_click"
@@ -5901,6 +6484,62 @@ function handleFolderClick(library: LibraryState, path: string): void {
     return;
   }
   library.selectFolderEntry(path);
+}
+
+export function resolveLibraryDocumentDisplayName(
+  entry: Pick<LibraryDocumentRecord, "path" | "title">,
+): string {
+  return getPathName(entry.path) || entry.title || t("libraryUntitled");
+}
+
+function resolveFinderKindLabel(path: string): string {
+  const extension = resolveDocumentVisual(path).extension;
+  if (extension === "txt" || extension === "text" || extension === "log" || extension === "rtf") {
+    return t("libraryFinderKindText");
+  }
+  if (extension === "sql") {
+    return t("libraryFinderKindSql");
+  }
+  if (extension === "html" || extension === "htm") {
+    return t("libraryFinderKindHtml");
+  }
+  if (extension === "json") {
+    return t("libraryFinderKindJson");
+  }
+  if (extension === "zip" || extension === "rar" || extension === "7z" || extension === "tar" || extension === "gz") {
+    return t("libraryFinderKindArchive");
+  }
+  if (extension === "mp4" || extension === "mov" || extension === "mkv" || extension === "webm") {
+    return t("libraryFinderKindVideo");
+  }
+  if (extension === "md" || extension === "mdx") {
+    return t("libraryFinderKindMarkdown");
+  }
+  if (extension === "pdf") {
+    return t("libraryFinderKindPdf");
+  }
+  if (extension === "document") {
+    return t("libraryFinderKindDocument");
+  }
+  return extension.toUpperCase();
+}
+
+function formatFinderBytes(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return t("commonUnknown");
+  }
+  if (value < 1000) {
+    return t("commonBytes", { count: value });
+  }
+  const kb = value / 1000;
+  if (kb < 1000) {
+    return `${kb.toFixed(1)} KB`;
+  }
+  const mb = kb / 1000;
+  if (mb < 1000) {
+    return `${mb.toFixed(1)} MB`;
+  }
+  return `${(mb / 1000).toFixed(1)} GB`;
 }
 
 function resolveLibraryEntryKey(entry: LibraryEntry): string {
@@ -5928,7 +6567,7 @@ function getContextTargetTitle(
   target: Extract<LibraryContextMenuTarget, { kind: "document" | "folder" }>,
 ): string {
   return target.kind === "document"
-    ? target.entry.title || getPathName(target.entry.path)
+    ? resolveLibraryDocumentDisplayName(target.entry)
     : target.entry.name || getPathName(target.entry.path);
 }
 
@@ -5936,11 +6575,35 @@ function resolveTargetAbsolutePath(
   library: LibraryState,
   target: Extract<LibraryContextMenuTarget, { kind: "document" | "folder" }>,
 ): string | null {
-  const root =
-    library.snapshot?.binding?.rootDir.trim().replace(/\/+$/g, "") ?? "";
-  const relativePath = resolveContextPath(target).trim().replace(/^\/+/, "");
-  if (!root || !relativePath) return null;
-  return `${root}/${relativePath}`.replace(/\/{2,}/g, "/");
+  return resolveLibraryLocalPath(library, resolveContextPath(target));
+}
+
+function resolveDocumentLocalPath(
+  library: LibraryState,
+  path: string,
+): string | null {
+  const mirrorRoot = library.snapshot?.binding?.mirrorRoot?.trim();
+  if (!mirrorRoot) return null;
+  return joinLibraryPath(mirrorRoot, path);
+}
+
+function resolveLibraryLocalPath(
+  library: LibraryState,
+  relativePath: string,
+): string | null {
+  const binding = library.snapshot?.binding;
+  const root = (binding?.mirrorRoot || binding?.rootDir || "")
+    .trim()
+    .replace(/\/+$/g, "");
+  if (!root) return null;
+  return joinLibraryPath(root, relativePath);
+}
+
+function joinLibraryPath(root: string, relativePath: string): string | null {
+  const normalizedRoot = root.trim().replace(/\/+$/g, "");
+  const normalizedRelativePath = relativePath.trim().replace(/^\/+/, "");
+  if (!normalizedRoot || !normalizedRelativePath) return null;
+  return `${normalizedRoot}/${normalizedRelativePath}`.replace(/\/{2,}/g, "/");
 }
 
 function buildUniqueLibraryTargetPath(
@@ -6042,6 +6705,19 @@ function buildNativeLibraryContextMenuItems(
     items.push({ id: "cut", label: t("libraryContextCut") });
   }
 
+  if (isBlankTarget) {
+    items.push({
+      id: "new-group",
+      label: t("libraryContextNew"),
+      items: [
+        { id: "new-directory", label: t("libraryContextNewDirectory") },
+        { id: "new-markdown", label: t("libraryContextNewMarkdown") },
+        { id: "new-text", label: t("libraryContextNewText") },
+        { id: "new-file", label: t("libraryContextNewCustom") },
+      ],
+    });
+  }
+
   items.push({
     id: "paste",
     label: t("libraryContextPaste"),
@@ -6127,7 +6803,7 @@ function resolvePendingTagAssignmentTarget(
       kind: "document",
       documentId: target.entry.documentId,
       path: target.entry.path,
-      title: target.entry.title || getPathName(target.entry.path),
+      title: resolveLibraryDocumentDisplayName(target.entry),
     };
   }
   if (target.kind === "folder") {

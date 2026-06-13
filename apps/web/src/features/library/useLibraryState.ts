@@ -53,6 +53,7 @@ export interface LibraryState {
   error: string | null;
   previewError: string | null;
   entries: LibraryEntry[];
+  visibleEntryTotal: number;
   hasMore: boolean;
   selectedDocument: LibraryEntry & { kind: "document" } | null;
   setViewState: (updater: LibraryViewState | ((current: LibraryViewState) => LibraryViewState)) => void;
@@ -61,7 +62,7 @@ export interface LibraryState {
   reloadDocuments: (reset?: boolean) => Promise<void>;
   loadMore: () => Promise<void>;
   refresh: () => Promise<void>;
-  selectFolder: (path: string | null) => void;
+  selectFolder: (path: string | null, selectedEntryPath?: string | null) => void;
   selectFolderEntry: (path: string | null) => void;
   selectTag: (path: string | null) => void;
   selectFavorite: (favorite: LibraryFavoriteRecord) => void;
@@ -95,6 +96,10 @@ export function useLibraryState(): LibraryState {
   const entries = useMemo(
     () => buildVisibleEntries(snapshot, documentPage, fileItems, viewState),
     [documentPage, fileItems, snapshot, viewState]
+  );
+  const visibleEntryTotal = useMemo(
+    () => resolveVisibleEntryTotal(documentPage, fileItems, entries.length, viewState),
+    [documentPage, entries.length, fileItems, viewState]
   );
 
   const selectedDocument = useMemo(
@@ -139,7 +144,7 @@ export function useLibraryState(): LibraryState {
     setError(null);
     try {
       const nextSnapshot = await getLibrarySnapshot();
-      const nextTags = nextSnapshot.requiresInitialization
+      const nextTags = nextSnapshot.requiresInitialization || !nextSnapshot.binding?.enabled
         ? []
         : await listLibraryTags().catch(() => [] as LibraryTagNode[]);
       setSnapshot(nextSnapshot);
@@ -211,7 +216,7 @@ export function useLibraryState(): LibraryState {
     setError(null);
     try {
       const result = await requestLibraryRefresh({
-        reason: "manual",
+        reason: "manual_refresh",
         targetPath: viewState.browseMode === "folder" ? viewState.selectedFolderPath : null
       });
       setSnapshot((current) => current ? { ...current, status: result.status } : current);
@@ -224,14 +229,17 @@ export function useLibraryState(): LibraryState {
     }
   }
 
-  function selectFolder(path: string | null): void {
+  function selectFolder(
+    path: string | null,
+    selectedEntryPath: string | null = null,
+  ): void {
     setPreview(null);
     setPreviewError(null);
     setViewState((current) => ({
       ...current,
       browseMode: "folder",
       selectedFolderPath: path,
-      selectedFolderEntryPath: null,
+      selectedFolderEntryPath: selectedEntryPath,
       selectedTagPath: null,
       selectedTagPaths: [],
       selectedFavoriteId: null,
@@ -297,7 +305,7 @@ export function useLibraryState(): LibraryState {
     setPreviewLoading(true);
     setPreviewError(null);
     try {
-      setPreview(await getLibraryPreview(path));
+      setPreview(await getLibraryPreview(path, "reading"));
     } catch (err) {
       setPreview(null);
       setPreviewError(toApiErrorMessage(err));
@@ -357,8 +365,7 @@ export function useLibraryState(): LibraryState {
     viewState.selectedFolderPath,
     viewState.selectedTagPath,
     viewState.selectedTagPaths.join("|"),
-    viewState.selectedFavoriteId,
-    snapshot?.status.lastCompletedAt
+    viewState.selectedFavoriteId
   ]);
 
   useEffect(() => {
@@ -374,10 +381,20 @@ export function useLibraryState(): LibraryState {
     }
 
     const timer = window.setInterval(() => {
-      void reload();
+      void (async () => {
+        await reload();
+        if (viewState.browseMode === "folder") {
+          await reloadDocuments(true);
+        }
+      })();
     }, 4000);
     return () => window.clearInterval(timer);
-  }, [snapshot?.status.state, snapshot?.status.runningTaskId]);
+  }, [
+    snapshot?.status.state,
+    snapshot?.status.runningTaskId,
+    viewState.browseMode,
+    viewState.selectedFolderPath,
+  ]);
 
   return {
     viewState,
@@ -395,6 +412,7 @@ export function useLibraryState(): LibraryState {
     error,
     previewError,
     entries,
+    visibleEntryTotal,
     hasMore,
     selectedDocument,
     setViewState,
@@ -457,6 +475,30 @@ function buildEntries(
   }));
 
   return [...folderEntries, ...documentEntries];
+}
+
+function resolveVisibleEntryTotal(
+  documentPage: LibraryDocumentList | null,
+  fileItems: LibraryFileNode[],
+  entryCount: number,
+  viewState: LibraryViewState
+): number {
+  const serverVisibleTotal = documentPage?.visibleEntryTotal;
+  if (typeof serverVisibleTotal === "number" && Number.isFinite(serverVisibleTotal)) {
+    return Math.max(entryCount, Math.floor(serverVisibleTotal));
+  }
+
+  const documentTotal = documentPage?.total;
+  if (typeof documentTotal !== "number" || !Number.isFinite(documentTotal)) {
+    return entryCount;
+  }
+
+  if (viewState.browseMode !== "folder") {
+    return Math.max(entryCount, Math.floor(documentTotal));
+  }
+
+  const directoryCount = fileItems.filter((item) => item.kind === "directory").length;
+  return Math.max(entryCount, directoryCount + Math.floor(documentTotal));
 }
 
 function buildTagDirectoryEntries(
@@ -586,6 +628,9 @@ function resolveTagRootType(tagRecords: LibraryTagNode[], pathValue: string): st
     return "";
   }
   const matched = tagRecords.find((item) => item.path === normalizedPath);
+  if (matched?.rootType?.trim() === "manual") {
+    return normalizedPath.split("/")[0] ?? normalizedPath;
+  }
   if (matched?.rootType?.trim()) {
     return matched.rootType.trim();
   }

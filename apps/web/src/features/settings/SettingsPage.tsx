@@ -39,6 +39,7 @@ interface BindingFormState {
 }
 
 interface ConfigFormState {
+  enabled: boolean;
   allowedExtensions: string[];
   includedHiddenPaths: string;
   folderOpenBehavior: "single_click" | "double_click";
@@ -126,6 +127,7 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
   const [serverState, setServerState] = useState<HttpServerState | null>(null);
   const [bindingForm, setBindingForm] = useState<BindingFormState>({ rootDir: "" });
   const [configForm, setConfigForm] = useState<ConfigFormState>({
+    enabled: true,
     allowedExtensions: [...LIBRARY_PRESET_EXTENSIONS],
     includedHiddenPaths: "",
     folderOpenBehavior: "double_click",
@@ -232,6 +234,7 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
     try {
       setError(null);
       const saved = await saveLibraryConfig({
+        enabled: configForm.enabled,
         allowedExtensions: shouldPersistImplicitAllowedExtensions(
           libraryConfig?.allowedExtensions ?? [],
           configForm.allowedExtensions
@@ -291,6 +294,7 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
   function applyConfig(config: LibraryConfig): void {
     setLibraryConfig(config);
     setConfigForm({
+      enabled: config.enabled,
       allowedExtensions: resolveEditableAllowedExtensions(config.allowedExtensions),
       includedHiddenPaths: sortIncludedHiddenPaths(config.includedHiddenPaths).join("\n"),
       folderOpenBehavior: config.folderOpenBehavior,
@@ -445,6 +449,19 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
           <h2>{t("settingsConfigTitle")}</h2>
           {configUnavailable ? <div className="inline-note">{t("settingsConfigUnavailable")} {configUnavailable}</div> : null}
           <div className="affairs-library-settings-form">
+            <section className="affairs-library-config-section">
+              <div className="affairs-library-behavior-switch-row">
+                <span className="affairs-library-behavior-switch-title">{t("settingsLibraryEnabled")}</span>
+                <MacSwitch
+                  checked={configForm.enabled}
+                  label={t("settingsLibraryEnabled")}
+                  onChange={(checked) => setConfigForm((current) => ({ ...current, enabled: checked }))}
+                />
+              </div>
+              <span className="settings-helper-text">
+                {configForm.enabled ? t("settingsLibraryEnabledHint") : t("settingsLibraryDisabledHint")}
+              </span>
+            </section>
             <section className="affairs-library-config-section">
               <div className="affairs-library-behavior-switch-row">
                 <span className="affairs-library-behavior-switch-title">{t("settingsFolderOpenBehavior")}</span>
