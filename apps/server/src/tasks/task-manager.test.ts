@@ -105,6 +105,30 @@ test("任务运行超时会 abort 当前任务并释放同 key 后续任务", as
   assert.equal(next.deduped, undefined);
 });
 
+test("任务运行时通过 setProgress 写入的进度快照会随 TaskSummary 暴露", async () => {
+  const taskManager = new TaskManager();
+  taskManager.register<{ value: string }, void>({
+    taskType: "test.progress",
+    timeoutMs: 1000,
+    run: async (_input, context) => {
+      context.setProgress({ scannedCount: 5, indexedCount: 2 });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      context.setProgress({ scannedCount: 10, indexedCount: 8 });
+    },
+  });
+
+  taskManager.enqueue("test.progress", {
+    key: "root",
+    source: "test",
+    input: { value: "progress" },
+  });
+
+  await waitFor(() => taskManager.get("test.progress", "root")?.state === "fresh");
+  const latest = taskManager.get("test.progress", "root");
+  assert.equal(latest?.state, "fresh");
+  assert.deepEqual(latest?.progress, { scannedCount: 10, indexedCount: 8 });
+});
+
 async function waitFor(check: () => boolean): Promise<void> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < 1000) {

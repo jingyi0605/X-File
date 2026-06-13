@@ -9,6 +9,7 @@ import { LibraryIndexService } from "./index-service.js";
 import { LibraryBindingStore } from "../storage/library-binding-store.js";
 import { LibraryExportReader } from "../storage/library-export-reader.js";
 import { IndexRuntimeStore } from "../storage/index-runtime-store.js";
+import { LibraryRuntimeStatusStore } from "../storage/library-runtime-status-store.js";
 import { LibraryConfigStore } from "../storage/library-config-store.js";
 import { LibraryFavoritesStore } from "../storage/library-favorites-store.js";
 import { TaskManager } from "../tasks/task-manager.js";
@@ -168,6 +169,7 @@ test("索引 running 时列表仍只读当前 export，不阻塞也不触发二�
   const indexService = new RecordingIndexService(
     new TaskManager(),
     new IndexRuntimeStore(),
+    new LibraryRuntimeStatusStore(),
     async () => {
       await new Promise((resolve) => setTimeout(resolve, 200));
     },

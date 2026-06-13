@@ -12,6 +12,8 @@ export interface TaskSummary {
   failedAt: string | null;
   errorSummary: string | null;
   runningStage: string | null;
+  /** 任务运行时进度快照，由具体任务通过 setProgress 写入；TaskManager 本身不解释其结构。 */
+  progress?: unknown;
   deduped?: boolean;
 }
 
@@ -27,6 +29,8 @@ export interface TaskRunContext {
   startedAt: () => string | null;
   signal: AbortSignal;
   setStage: (stage: string) => void;
+  /** 写入任务运行时进度快照，会随 TaskSummary.progress 暴露给外部读取。 */
+  setProgress: (progress: unknown) => void;
 }
 
 export interface EnqueueTaskInput<Input> {
@@ -41,6 +45,7 @@ interface TaskRecord<Output = unknown> {
   controller: AbortController;
   timeout: NodeJS.Timeout | null;
   runningStage: string | null;
+  progress: unknown;
 }
 
 export interface TaskManagerOptions {
@@ -136,6 +141,9 @@ export class TaskManager {
               setStage: (stage) => {
                 record.runningStage = stage;
                 record.summary.runningStage = stage;
+              },
+              setProgress: (progress) => {
+                record.progress = progress;
               }
             });
             summary.state = "fresh";
@@ -167,7 +175,8 @@ export class TaskManager {
       promise,
       controller,
       timeout: null,
-      runningStage: null
+      runningStage: null,
+      progress: null
     };
     this.inflight.set(runtimeKey, record as TaskRecord);
     this.latest.set(runtimeKey, record as TaskRecord);
@@ -191,7 +200,8 @@ export class TaskManager {
   private snapshotRecord(record: TaskRecord): TaskSummary {
     return {
       ...record.summary,
-      runningStage: record.runningStage ?? record.summary.runningStage
+      runningStage: record.runningStage ?? record.summary.runningStage,
+      progress: record.progress
     };
   }
 }

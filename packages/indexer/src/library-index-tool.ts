@@ -1,6 +1,6 @@
 import { ExportBuilder, type ExportBuildResult } from "./services/export/export-builder.js";
 import { buildFallbackExport, type FallbackExportIndexResult, type FallbackExportResult } from "./services/export/fallback-export-builder.js";
-import { TextIndexer, type TextIndexResult } from "./services/indexer/text-indexer.js";
+import { TextIndexer, type TextIndexProgress, type TextIndexResult } from "./services/indexer/text-indexer.js";
 import { initCatalog, type InitCatalogResult } from "./sqlite/init-catalog.js";
 import { loadRuntimeConfig } from "./config/load-runtime-config.js";
 import type { RuntimeConfig } from "./types/runtime-config.js";
@@ -13,6 +13,8 @@ export interface RunLibraryIndexOnceOptions {
   reason?: string;
   signal?: AbortSignal;
   onStageChange?: (stage: RunLibraryIndexStage) => void;
+  /** 文本索引阶段的流式进度回调，结构与上层 LibraryIndexProgress 一致。 */
+  onProgress?: (progress: TextIndexProgress) => void;
 }
 
 export type RunLibraryIndexStage =
@@ -73,7 +75,8 @@ export async function runLibraryIndexOnce(
     allowedExtensionsOverride: options.allowedExtensions,
     collectChangedPaths: Boolean(options.targetPath),
     dirtyScopeTrigger: options.targetPath ? "incremental" : "full",
-    signal: options.signal
+    signal: options.signal,
+    onProgress: options.onProgress
   });
 
   options.onStageChange?.("export_snapshot");

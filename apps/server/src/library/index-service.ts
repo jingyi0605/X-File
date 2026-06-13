@@ -1,6 +1,7 @@
-import type { LibraryBinding, LibraryIndexStatus, LibraryRefreshResult } from "@x-file/shared";
+import type { LibraryBinding, LibraryIndexProgress, LibraryIndexStatus, LibraryRefreshResult } from "@x-file/shared";
 
 import { IndexRuntimeStore } from "../storage/index-runtime-store.js";
+import { LibraryRuntimeStatusStore } from "../storage/library-runtime-status-store.js";
 import { TaskManager, type TaskSummary } from "../tasks/task-manager.js";
 
 export const LIBRARY_INDEX_TASK_TYPE = "library.index_refresh";
@@ -25,16 +26,21 @@ interface RunLibraryIndexOnceOptions {
   reason?: string;
   signal?: AbortSignal;
   onStageChange?: (stage: string) => void;
+  onProgress?: (progress: LibraryIndexProgress) => void;
 }
 
 type RunLibraryIndexOnce = (options: RunLibraryIndexOnceOptions) => Promise<unknown>;
 
 export class LibraryIndexService {
+  private readonly runtimeStatusStore: LibraryRuntimeStatusStore;
+
   constructor(
     private readonly taskManager: TaskManager,
     private readonly runtimeStore: IndexRuntimeStore,
+    runtimeStatusStore?: LibraryRuntimeStatusStore,
     private readonly runLibraryIndexOnceOverride?: RunLibraryIndexOnce
   ) {
+    this.runtimeStatusStore = runtimeStatusStore ?? new LibraryRuntimeStatusStore();
     this.registerTasks();
   }
 
@@ -54,7 +60,7 @@ export class LibraryIndexService {
     });
 
     const status = this.statusFromTask(binding.rootDir, task);
-    this.runtimeStore.setStatus(binding.rootDir, status);
+    this.applyStatus(binding.rootDir, status);
     return {
       accepted: true,
       libraryId: binding.libraryId,
@@ -76,7 +82,9 @@ export class LibraryIndexService {
       return status;
     }
 
-    const storedStatus = this.runtimeStore.getStatus(rootDir);
+    // 稳态：优先内存，内存缺失（例如重启后）则回读磁盘持久化快照
+    const storedStatus = this.runtimeStore.getStatus(rootDir)
+      ?? this.runtimeStatusStore.read(rootDir);
     if (storedStatus?.state === "cooldown" && storedStatus.nextAllowedAt) {
       const nextAllowedAt = Date.parse(storedStatus.nextAllowedAt);
       if (Number.isFinite(nextAllowedAt) && nextAllowedAt <= Date.now()) {
@@ -88,12 +96,16 @@ export class LibraryIndexService {
           runningStage: null,
           dirtyReasons: this.runtimeStore.listDirtyReasons(rootDir)
         });
-        this.runtimeStore.setStatus(rootDir, freshStatus);
+        this.applyStatus(rootDir, freshStatus);
         return freshStatus;
       }
     }
 
-    return storedStatus ?? createStatus("fresh", {
+    if (storedStatus) {
+      return storedStatus;
+    }
+
+    return createStatus("fresh", {
       dirtyReasons: this.runtimeStore.listDirtyReasons(rootDir)
     });
   }
@@ -102,12 +114,18 @@ export class LibraryIndexService {
     this.runtimeStore.markDirty(rootDir, reason, targetPath);
     const current = this.getStatus(rootDir);
     if (current.state === "fresh") {
-      this.runtimeStore.setStatus(rootDir, {
+      this.applyStatus(rootDir, {
         ...current,
         state: "stale",
         dirtyReasons: this.runtimeStore.listDirtyReasons(rootDir)
       });
     }
+  }
+
+  /** 统一写入：内存缓存 + 磁盘持久化，保证重启后面板仍能读取进度与时间线。 */
+  private applyStatus(rootDir: string, status: LibraryIndexStatus): void {
+    this.runtimeStore.setStatus(rootDir, status);
+    this.runtimeStatusStore.write(rootDir, status);
   }
 
   private registerTasks(): void {
@@ -119,32 +137,50 @@ export class LibraryIndexService {
       taskType: LIBRARY_INDEX_TASK_TYPE,
       timeoutMs: 120_000,
       run: async (input, context) => {
-        this.runtimeStore.setStatus(input.binding.rootDir, createStatus("running", {
+        let latestProgress: LibraryIndexProgress | null = null;
+        this.applyStatus(input.binding.rootDir, createStatus("running", {
           dirtyReasons: this.runtimeStore.listDirtyReasons(input.binding.rootDir),
           lastRequestedAt: new Date().toISOString(),
           lastStartedAt: new Date().toISOString(),
           runningTaskId: context.taskId
         }));
 
-        const runLibraryIndexOnce = this.runLibraryIndexOnceOverride ?? await loadRunLibraryIndexOnce();
-        await runLibraryIndexOnce({
-          rootDir: input.binding.rootDir,
-          targetPath: input.targetPath ?? undefined,
-          allowedExtensions: input.binding.allowedExtensions,
-          includedHiddenPaths: input.binding.includedHiddenPaths,
-          reason: input.reason,
-          signal: context.signal,
-          onStageChange: context.setStage
-        });
+        try {
+          const runLibraryIndexOnce = this.runLibraryIndexOnceOverride ?? await loadRunLibraryIndexOnce();
+          await runLibraryIndexOnce({
+            rootDir: input.binding.rootDir,
+            targetPath: input.targetPath ?? undefined,
+            allowedExtensions: input.binding.allowedExtensions,
+            includedHiddenPaths: input.binding.includedHiddenPaths,
+            reason: input.reason,
+            signal: context.signal,
+            onStageChange: context.setStage,
+            onProgress: (progress) => {
+              latestProgress = progress;
+              context.setProgress(progress);
+            }
+          });
 
-        this.runtimeStore.clearDirty(input.binding.rootDir);
-        const completedAt = new Date();
-        this.runtimeStore.setStatus(input.binding.rootDir, createStatus("cooldown", {
-          lastRequestedAt: context.queuedAt,
-          lastStartedAt: context.startedAt(),
-          lastCompletedAt: completedAt.toISOString(),
-          nextAllowedAt: new Date(completedAt.getTime() + INDEX_COOLDOWN_MS).toISOString()
-        }));
+          this.runtimeStore.clearDirty(input.binding.rootDir);
+          const completedAt = new Date();
+          this.applyStatus(input.binding.rootDir, createStatus("cooldown", {
+            lastRequestedAt: context.queuedAt,
+            lastStartedAt: context.startedAt(),
+            lastCompletedAt: completedAt.toISOString(),
+            nextAllowedAt: new Date(completedAt.getTime() + INDEX_COOLDOWN_MS).toISOString(),
+            progress: latestProgress
+          }));
+        } catch (error) {
+          // 失败状态也持久化到磁盘，重启后面板仍能展示失败原因与进度
+          this.applyStatus(input.binding.rootDir, createStatus("failed", {
+            lastRequestedAt: context.queuedAt,
+            lastStartedAt: context.startedAt(),
+            lastFailedAt: new Date().toISOString(),
+            errorSummary: error instanceof Error ? error.message : String(error),
+            progress: latestProgress
+          }));
+          throw error;
+        }
       }
     });
   }
@@ -158,7 +194,8 @@ export class LibraryIndexService {
       lastFailedAt: task.failedAt,
       runningTaskId: task.state === "running" || task.state === "queued" ? task.taskId : null,
       runningStage: task.runningStage,
-      errorSummary: task.errorSummary
+      errorSummary: task.errorSummary,
+      progress: (task.progress as LibraryIndexProgress | null) ?? null
     });
   }
 }
