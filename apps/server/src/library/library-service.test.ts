@@ -283,6 +283,53 @@ test("从临时 export 读取文档、标签和文件夹", () => {
   assert.equal(list.items[0]?.path, "docs/backend.md");
 });
 
+test("listDocuments 对当前页文档补全大小与创建时间（对齐父仓库 stat 补全）", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "x-file-library-stats-"));
+  const rootDir = path.join(tempDir, "library");
+  fs.mkdirSync(path.join(rootDir, "docs"), { recursive: true });
+  const readmeContent = "# 说明文档\n";
+  const backendContent = "# 后端任务\n".repeat(10);
+  fs.writeFileSync(path.join(rootDir, "readme.md"), readmeContent, "utf8");
+  fs.writeFileSync(path.join(rootDir, "docs", "backend.md"), backendContent, "utf8");
+  writeExportFixture(rootDir);
+
+  const service = new LibraryService(new LibraryBindingStore({ dataDir: path.join(tempDir, "data") }));
+  service.saveBinding({ rootDir, completeInitialization: true });
+
+  // 根目录直接子文档：readme.md
+  const rootList = service.listDocuments({ browseMode: "folder", selectedFolderPath: "" });
+  const readme = rootList.items.find((item) => item.path === "readme.md");
+  assert.ok(readme, "根目录应列出 readme.md");
+  assert.equal(readme!.sizeBytes, Buffer.byteLength(readmeContent, "utf8"));
+  assert.equal(typeof readme!.createdAt, "string");
+  assert.ok(readme!.createdAt!.length > 0);
+
+  // docs 子目录文档：backend.md
+  const docsList = service.listDocuments({ browseMode: "folder", selectedFolderPath: "docs" });
+  const backend = docsList.items.find((item) => item.path === "docs/backend.md");
+  assert.ok(backend, "docs 目录应列出 backend.md");
+  assert.equal(backend!.sizeBytes, Buffer.byteLength(backendContent, "utf8"));
+  assert.equal(typeof backend!.createdAt, "string");
+});
+
+test("listDocuments 在文件缺失时大小与创建时间回退为 null（不报错）", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "x-file-library-stats-missing-"));
+  const rootDir = path.join(tempDir, "library");
+  fs.mkdirSync(rootDir, { recursive: true });
+  // 只写导出分片、不创建真实文件 → stat 应优雅回退 null，且不影响列表其它字段
+  writeExportFixture(rootDir);
+
+  const service = new LibraryService(new LibraryBindingStore({ dataDir: path.join(tempDir, "data") }));
+  service.saveBinding({ rootDir, completeInitialization: true });
+
+  const list = service.listDocuments({ browseMode: "folder", selectedFolderPath: "" });
+  assert.ok(list.items.length > 0, "应能正常返回文档列表");
+  for (const item of list.items) {
+    assert.equal(item.sizeBytes, null);
+    assert.equal(item.createdAt, null);
+  }
+});
+
 function writeExportFixture(rootDir: string): void {
   const exportDir = path.join(rootDir, ".ai-index", "exports");
   fs.mkdirSync(path.join(exportDir, "meta"), { recursive: true });

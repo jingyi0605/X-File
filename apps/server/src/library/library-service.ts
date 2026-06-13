@@ -159,7 +159,7 @@ export class LibraryService {
 
   listDocuments(input: ListLibraryDocumentsInput): LibraryDocumentList {
     const binding = this.bindingStore.read();
-    return this.exportReader.listDocuments(binding, {
+    const result = this.exportReader.listDocuments(binding, {
       browseMode: input.browseMode,
       selectedFolderPath: input.selectedFolderPath,
       selectedTagPath: input.selectedTagPath,
@@ -170,6 +170,21 @@ export class LibraryService {
       limit: normalizeLimit(input.limit, 50),
       favorites: binding ? this.readFavorites(binding) : []
     });
+    // 对齐父仓库 affairs-library-service.ts:948-958：导出分片链路只携带 mtime，
+    // 「大小(sizeBytes)」与「创建时间(createdAt=birthtime)」在此对当前页文档实时补全；
+    // stat 失败 / 文件缺失一律回退原值，不破坏现有路径。
+    if (!binding) {
+      return result;
+    }
+    const items = result.items.map((document) => {
+      const fileStats = readLibraryStatsSafe(binding.rootDir, document.path);
+      return {
+        ...document,
+        createdAt: document.createdAt ?? toIsoOrNull(fileStats?.birthtime),
+        sizeBytes: document.sizeBytes ?? fileStats?.size ?? null
+      };
+    });
+    return { ...result, items };
   }
 
   listFiles(input: ListLibraryFilesInput): LibraryFileList {
@@ -633,6 +648,38 @@ function resolveInsideRoot(rootDir: string, relativePath: string): string {
   }
 
   return absolutePath;
+}
+
+/**
+ * 安全读取文档物理属性，对齐父仓库 readAffairsLibraryStatsSafe。
+ * 复用 resolveInsideRoot 做越界防护；文件不存在 / 是目录 / 越界 / 异常一律返回 null，绝不抛出，
+ * 确保单个文档补全失败不会拖垮整页列表。
+ */
+function readLibraryStatsSafe(rootDir: string, relativePath: string): fs.Stats | null {
+  try {
+    const absolutePath = resolveInsideRoot(rootDir, relativePath);
+    if (!fs.existsSync(absolutePath)) {
+      return null;
+    }
+    const stats = fs.statSync(absolutePath);
+    return stats.isFile() ? stats : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Date → ISO 字符串。非法日期，或早于 2000 年（部分文件系统不支持 birthtime 会返回 1970-01-01，
+ * 显示出来无意义）一律视为无效返回 null。
+ */
+function toIsoOrNull(value: Date | null | undefined): string | null {
+  if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
+    return null;
+  }
+  if (value.getTime() < Date.UTC(2000, 0, 1)) {
+    return null;
+  }
+  return value.toISOString();
 }
 
 function normalizeNonNegativeInteger(value: number | undefined, fallback: number): number {
