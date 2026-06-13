@@ -3272,143 +3272,618 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   gap: 6px;
 }
 
-.library-tag-manager-grid {
-  display: grid;
-  grid-template-columns: minmax(220px, 0.9fr) minmax(280px, 1.1fr);
-  gap: 16px;
-  min-height: 420px;
-}
+/* ── 标签管理模态框 ── 迁移自 CodingNS AffairsTagManagementModal ── */
 
-.library-tag-manager-list {
-  display: grid;
-  align-content: start;
-  gap: 4px;
-  max-height: 420px;
-  overflow: auto;
-  padding-right: 4px;
-}
-
-.library-tag-manager-list button {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+.affairs-tag-management-shell {
   gap: 8px;
-  min-height: 34px;
-  border: 1px solid transparent;
-  border-radius: 10px;
-  background: transparent;
-  color: var(--text-secondary);
-  text-align: left;
 }
 
-.library-tag-manager-list button.active,
-.library-tag-manager-list button:hover {
-  border-color: color-mix(in srgb, var(--accent) 18%, var(--panel-border));
-  background: color-mix(in srgb, var(--accent) 9%, transparent);
-  color: var(--text-primary);
-}
-
-.library-tag-manager-list small {
-  color: var(--text-tertiary);
-}
-
-.library-tag-manager-meta {
-  display: flex;
-  min-height: var(--control-height-sm);
+.affairs-library-settings-modal .workbench-modal-header {
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 8px 10px;
-  border: 1px solid color-mix(in srgb, var(--panel-border) 82%, transparent);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--panel-bg) 86%, transparent);
-  color: var(--text-secondary);
+  padding-bottom: 6px;
+  border-bottom: 0;
+}
+
+.affairs-library-settings-modal .workbench-modal-title-wrap h2 {
+  line-height: 1.05;
+}
+
+.affairs-library-settings-modal .workbench-modal-body {
+  gap: 8px;
+}
+
+.affairs-library-settings-modal .modal-section {
+  padding: 0;
+  border-top: 0;
+}
+
+.affairs-tag-management-layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.affairs-tag-management-tree-panel,
+.affairs-tag-management-editor,
+.affairs-tag-management-danger,
+.affairs-tag-management-editor-column {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.affairs-tag-management-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.affairs-tag-management-tree-panel > .modal-section-header,
+.affairs-tag-management-editor > .modal-section-header,
+.affairs-tag-management-danger > .modal-section-header {
+  gap: 8px;
+}
+
+.affairs-tag-management-tree {
+  min-height: 180px;
+  max-height: min(58vh, 720px);
+  overflow: auto;
+  padding: 2px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.affairs-tag-management-tree-list {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.affairs-tag-management-tree-node {
+  position: relative;
+  min-width: 0;
+}
+
+.affairs-tag-management-tree-node[data-depth]:not([data-depth="0"])::before {
+  content: "";
+  position: absolute;
+  top: 14px;
+  left: -12px;
+  width: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--panel-border) 68%, transparent);
+}
+
+.affairs-tag-management-tree-node > .affairs-tag-management-tree-list {
+  position: relative;
+  margin-top: 1px;
+  margin-left: 10px;
+  padding-left: 14px;
+}
+
+.affairs-tag-management-tree-node > .affairs-tag-management-tree-list::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 13px;
+  left: 0;
+  width: 1px;
+  background: color-mix(in srgb, var(--panel-border) 68%, transparent);
+}
+
+.affairs-tag-management-tree-button {
+  display: block;
+  width: 100%;
+  padding: 4px 10px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  appearance: none;
+}
+
+.affairs-tag-management-tree-button:hover {
+  background: color-mix(in srgb, var(--accent) 3%, var(--panel-bg-strong));
+}
+
+.affairs-tag-management-tree-button.active {
+  border-color: transparent;
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.affairs-tag-management-tree-button.active:hover {
+  background: color-mix(in srgb, var(--accent) 92%, black);
+}
+
+.affairs-tag-management-tree-button-main {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  min-width: 0;
+}
+
+.affairs-tag-management-tree-main {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.affairs-tag-management-tree-name {
+  font-size: 12.5px;
+  line-height: 1.45;
+  font-weight: 540;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.affairs-tag-management-tree-button.active .affairs-tag-management-tree-name {
+  color: #ffffff;
+}
+
+.affairs-tag-management-editor-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(120px, auto);
+  gap: 10px 12px;
+  padding: 2px 0 4px;
+}
+
+.affairs-tag-management-editor-summary-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.affairs-tag-management-editor-summary-label {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.affairs-tag-management-editor-summary-value {
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.affairs-tag-management-editor .workbench-modal-field {
+  gap: 6px;
+}
+
+.affairs-tag-management-editor .modal-field-label {
   font-size: 12px;
 }
 
-.library-tag-manager-meta strong {
-  color: var(--text-primary);
+.affairs-tag-management-editor input,
+.affairs-tag-management-editor select {
+  min-height: 36px;
+  padding: 7px 11px;
+  border-radius: 11px;
+  border-color: color-mix(in srgb, var(--panel-border) 92%, transparent);
+  background: color-mix(in srgb, var(--panel-bg-strong) 97%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #ffffff 36%, transparent);
+}
+
+.affairs-library-settings-modal .affairs-tag-management-editor input:not([type="checkbox"]):not([type="radio"]),
+.affairs-library-settings-modal .affairs-tag-smart-rule-field input:not([type="checkbox"]):not([type="radio"]) {
+  box-sizing: border-box;
+  min-height: 30px !important;
+  height: 30px !important;
+  max-height: 30px !important;
+  padding: 0 10px !important;
+  border-radius: 8px !important;
+  font-size: 13px;
+  line-height: 1.2;
+  border-color: color-mix(in srgb, var(--panel-border) 86%, transparent);
+  background: color-mix(in srgb, var(--panel-bg-strong) 94%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, #ffffff 32%, transparent),
+    0 0 0 0 transparent;
+}
+
+.affairs-library-settings-modal .affairs-tag-name-input {
+  box-sizing: border-box;
+  min-height: 30px !important;
+  height: 30px !important;
+  max-height: 30px !important;
+  padding: 0 10px !important;
+  border-radius: 8px !important;
   font-size: 13px;
 }
 
-.workbench-shell[data-os-family="macos"][data-overlay-titlebar="true"]
-  .affairs-library-context-menu,
-.workbench-shell[data-os-family="macos"][data-overlay-titlebar="true"]
-  .affairs-library-context-submenu-panel,
-body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"]
-  .affairs-library-context-menu,
-body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"]
-  .affairs-library-context-submenu-panel {
-  border-color: transparent;
-  background:
-    radial-gradient(circle at top, rgba(255, 255, 255, 0.18), transparent 44%),
-    rgba(255, 255, 255, 0.42);
-  box-shadow: 0 18px 46px rgba(15, 23, 42, 0.16);
-  backdrop-filter: blur(26px) saturate(175%);
-  -webkit-backdrop-filter: blur(26px) saturate(175%);
+.affairs-tag-management-editor select,
+.affairs-tag-smart-rule-field select {
+  min-height: 30px;
+  height: 30px;
+  padding: 4px 30px 4px 10px;
+  border-radius: 8px;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0.14)),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23606b7b' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat, no-repeat;
+  background-position: 0 0, right 10px center;
+  background-size: auto, 10px 6px;
 }
 
-.library-tag-smart-rules-section {
-  margin-top: 12px;
+.affairs-library-settings-modal .affairs-tag-management-editor .workbench-modal-field select,
+.affairs-library-settings-modal .affairs-tag-smart-rule-field select {
+  min-height: 30px;
+  height: 30px;
+  padding: 0 28px 0 10px;
+  border-radius: 9px;
+  font-size: 13px;
+  line-height: 1.2;
+  border: 1px solid color-mix(in srgb, var(--panel-border) 78%, transparent);
+  background-color: color-mix(in srgb, var(--panel-bg-strong) 94%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, #ffffff 32%, transparent),
+    0 0 0 0 transparent;
+  outline: none;
 }
 
-.library-tag-smart-rule-list {
+.affairs-library-settings-modal .affairs-tag-parent-select {
+  min-height: 31px;
+  height: 31px;
+  padding-inline-end: 30px;
+  border-radius: 9px;
+  font-size: 13px;
+}
+
+.affairs-library-settings-modal .affairs-tag-smart-rule-relation-select {
+  min-height: 28px;
+  height: 28px;
+  padding-inline-end: 26px;
+  border-radius: 8px;
+  font-size: 12.5px;
+}
+
+.affairs-library-settings-modal .affairs-tag-smart-rule-type-select {
+  min-height: 30px;
+  height: 30px;
+  padding-inline-end: 30px;
+  border-radius: 8px;
+  font-size: 12.5px;
+}
+
+.affairs-library-settings-modal .affairs-tag-management-editor .workbench-modal-field select:hover,
+.affairs-library-settings-modal .affairs-tag-smart-rule-field select:hover,
+.affairs-library-settings-modal .affairs-tag-management-editor .workbench-modal-field select:focus,
+.affairs-library-settings-modal .affairs-tag-smart-rule-field select:focus,
+.affairs-library-settings-modal .affairs-tag-management-editor .workbench-modal-field select:focus-visible,
+.affairs-library-settings-modal .affairs-tag-smart-rule-field select:focus-visible {
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--panel-border));
+  outline: none;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, #ffffff 36%, transparent),
+    0 0 0 2px color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.affairs-tag-management-editor input:focus,
+.affairs-tag-management-editor select:focus {
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--panel-border));
+}
+
+.affairs-tag-management-toolbar .secondary-button,
+.affairs-tag-management-editor > .secondary-button,
+.affairs-tag-management-batch-actions .secondary-button,
+.affairs-tag-management-danger > .secondary-button {
+  min-height: 30px;
+  padding: 6px 12px;
+  border-radius: 10px;
+  font-size: 12.5px;
+}
+
+.affairs-tag-management-editor > .secondary-button,
+.affairs-tag-management-danger > .secondary-button {
+  align-self: flex-start;
+}
+
+.affairs-library-settings-actions .secondary-button {
+  min-height: 31px;
+  padding: 6px 12px;
+  border-radius: 10px;
+  font-size: 12.5px;
+}
+
+.affairs-tag-management-empty-note {
+  padding: 12px 0 8px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.affairs-tag-management-editor textarea,
+.affairs-tag-management-editor input {
+  width: 100%;
+}
+
+.affairs-tag-smart-rule-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.affairs-tag-management-batch-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.affairs-tag-recovery-status {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 0 2px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.affairs-tag-recovery-status-grid {
   display: grid;
-  gap: 10px;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 5px 10px;
 }
 
-.library-tag-smart-rule-card {
-  display: grid;
-  gap: 10px;
-  padding: 12px;
-  border: 1px solid color-mix(in srgb, var(--panel-border) 86%, transparent);
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--panel-bg) 92%, transparent);
+.affairs-tag-recovery-status-label {
+  color: var(--text-tertiary);
+  font-size: 12px;
 }
 
-.library-tag-smart-rule-header {
+.affairs-tag-recovery-status-value {
+  color: var(--text-primary);
+  font-size: 12px;
+  word-break: break-word;
+}
+
+.affairs-tag-recovery-progress-track {
+  margin-top: 2px;
+}
+
+.affairs-tag-smart-rule-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 0 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.affairs-tag-smart-rule-card:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.affairs-tag-smart-rule-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  flex-wrap: wrap;
 }
 
-.library-tag-smart-rule-enabled {
+.affairs-tag-smart-rule-title {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.affairs-tag-smart-rule-header-actions {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  color: var(--text-secondary);
-  font-size: 12px;
-  font-weight: 700;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
-.library-tag-smart-rule-grid {
+.affairs-tag-smart-rule-top-row {
+  display: grid;
+  grid-template-columns: minmax(0, 112px) minmax(0, 1fr);
+  gap: 8px 10px;
+  align-items: start;
+}
+
+.affairs-tag-smart-rule-value-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: 8px 10px;
 }
 
-.library-tag-smart-rule-value {
-  display: grid;
-  gap: 10px;
+.affairs-tag-smart-rule-field {
+  gap: 4px;
 }
 
-.library-tag-recovery-section {
-  margin-top: 12px;
-}
-
-.library-tag-recovery-status {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+.affairs-tag-smart-rule-field .modal-field-label {
   color: var(--text-secondary);
+  font-size: 11.5px;
+}
+
+.affairs-tag-smart-rule-field .modal-field-description {
+  display: none;
+}
+
+.affairs-tag-smart-rule-field .modal-field-copy,
+.affairs-tag-smart-rule-field input,
+.affairs-tag-smart-rule-field select {
+  min-width: 0;
+}
+
+.affairs-tag-smart-rule-top-row .workbench-modal-field,
+.affairs-tag-smart-rule-value-row .workbench-modal-field {
+  gap: 4px;
+}
+
+.affairs-tag-smart-rule-top-row input,
+.affairs-tag-smart-rule-top-row select,
+.affairs-tag-smart-rule-value-row input,
+.affairs-tag-smart-rule-value-row select {
+  min-height: 32px;
+  padding: 6px 10px;
+  border-radius: 10px;
+}
+
+.affairs-tag-smart-rule-top-row select,
+.affairs-tag-smart-rule-value-row select {
+  min-height: 30px;
+  height: 30px;
+  padding: 4px 30px 4px 10px;
+  border-radius: 8px;
+}
+
+.affairs-tag-smart-rule-value-row input::placeholder,
+.affairs-tag-smart-rule-management-editor input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.affairs-tag-smart-rule-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+}
+
+.affairs-tag-smart-rule-toggle[data-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.affairs-tag-smart-rule-toggle-switch {
+  position: relative;
+  display: inline-flex;
+  width: 40px;
+  height: 24px;
+  flex: 0 0 40px;
+}
+
+.affairs-tag-smart-rule-toggle-input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: inherit;
+  z-index: 2;
+}
+
+.affairs-tag-smart-rule-toggle-track {
+  position: absolute;
+  inset: 0;
+  display: block;
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--bg-hover) 82%, var(--bg-primary));
+  border: 1px solid color-mix(in srgb, var(--panel-border) 72%, transparent);
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.08);
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
+}
+
+.affairs-tag-smart-rule-toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow:
+    0 1px 4px rgba(15, 23, 42, 0.2),
+    0 0 0 0.5px rgba(15, 23, 42, 0.08);
+  transition:
+    transform var(--transition-fast),
+    box-shadow var(--transition-fast);
+}
+
+.affairs-tag-smart-rule-toggle-input:checked + .affairs-tag-smart-rule-toggle-track {
+  background: color-mix(in srgb, var(--accent) 88%, white 12%);
+  border-color: color-mix(in srgb, var(--accent) 48%, transparent);
+}
+
+.affairs-tag-smart-rule-toggle-input:checked + .affairs-tag-smart-rule-toggle-track .affairs-tag-smart-rule-toggle-thumb {
+  transform: translateX(16px);
+}
+
+.affairs-tag-smart-rule-toggle-input:focus-visible + .affairs-tag-smart-rule-toggle-track {
+  box-shadow:
+    inset 0 1px 2px rgba(15, 23, 42, 0.08),
+    0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.affairs-tag-smart-rule-toggle-label {
+  color: var(--text-secondary);
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.affairs-tag-smart-rule-header-actions .secondary-button {
+  min-height: 28px;
+  padding: 5px 10px;
+  border-radius: 9px;
   font-size: 12px;
 }
 
-@media (max-width: 920px) {
-  .library-tag-smart-rule-grid {
+.affairs-tag-management-danger {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.affairs-folder-tag-task-progress-track {
+  position: relative;
+  height: 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel-separator) 70%, transparent);
+  overflow: hidden;
+}
+
+.affairs-folder-tag-task-progress-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--accent) 68%, transparent),
+    color-mix(in srgb, var(--accent) 42%, white)
+  );
+  border-radius: inherit;
+}
+
+.affairs-binding-error {
+  color: var(--danger-text, #c43d3d);
+}
+
+@media (max-width: 980px) {
+  .affairs-tag-management-layout {
     grid-template-columns: 1fr;
+  }
+
+  .affairs-tag-management-editor-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .affairs-tag-smart-rule-top-row,
+  .affairs-tag-smart-rule-value-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .affairs-tag-management-tree {
+    max-height: none;
   }
 }
 
