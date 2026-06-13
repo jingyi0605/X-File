@@ -864,8 +864,8 @@ function LibraryDesktopSidebar({
     [hasTagSelection, tagFacetCounts, tagTree],
   );
   const tagTreeVisibility = useMemo(
-    () => buildTagTreeVisibility(tagTreeWithCounts, selectedTagPaths, tagFacetCounts),
-    [tagFacetCounts, selectedTagPaths, tagTreeWithCounts],
+    () => buildTagTreeVisibility(tagTreeWithCounts, selectedTagPaths),
+    [selectedTagPaths, tagTreeWithCounts],
   );
   const visibleTagTree = useMemo(
     () => filterTagTreeByVisibility(tagTreeWithCounts, tagTreeVisibility.visiblePathSet),
@@ -6835,7 +6835,6 @@ function applyTagFacetCountsToTree(
 function buildTagTreeVisibility(
   roots: LibraryTagTreeNodeRecord[],
   selectedTagPaths: string[],
-  tagFacetCounts: Record<string, number>,
 ): { visiblePathSet: Set<string> } {
   const visiblePathSet = new Set<string>();
   const selectedSet = new Set(selectedTagPaths);
@@ -6846,20 +6845,22 @@ function buildTagTreeVisibility(
   };
 
   const visit = (node: LibraryTagTreeNodeRecord): boolean => {
-    const nodeFacetCount = tagFacetCounts[node.path] ?? 0;
+    // 与当前选中相关的节点（选中项本身、其祖先或后代）必须保持可见，避免用户选中的标签凭空消失
     const selectedRelated = selectedTagPaths.some((selectedPath) => (
       selectedPath === node.path ||
       selectedPath.startsWith(`${node.path}/`) ||
       node.path.startsWith(`${selectedPath}/`)
     ));
-    const directVisible = selectedRelated || nodeFacetCount > 0;
+    // node.count 已由 applyTagFacetCountsToTree 统一收敛：有选中时取 facet 计数，无选中时取 documentCount。
+    // 规则：任何数量为 0 的标签（父标签或子标签）一律不显示，仅当选中相关或子树存在可见节点时才保留。
+    const directVisible = selectedRelated || node.count > 0;
     let childVisible = false;
     node.children.forEach((child) => {
       if (visit(child)) {
         childVisible = true;
       }
     });
-    const visible = directVisible || childVisible || selectedTagPaths.length === 0;
+    const visible = directVisible || childVisible;
     if (visible) {
       visiblePathSet.add(node.path);
       if (selectedSet.has(node.path)) {
