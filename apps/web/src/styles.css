@@ -1359,8 +1359,9 @@ p {
 .affairs-document-sheet.row .affairs-document-lines {
   left: 4px;
   right: 4px;
-  bottom: 6px;
-  height: 4px;
+  bottom: 7px;
+  height: 0;
+  border-bottom: none;
 }
 .affairs-document-sheet.row .affairs-document-badge {
   display: none;
