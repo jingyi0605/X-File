@@ -355,14 +355,13 @@ function filterDocuments(
       return false;
     }
 
-    if (input.browseMode !== "tag" && folderPath && folderPath !== ".") {
+    if (input.browseMode !== "tag") {
       const documentDir = normalizeFolderPath(
         path.posix.dirname(document.path),
       );
-      if (
-        documentDir !== folderPath &&
-        !documentDir.startsWith(`${folderPath}/`)
-      ) {
+      const normalizedDocumentDir = documentDir === "." ? "" : documentDir;
+      const normalizedFolderPath = folderPath === "." ? "" : folderPath;
+      if (normalizedDocumentDir !== normalizedFolderPath) {
         return false;
       }
     }
