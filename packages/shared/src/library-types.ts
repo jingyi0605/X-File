@@ -48,6 +48,7 @@ export interface HostDirectoryBrowseResult {
 
 export interface LibraryConfig {
   binding: LibraryBinding | null;
+  enabled: boolean;
   mirrorRoot: string | null;
   allowedExtensions: string[];
   includedHiddenPaths: string[];
@@ -64,6 +65,7 @@ export interface LibraryConfigWriteResult {
 }
 
 export interface SaveLibraryConfigInput {
+  enabled?: boolean;
   mirrorRoot?: string | null;
   allowedExtensions?: string[];
   includedHiddenPaths?: string[];

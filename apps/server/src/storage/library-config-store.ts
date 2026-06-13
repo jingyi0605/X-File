@@ -11,6 +11,7 @@ export class LibraryConfigStore {
     const config = {
       libraryId: binding.libraryId,
       rootDir: binding.rootDir,
+      enabled: binding.enabled,
       mirrorRoot: binding.mirrorRoot,
       allowedExtensions: binding.allowedExtensions,
       includedHiddenPaths: binding.includedHiddenPaths,

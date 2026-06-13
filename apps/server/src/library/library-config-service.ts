@@ -27,6 +27,7 @@ export class LibraryConfigService {
     const binding = this.bindingStore.read();
     return {
       binding,
+      enabled: binding?.enabled ?? false,
       mirrorRoot: binding?.mirrorRoot ?? null,
       allowedExtensions: binding?.allowedExtensions?.length ? binding.allowedExtensions : DEFAULT_ALLOWED_EXTENSIONS,
       includedHiddenPaths: binding?.includedHiddenPaths ?? [],
@@ -44,6 +45,7 @@ export class LibraryConfigService {
 
     const updatedBinding = this.bindingStore.write({
       ...binding,
+      enabled: typeof input.enabled === "boolean" ? input.enabled : binding.enabled,
       mirrorRoot: normalizeNullablePath(input.mirrorRoot, binding.mirrorRoot),
       allowedExtensions: normalizeExtensions(input.allowedExtensions, binding.allowedExtensions),
       includedHiddenPaths: normalizeStringList(input.includedHiddenPaths, binding.includedHiddenPaths),
