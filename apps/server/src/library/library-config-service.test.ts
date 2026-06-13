@@ -21,24 +21,28 @@ test("配置保存同步更新 binding 和资料库内配置文件", () => {
   libraryService.saveBinding({ rootDir, completeInitialization: true });
 
   const config = configService.saveConfig({
+    enabled: false,
     mirrorRoot: " /tmp/mirror ",
     allowedExtensions: ["md", ".PDF", ".md"],
     includedHiddenPaths: [".obsidian", ".obsidian", " .secret/docs "],
     folderOpenBehavior: "single_click"
   });
 
+  assert.equal(config.enabled, false);
   assert.equal(config.mirrorRoot, "/tmp/mirror");
   assert.deepEqual(config.allowedExtensions, [".md", ".pdf"]);
   assert.deepEqual(config.includedHiddenPaths, [".obsidian", ".secret/docs"]);
   assert.equal(config.folderOpenBehavior, "single_click");
 
   const binding = bindingStore.read();
+  assert.equal(binding?.enabled, false);
   assert.equal(binding?.mirrorRoot, "/tmp/mirror");
   assert.deepEqual(binding?.allowedExtensions, [".md", ".pdf"]);
 
   const configFile = JSON.parse(
     fs.readFileSync(path.join(rootDir, ".ai-index", "doc-semantic-index.config.json"), "utf8")
-  ) as { allowedExtensions: string[]; folderOpenBehavior: string };
+  ) as { enabled: boolean; allowedExtensions: string[]; folderOpenBehavior: string };
+  assert.equal(configFile.enabled, false);
   assert.deepEqual(configFile.allowedExtensions, [".md", ".pdf"]);
   assert.equal(configFile.folderOpenBehavior, "single_click");
 });

@@ -6,8 +6,10 @@ import test from "node:test";
 import { runLibraryIndexOnce } from "@x-file/indexer";
 
 import { LibraryService } from "./library-service.js";
-import { TagService } from "./tag-service.js";
+import { LibraryIndexService, LIBRARY_INDEX_TASK_TYPE } from "./index-service.js";
+import { TagService, LIBRARY_TAG_RECOMPUTE_TASK_TYPE } from "./tag-service.js";
 import { LibraryBindingStore } from "../storage/library-binding-store.js";
+import { IndexRuntimeStore } from "../storage/index-runtime-store.js";
 import { TagStore } from "../storage/tag-store.js";
 import { TaskManager } from "../tasks/task-manager.js";
 
@@ -280,3 +282,45 @@ async function waitForTagRecompute(tagService: TagService): Promise<void> {
   }
   throw new Error("等待标签重算超时");
 }
+
+
+test("标签重算只进入标签任务队列，不耦合索引刷新任务", () => {
+  const tempDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), "x-file-tags-recompute-decoupled-"),
+  );
+  const dataDir = path.join(tempDir, "data");
+  const rootDir = path.join(tempDir, "library");
+  fs.mkdirSync(rootDir, { recursive: true });
+
+  const bindingStore = new LibraryBindingStore({ dataDir });
+  new LibraryService(bindingStore).saveBinding({
+    rootDir,
+    completeInitialization: true,
+  });
+  const taskManager = new TaskManager();
+  new LibraryIndexService(taskManager, new IndexRuntimeStore());
+  const tagService = new TagService(
+    bindingStore,
+    new TagStore({ dataDir }),
+    taskManager,
+  );
+  tagService.registerTasks();
+
+  tagService.createTag({
+    name: "法务资料",
+    smartRules: [
+      {
+        relation: "and",
+        ruleType: "file_name_contains",
+        matcher: { keyword: "合同" },
+        enabled: true,
+        priority: 0,
+      },
+    ],
+  });
+
+  const tagTask = taskManager.get(LIBRARY_TAG_RECOMPUTE_TASK_TYPE, rootDir);
+  const indexTask = taskManager.get(LIBRARY_INDEX_TASK_TYPE, rootDir);
+  assert.equal(tagTask?.taskType, LIBRARY_TAG_RECOMPUTE_TASK_TYPE);
+  assert.equal(indexTask, null);
+});
