@@ -1,5 +1,6 @@
 import {
   Fragment,
+  useCallback,
   useEffect,
   useId,
   useLayoutEffect,
@@ -22,6 +23,8 @@ import type {
   LibraryFavoriteKind,
   LibraryFavoriteRecord,
   LibraryFolderTagDetails,
+  LibraryDirectoryStatus,
+  LibraryIndexProgress,
   LibraryIndexStatus,
   LibraryIndexState,
   LibraryPreview,
@@ -176,6 +179,29 @@ interface LibraryTagAssignmentTaskState {
   readonly message: string | null;
 }
 
+interface IndexStatusPopoverRow {
+  label: string;
+  value: string;
+  multiline?: boolean;
+}
+
+interface IndexStatusPopoverMetric {
+  label: string;
+  value: string;
+  tone?: "default" | "success" | "danger";
+}
+
+interface IndexStatusPopoverSection {
+  title: string;
+  rows: IndexStatusPopoverRow[];
+}
+
+interface IndexStatusPopoverModel {
+  summaryMetrics: IndexStatusPopoverMetric[];
+  primaryRows: IndexStatusPopoverRow[];
+  technicalSections: IndexStatusPopoverSection[];
+}
+
 interface LibraryViewerState {
   filePath: string;
   title: string;
@@ -216,6 +242,8 @@ const LIBRARY_TAG_TREE_NOISE_ROOTS = new Set([
 ]);
 const LIBRARY_TAG_TREE_VISIBLE_LIMIT = 5;
 const LIBRARY_TAG_TREE_STATE_KEY = "x-file.library.tag-tree";
+/** 索引状态弹窗悬停延时关闭的毫秒数，给指针移入弹窗留出余量。 */
+const INDEX_POPOVER_CLOSE_DELAY_MS = 320;
 const SIMPLE_PINYIN_MAP: Record<string, string> = {
   合: "he",
   同: "tong",
@@ -742,6 +770,9 @@ function LibraryTagTaskEntry({
   expanded: boolean;
   onToggle: () => void;
 }) {
+  const statusDotState = task.status === "running" ? "running"
+    : task.status === "completed" ? "completed"
+    : "failed";
   const statusText = resolveLibraryTagTaskStatusText(task.status);
   return (
     <div className="library-tag-task-entry">
@@ -752,18 +783,46 @@ function LibraryTagTaskEntry({
         aria-expanded={expanded}
         onClick={onToggle}
       >
-        <span>{t("libraryTagTaskEntryTitle")}</span>
-        <strong>{statusText}</strong>
+        <span className={`library-tag-task-dot state-${statusDotState}`} aria-hidden="true" />
+        <span className="library-tag-task-text">{t("libraryTagTaskTriggerTitle")}</span>
+        <span className="library-tag-task-badge">{statusText}</span>
       </button>
       {expanded ? (
         <div
-          className="library-tag-task-panel"
+          className="library-tag-task-popover"
           role="status"
           aria-label={t("libraryTagTaskRecentLabel")}
         >
-          <span>{task.targetPath}</span>
-          <strong>{statusText}</strong>
-          {task.message ? <small>{task.message}</small> : null}
+          <div className="library-tag-task-popover-header">
+            <strong>{t("libraryTagTaskPopoverTitle")}</strong>
+          </div>
+          <div className="library-tag-task-popover-grid">
+            <div className="library-tag-task-popover-row">
+              <span className="library-tag-task-popover-label">
+                {task.kind === "folder" ? t("libraryTagTaskFolderLabel") : t("libraryTagTaskDocumentLabel")}
+              </span>
+              <span className="library-tag-task-popover-value">{task.targetPath}</span>
+            </div>
+            <div className="library-tag-task-popover-row">
+              <span className="library-tag-task-popover-label">{t("libraryTagTaskStatusLabel")}</span>
+              <span className="library-tag-task-popover-value">{statusText}</span>
+            </div>
+          </div>
+          {task.status === "running" ? (
+            <div className="library-tag-task-progress-track" aria-hidden="true">
+              <span className="library-tag-task-progress-fill" style={{ width: "40%" }} />
+            </div>
+          ) : null}
+          {task.status === "completed" ? (
+            <div className="library-tag-task-progress-track" aria-hidden="true">
+              <span className="library-tag-task-progress-fill" style={{ width: "100%" }} />
+            </div>
+          ) : null}
+          {task.message ? (
+            <p className={task.status === "failed" ? "library-tag-task-popover-error" : "library-tag-task-popover-detail"}>
+              {task.message}
+            </p>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -1805,7 +1864,11 @@ function LibraryStageToolbar({
         >
           {renderRefreshIcon()}
         </button>
-        <LibraryIndexStatusPopover status={library.snapshot?.status ?? null} />
+        <LibraryIndexStatusPopover
+          status={library.snapshot?.status ?? null}
+          documentCount={library.snapshot?.documentCount ?? 0}
+          directoryStatus={library.documentPage?.directoryStatus ?? null}
+        />
         <button
           type="button"
           className="affairs-stage-toolbar-icon"
@@ -6217,83 +6280,131 @@ function TagPills({ items }: { items: string[] }) {
   );
 }
 
-function LibraryIndexStatusPopover({ status }: { status: LibraryIndexStatus | null }) {
+function LibraryIndexStatusPopover({
+  status,
+  documentCount,
+  directoryStatus,
+}: {
+  status: LibraryIndexStatus | null;
+  documentCount: number;
+  directoryStatus: LibraryDirectoryStatus | null;
+}) {
   const [open, setOpen] = useState(false);
+  const [technicalExpanded, setTechnicalExpanded] = useState(false);
+  // 悬停延时关闭：鼠标移出触发区域后留出余量，方便把指针移到弹窗内查看详情。
+  const closeTimerRef = useRef<number | null>(null);
+  const cancelCloseTimer = useCallback(() => {
+    if (closeTimerRef.current !== null) {
+      window.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+  }, []);
+  const scheduleClose = useCallback(() => {
+    cancelCloseTimer();
+    closeTimerRef.current = window.setTimeout(() => setOpen(false), INDEX_POPOVER_CLOSE_DELAY_MS);
+  }, [cancelCloseTimer]);
+  useEffect(() => () => cancelCloseTimer(), [cancelCloseTimer]);
+  const popoverModel = useMemo(
+    () => buildIndexStatusPopoverModel(status, documentCount, directoryStatus),
+    [status, documentCount, directoryStatus],
+  );
   const stateLabel = resolveIndexStatusLabel(status?.state);
-  const stageLabel = resolveIndexStageLabel(status?.runningStage ?? null);
-  const progress = status?.progress ?? null;
-  const technicalRows = [
-    [t("libraryStatusLastRequested"), formatNullableDateTime(status?.lastRequestedAt ?? null)],
-    [t("libraryStatusLastStarted"), formatNullableDateTime(status?.lastStartedAt ?? null)],
-    [t("libraryStatusLastCompleted"), formatNullableDateTime(status?.lastCompletedAt ?? null)],
-    [t("libraryStatusLastFailed"), formatNullableDateTime(status?.lastFailedAt ?? null)],
-    [t("libraryStatusDirtyReasons"), status?.dirtyReasons?.join(", ") || "--"],
-    [t("libraryStatusErrorSummary"), status?.errorSummary || "--"],
-  ];
+  const progressLabel = resolveIndexStatusInlineProgressLabel(status);
 
   return (
     <span
       className="library-index-status-anchor"
-      onMouseEnter={() => setOpen(true)}
-      onMouseLeave={() => setOpen(false)}
+      onMouseEnter={() => {
+        cancelCloseTimer();
+        setOpen(true);
+      }}
+      onMouseLeave={scheduleClose}
     >
       <button
         type="button"
         className="affairs-stage-status-trigger"
         title={stateLabel}
         aria-label={`${t("libraryStatusTitle")}：${stateLabel}`}
+        aria-haspopup="dialog"
         aria-expanded={open}
         onFocus={() => setOpen(true)}
-        onBlur={() => setOpen(false)}
+        onBlur={scheduleClose}
       >
         <span className={`affairs-stage-status-dot state-${resolveStatusDotState(status?.state)}`} />
-        <span className="affairs-stage-status-text">
-          {resolveIndexStatusShortLabel(status?.state)}
-        </span>
+        {progressLabel ? (
+          <span className="affairs-stage-status-text">{progressLabel}</span>
+        ) : null}
       </button>
       {open ? (
         <div
           role="dialog"
           aria-label={t("libraryIndexStatusDetailsTitle")}
           className="library-index-status-popover"
+          onMouseEnter={cancelCloseTimer}
+          onMouseLeave={scheduleClose}
         >
-          <strong>{t("libraryIndexStatusDetailsTitle")}</strong>
-          <dl className="library-index-status-summary">
-            <div>
-              <dt>{t("libraryIndexStatusCurrentLabel")}</dt>
-              <dd>{stateLabel}</dd>
+          <div className="library-index-status-popover-card">
+            <div className="library-index-status-popover-header">
+              <strong>{t("libraryIndexStatusDetailsTitle")}</strong>
             </div>
-            {status?.runningStage ? (
-              <div>
-                <dt>{t("libraryStatusRunningStage")}</dt>
-                <dd>{stageLabel}</dd>
+            {popoverModel.summaryMetrics.length > 0 ? (
+              <div className="library-index-status-summary">
+                {popoverModel.summaryMetrics.map((metric) => (
+                  <div
+                    key={metric.label}
+                    className="library-index-status-summary-item"
+                    data-tone={metric.tone ?? "default"}
+                  >
+                    <span className="library-index-status-summary-label">{metric.label}</span>
+                    <strong className="library-index-status-summary-value">{metric.value}</strong>
+                  </div>
+                ))}
               </div>
             ) : null}
-            {progress ? (
-              <div>
-                <dt>{t("libraryStatusProgress")}</dt>
-                <dd>{t("libraryProgressSummary", {
-                  scanned: progress.scannedCount,
-                  indexed: progress.indexedCount,
-                  failed: progress.failedCount,
-                })}</dd>
+            <div className="library-index-status-primary">
+              <div className="library-index-status-section-title">{t("libraryStatusPrimaryTitle")}</div>
+              <div className="library-index-status-popover-grid">
+                {popoverModel.primaryRows.map((item) => (
+                  <div key={item.label} className="library-index-status-popover-row">
+                    <span className="library-index-status-popover-label">{item.label}</span>
+                    <span className="library-index-status-popover-value" data-multiline={item.multiline ? "true" : undefined}>
+                      {item.value}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            {popoverModel.technicalSections.length > 0 ? (
+              <div className="library-index-status-technical">
+                <button
+                  type="button"
+                  className="secondary-button library-index-status-technical-toggle"
+                  aria-expanded={technicalExpanded}
+                  onClick={() => setTechnicalExpanded((current) => !current)}
+                >
+                  {t("libraryStatusTechnicalToggle")}
+                </button>
+                {technicalExpanded ? (
+                  <div className="library-index-status-section-list">
+                    {popoverModel.technicalSections.map((section) => (
+                      <section key={section.title} className="library-index-status-section">
+                        <div className="library-index-status-section-title">{section.title}</div>
+                        <div className="library-index-status-popover-grid">
+                          {section.rows.map((item) => (
+                            <div key={item.label} className="library-index-status-popover-row">
+                              <span className="library-index-status-popover-label">{item.label}</span>
+                              <span className="library-index-status-popover-value" data-multiline={item.multiline ? "true" : undefined}>
+                                {item.value}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             ) : null}
-          </dl>
-          <div
-            className="library-index-status-technical"
-            data-testid="library-index-status-technical"
-            style={{
-              maxHeight: "min(220px, calc(100vh - 180px))",
-              overflowY: "auto",
-            }}
-          >
-            {technicalRows.map(([label, value]) => (
-              <div key={label}>
-                <span>{label}</span>
-                <code>{value}</code>
-              </div>
-            ))}
           </div>
         </div>
       ) : null}
@@ -6319,26 +6430,6 @@ function resolveIndexStatusLabel(state: LibraryIndexState | undefined): string {
       return t("libraryStatusFailed");
     default:
       return t("libraryStatusUnknown");
-  }
-}
-
-function resolveIndexStatusShortLabel(state: LibraryIndexState | undefined): string {
-  switch (state) {
-    case "fresh":
-      return t("libraryStatusFreshShort");
-    case "running":
-      return t("libraryStatusRunningShort");
-    case "queued":
-      return t("libraryStatusQueuedShort");
-    case "cooldown":
-      return t("libraryStatusCooldownShort");
-    case "failed":
-    case "queue_timeout":
-      return t("libraryStatusFailedShort");
-    case "stale":
-      return t("libraryStatusStaleShort");
-    default:
-      return t("libraryStatusUnknownShort");
   }
 }
 
@@ -6380,6 +6471,272 @@ function resolveDirectorySourceLabel(source: LibraryDirectorySource): string {
     stale_fallback: t("libraryDirectorySourceStaleFallback"),
   };
   return labels[source];
+}
+
+// ── 索引状态弹窗数据模型构建 ──────────────────────────────────────────
+
+function buildIndexStatusPopoverModel(
+  status: LibraryIndexStatus | null,
+  documentCount: number,
+  directoryStatus: LibraryDirectoryStatus | null,
+): IndexStatusPopoverModel {
+  const primaryRows: IndexStatusPopoverRow[] = [
+    {
+      label: t("libraryIndexStatusCurrentLabel"),
+      value: resolveIndexStatusLabel(status?.state),
+    },
+  ];
+  const overviewRows: IndexStatusPopoverRow[] = [];
+  const timelineRows: IndexStatusPopoverRow[] = [];
+  const progressRows: IndexStatusPopoverRow[] = [];
+  const directoryRows: IndexStatusPopoverRow[] = [];
+  const workerRows: IndexStatusPopoverRow[] = [];
+
+  if (!status) {
+    return { summaryMetrics: [], primaryRows, technicalSections: [] };
+  }
+
+  // 摘要指标（四栏网格）：优先用实时进度，缺失时用导出文档计数兜底，
+  // 保证稳态下面板一定能展示“索引总数/当前数量/问题数量/更新数量”，不再出现空白。
+  const progress = status.progress ?? deriveSteadyProgressFallback(documentCount);
+  const summaryMetrics: IndexStatusPopoverMetric[] = progress
+    ? [
+        {
+          label: t("libraryStatusSummaryTotal"),
+          value: formatIndexStatusMetricValue(progress.totalCount),
+        },
+        {
+          label: t("libraryStatusSummaryScanned"),
+          value: String(progress.scannedCount),
+        },
+        {
+          label: t("libraryStatusSummaryFailed"),
+          value: String(progress.failedCount),
+          tone: progress.failedCount > 0 ? "danger" : "default",
+        },
+        {
+          label: t("libraryStatusSummaryUpdated"),
+          value: String(progress.indexedCount),
+          tone: progress.indexedCount > 0 ? "success" : "default",
+        },
+      ]
+    : [];
+
+  // 时间线
+  pushIndexStatusDetail(timelineRows, t("libraryStatusLastRequestedAtLabel"), status.lastRequestedAt);
+  pushIndexStatusDetail(timelineRows, t("libraryStatusLastStartedAtLabel"), status.lastStartedAt);
+  pushIndexStatusDetail(timelineRows, t("libraryStatusLastCompletedAtLabel"), status.lastCompletedAt);
+  pushIndexStatusDetail(timelineRows, t("libraryStatusLastFailedAtLabel"), status.lastFailedAt);
+  pushIndexStatusDetail(timelineRows, t("libraryStatusNextAllowedAtLabel"), status.nextAllowedAt);
+
+  // 概览
+  if (status.runningTaskId?.trim()) {
+    overviewRows.push({
+      label: t("libraryStatusRunningTaskIdLabel"),
+      value: status.runningTaskId.trim(),
+      multiline: true,
+    });
+  }
+
+  if (status.runningStage?.trim()) {
+    primaryRows.push({
+      label: t("libraryStatusRunningStageLabel"),
+      value: resolveIndexStageLabel(status.runningStage.trim()),
+    });
+  }
+
+  // 进度详情
+  if (progress) {
+    progressRows.push({
+      label: t("libraryStatusProgressUnchangedLabel"),
+      value: String(progress.unchangedCount),
+    });
+    progressRows.push({
+      label: t("libraryStatusProgressSkippedLabel"),
+      value: String(progress.skippedCount),
+    });
+    progressRows.push({
+      label: t("libraryStatusProgressFailedLabel"),
+      value: String(progress.failedCount),
+    });
+  }
+
+  if (status.dirtyReasons.length > 0) {
+    overviewRows.push({
+      label: t("libraryStatusDirtyReasonsLabel"),
+      value: status.dirtyReasons.join("、"),
+      multiline: true,
+    });
+  }
+
+  if (status.errorSummary?.trim()) {
+    primaryRows.push({
+      label: t("libraryStatusErrorSummaryLabel"),
+      value: status.errorSummary.trim(),
+      multiline: true,
+    });
+  }
+
+  // 当前目录结果（对齐父仓库“当前目录 / 目录刷新状态”两行，并补充技术区目录详情）
+  if (directoryStatus) {
+    primaryRows.push({
+      label: t("libraryDirectoryStatusPathLabel"),
+      value:
+        directoryStatus.path === "." || directoryStatus.path === ""
+          ? t("libraryDirectoryStatusRootPath")
+          : directoryStatus.path,
+    });
+    primaryRows.push({
+      label: t("libraryDirectoryStatusStateLabel"),
+      value: resolveDirectoryStateLabel(directoryStatus.state),
+    });
+    directoryRows.push({
+      label: t("libraryDirectoryStatusSourceLabel"),
+      value: resolveDirectorySourceLabel(directoryStatus.source),
+    });
+    pushIndexStatusDetail(
+      directoryRows,
+      t("libraryDirectoryStatusLastRequestedAtLabel"),
+      directoryStatus.lastRequestedAt,
+    );
+    pushIndexStatusDetail(
+      directoryRows,
+      t("libraryDirectoryStatusLastCompletedAtLabel"),
+      directoryStatus.lastCompletedAt,
+    );
+    pushIndexStatusDetail(
+      directoryRows,
+      t("libraryDirectoryStatusLastFailedAtLabel"),
+      directoryStatus.lastFailedAt,
+    );
+    if (directoryStatus.runningTaskId?.trim()) {
+      directoryRows.push({
+        label: t("libraryDirectoryStatusRunningTaskIdLabel"),
+        value: directoryStatus.runningTaskId.trim(),
+        multiline: true,
+      });
+    }
+    if (directoryStatus.errorSummary?.trim()) {
+      directoryRows.push({
+        label: t("libraryDirectoryStatusErrorSummaryLabel"),
+        value: directoryStatus.errorSummary.trim(),
+        multiline: true,
+      });
+    }
+  }
+
+  // 工作器健康状态
+  if (status.workerHealth) {
+    const wh = status.workerHealth;
+    workerRows.push({
+      label: t("libraryWorkerHealthStateLabel"),
+      value: resolveWorkerHealthStateLabel(wh.state),
+    });
+    workerRows.push({
+      label: t("libraryWorkerHealthPidLabel"),
+      value: wh.pid === null ? "--" : String(wh.pid),
+    });
+    workerRows.push({
+      label: t("libraryWorkerHealthLocalInflightLabel"),
+      value: String(wh.inflightLocalCount),
+    });
+    workerRows.push({
+      label: t("libraryWorkerHealthRemoteInflightLabel"),
+      value: String(wh.inflightRemoteRequestCount),
+    });
+    pushIndexStatusDetail(workerRows, t("libraryWorkerHealthStartedAtLabel"), wh.startedAt);
+    pushIndexStatusDetail(workerRows, t("libraryWorkerHealthHeartbeatLabel"), wh.lastHeartbeatAt);
+    pushIndexStatusDetail(workerRows, t("libraryWorkerHealthLastStartedAtLabel"), wh.lastStartedAt);
+    pushIndexStatusDetail(workerRows, t("libraryWorkerHealthLastCompletedAtLabel"), wh.lastCompletedAt);
+    pushIndexStatusDetail(workerRows, t("libraryWorkerHealthLastFailedAtLabel"), wh.lastFailedAt);
+    pushIndexStatusDetail(workerRows, t("libraryWorkerHealthSoftCancelAtLabel"), wh.lastSoftCancelRequestedAt);
+    pushIndexStatusDetail(workerRows, t("libraryWorkerHealthHardKillAtLabel"), wh.lastHardKillAt);
+    pushIndexStatusDetail(workerRows, t("libraryWorkerHealthLastExitAtLabel"), wh.lastExitAt);
+    if (wh.lastTerminationReason?.trim()) {
+      workerRows.push({
+        label: t("libraryWorkerHealthTerminationReasonLabel"),
+        value: wh.lastTerminationReason.trim(),
+        multiline: true,
+      });
+    }
+  }
+
+  // 组装技术详情分区
+  const sections: IndexStatusPopoverSection[] = [];
+  pushIndexStatusSection(sections, t("libraryStatusSectionOverviewTitle"), overviewRows);
+  pushIndexStatusSection(sections, t("libraryStatusSectionTimelineTitle"), timelineRows);
+  pushIndexStatusSection(sections, t("libraryStatusSectionProgressTitle"), progressRows);
+  pushIndexStatusSection(sections, t("libraryStatusSectionDirectoryTitle"), directoryRows);
+  pushIndexStatusSection(sections, t("libraryStatusSectionWorkerTitle"), workerRows);
+
+  return { summaryMetrics, primaryRows, technicalSections: sections };
+}
+
+function pushIndexStatusDetail(
+  rows: IndexStatusPopoverRow[],
+  label: string,
+  value: string | null,
+): void {
+  if (!value) return;
+  rows.push({ label, value: formatNullableDateTime(value) });
+}
+
+function pushIndexStatusSection(
+  sections: IndexStatusPopoverSection[],
+  title: string,
+  rows: IndexStatusPopoverRow[],
+): void {
+  if (rows.length === 0) return;
+  sections.push({ title, rows });
+}
+
+/**
+ * 前端兜底：当后端 status.progress 缺失时，用快照文档计数合成稳态进度，
+ * 让摘要网格在任意情况下都能展示（与后端 deriveSteadyProgress 同语义，避免空面板）。
+ */
+function deriveSteadyProgressFallback(documentCount: number): LibraryIndexProgress | null {
+  if (!Number.isFinite(documentCount) || documentCount <= 0) {
+    return null;
+  }
+  return {
+    scannedCount: documentCount,
+    indexedCount: 0,
+    skippedCount: 0,
+    failedCount: 0,
+    unchangedCount: documentCount,
+    totalCount: documentCount,
+    maxConcurrency: null,
+  };
+}
+
+function formatIndexStatusMetricValue(value: number | null | undefined): string {
+  if (value == null) return "—";
+  return String(value);
+}
+
+function resolveIndexStatusInlineProgressLabel(
+  status: LibraryIndexStatus | null,
+): string | null {
+  if (status?.state === "running" && status.progress) {
+    return t("libraryProgressSummary", {
+      scanned: status.progress.scannedCount,
+      indexed: status.progress.indexedCount,
+      failed: status.progress.failedCount,
+    });
+  }
+  return null;
+}
+
+function resolveWorkerHealthStateLabel(
+  state: "idle" | "running" | "terminating" | "recycled",
+): string {
+  const labels: Record<string, string> = {
+    idle: t("libraryDirectoryStateIdle"),
+    running: t("libraryStatusRunning"),
+    terminating: "终止中",
+    recycled: "已回收",
+  };
+  return labels[state] ?? state;
 }
 
 
