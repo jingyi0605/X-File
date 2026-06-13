@@ -1,8 +1,18 @@
-import { isValidElement, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { isValidElement, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { t } from "../../i18n";
+
+declare global {
+  interface Window {
+    DocsAPI?: {
+      DocEditor: new (elementId: string, config: Record<string, unknown>) => {
+        destroyEditor?: () => void;
+      };
+    };
+  }
+}
 
 type TokenKind =
   | "plain"
@@ -51,6 +61,142 @@ function OverviewRuler(_props: {
   scrollContainerRef: RefObject<HTMLDivElement | null>;
 }) {
   return null;
+}
+
+const ONLY_OFFICE_SCRIPT_CACHE = new Map<string, Promise<void>>();
+
+function OnlyOfficePreview({
+  onlyOffice,
+  filePath,
+}: {
+  onlyOffice: {
+    apiScriptUrl: string;
+    editorConfig: Record<string, unknown>;
+  } | null;
+  filePath: string;
+}) {
+  const editorInstanceRef = useRef<{ destroyEditor?: () => void } | null>(null);
+  const containerId = useMemo(
+    () => `x-file-onlyoffice-${filePath.replace(/[^a-zA-Z0-9_-]+/g, "-")}-${Math.random().toString(36).slice(2, 8)}`,
+    [filePath],
+  );
+  const [errorText, setErrorText] = useState<string | null>(null);
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!onlyOffice) {
+      setErrorText(t("fileViewerOfficeUnavailable"));
+      setReady(false);
+      return;
+    }
+
+    setErrorText(null);
+    setReady(false);
+
+    void loadOnlyOfficeScript(onlyOffice.apiScriptUrl)
+      .then(() => {
+        if (cancelled) {
+          return;
+        }
+
+        if (!window.DocsAPI?.DocEditor) {
+          throw new Error(t("fileViewerOfficeScriptUnavailable"));
+        }
+
+        editorInstanceRef.current?.destroyEditor?.();
+        editorInstanceRef.current = new window.DocsAPI.DocEditor(
+          containerId,
+          onlyOffice.editorConfig,
+        );
+        setReady(true);
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+
+        setErrorText(
+          error instanceof Error ? error.message : t("fileViewerOfficeUnavailable"),
+        );
+      });
+
+    return () => {
+      cancelled = true;
+      editorInstanceRef.current?.destroyEditor?.();
+      editorInstanceRef.current = null;
+    };
+  }, [containerId, onlyOffice]);
+
+  if (!onlyOffice) {
+    return <p className="status-text">{t("fileViewerOfficeUnavailable")}</p>;
+  }
+
+  return (
+    <div className="file-viewer-office-shell">
+      {!ready && !errorText ? (
+        <p className="status-text">{t("fileViewerOfficeLoading")}</p>
+      ) : null}
+      {errorText ? <p className="status-text">{errorText}</p> : null}
+      <div
+        id={containerId}
+        className="file-viewer-office-stage"
+        data-testid="file-viewer-office-preview"
+        aria-label={filePath}
+      />
+    </div>
+  );
+}
+
+function loadOnlyOfficeScript(src: string): Promise<void> {
+  const cached = ONLY_OFFICE_SCRIPT_CACHE.get(src);
+  if (cached) {
+    return cached;
+  }
+
+  const pending = new Promise<void>((resolve, reject) => {
+    if (typeof document === "undefined") {
+      reject(new Error(t("fileViewerOfficeUnavailable")));
+      return;
+    }
+
+    const existing = document.querySelector<HTMLScriptElement>(
+      `script[data-onlyoffice-script="${src}"]`,
+    );
+    if (existing?.dataset.loaded === "true") {
+      resolve();
+      return;
+    }
+
+    const script = existing ?? document.createElement("script");
+    const cleanup = () => {
+      script.removeEventListener("load", handleLoad);
+      script.removeEventListener("error", handleError);
+    };
+    const handleLoad = () => {
+      script.dataset.loaded = "true";
+      cleanup();
+      resolve();
+    };
+    const handleError = () => {
+      cleanup();
+      reject(new Error(t("fileViewerOfficeScriptUnavailable")));
+    };
+
+    script.addEventListener("load", handleLoad, { once: true });
+    script.addEventListener("error", handleError, { once: true });
+
+    if (!existing) {
+      script.src = src;
+      script.async = true;
+      script.dataset.onlyofficeScript = src;
+      document.head.appendChild(script);
+    }
+  });
+
+  ONLY_OFFICE_SCRIPT_CACHE.set(src, pending);
+  return pending;
 }
 
 
@@ -1530,4 +1676,4 @@ function formatLanguageLabel(language: string): string {
   }
 }
 
-export { CodePreview, MarkdownPreview, detectLanguage, formatLanguageLabel };
+export { CodePreview, MarkdownPreview, OnlyOfficePreview, detectLanguage, formatLanguageLabel };

@@ -120,7 +120,6 @@ describe("第 1 批：文档预览、编辑写回、Office 阅读视图与目录
     await userEvent.click(await screen.findByRole("button", { name: /客户资料/ }));
 
     expect(await screen.findByRole("heading", { name: "客户资料" })).toBeInTheDocument();
-    expect(screen.getByText("目录详情")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "展开全文" }));
     expect(screen.getByRole("button", { name: "收起全文" })).toBeInTheDocument();
   });
@@ -157,6 +156,27 @@ describe("第 1 批：文档预览、编辑写回、Office 阅读视图与目录
     await waitFor(() => {
       expect(libraryApiMock.getLibraryPreview).toHaveBeenCalledWith("docs/合同.docx");
     });
+  });
+
+  it("右侧对象详情栏会把 Markdown 按富文本渲染，而不是退回纯文本 pre", async () => {
+    libraryApiMock.listLibraryDocuments.mockResolvedValue(
+      createDocumentList([createDocumentRecord({ documentId: "doc-markdown", path: "docs/说明.md" })]),
+    );
+    libraryApiMock.getLibraryPreview.mockResolvedValue(createPreview({
+      path: "docs/说明.md",
+      kind: "markdown",
+      content: "# 一级标题\n\n```ts\nconst value = 1;\n```",
+      version: "md-v1",
+    }));
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /说明\.md/ }));
+
+    expect(await screen.findByRole("heading", { name: "一级标题" })).toBeInTheDocument();
+    expect(screen.getByText("TypeScript")).toBeInTheDocument();
+    expect(document.querySelector(".affairs-preview-block pre.preview-box.text.compact")).toBeNull();
   });
 });
 

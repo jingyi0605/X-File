@@ -4438,6 +4438,169 @@ function LibraryQuickTagAssignmentEditor({
   );
 }
 
+function LibraryInlineDocumentTagEditor({
+  library,
+  document,
+}: {
+  library: LibraryState;
+  document: Extract<LibraryEntry, { kind: "document" }>;
+}) {
+  const [details, setDetails] = useState<LibraryDocumentTagDetails | null>(null);
+  const [tagDetails, setTagDetails] = useState<LibraryTagDetailWithRules[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const assignableTags = useMemo(
+    () => tagDetails.filter(isAssignableLibraryTag),
+    [tagDetails],
+  );
+
+  const refreshDetails = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [nextDetails, nextTags] = await Promise.all([
+        getDocumentTagDetails(document.documentId),
+        listLibraryTagDetails(true),
+      ]);
+      setDetails(nextDetails);
+      setTagDetails(nextTags);
+    } catch (err) {
+      setError(toApiErrorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [document.documentId]);
+
+  useEffect(() => {
+    void refreshDetails();
+  }, [refreshDetails]);
+
+  const saveTags = useCallback(async (nextTagIds: string[], createTagPaths: string[] = []) => {
+    const nextDetails = await saveDocumentTags(document.documentId, {
+      tagIds: nextTagIds,
+      createTagPaths,
+    });
+    setDetails(nextDetails);
+    await Promise.all([library.reload(), library.reloadDocuments(true)]);
+  }, [document.documentId, library]);
+
+  if (loading) {
+    return <span className="affairs-binding-hint">{t("libraryTagAssignmentLoading")}</span>;
+  }
+
+  if (!details) {
+    return (
+      <span className="affairs-binding-hint">
+        {error || t("libraryTagAssignmentEmpty")}
+      </span>
+    );
+  }
+
+  return (
+    <>
+      <LibraryQuickTagAssignmentEditor
+        assignedTagIds={details.manualTagIds}
+        assignableTags={assignableTags}
+        resolvedTagPaths={details.resolvedTags.map((item) => item.path)}
+        recommendedTags={details.recommendedTags ?? []}
+        emptyText={t("libraryTagAssignmentEmpty")}
+        inputLabel={t("libraryTagAssignmentTagsLabel")}
+        suggestionsLabel={t("libraryTagAssignmentSuggestionsLabel")}
+        onSave={saveTags}
+        onSaved={() => void refreshDetails()}
+        onError={(message) => setError(message || null)}
+        autoFocusInput={false}
+      />
+      {error ? (
+        <span className="affairs-binding-hint">{error}</span>
+      ) : null}
+    </>
+  );
+}
+
+function LibraryInlineFolderTagEditor({
+  library,
+  folder,
+}: {
+  library: LibraryState;
+  folder: LibraryDirectoryEntry;
+}) {
+  const [details, setDetails] = useState<LibraryFolderTagDetails | null>(null);
+  const [tagDetails, setTagDetails] = useState<LibraryTagDetailWithRules[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const assignableTags = useMemo(
+    () => tagDetails.filter(isAssignableLibraryTag),
+    [tagDetails],
+  );
+
+  const refreshDetails = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [nextDetails, nextTags] = await Promise.all([
+        getFolderTagDetails(folder.path),
+        listLibraryTagDetails(true),
+      ]);
+      setDetails(nextDetails);
+      setTagDetails(nextTags);
+    } catch (err) {
+      setError(toApiErrorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [folder.path]);
+
+  useEffect(() => {
+    void refreshDetails();
+  }, [refreshDetails]);
+
+  const saveTags = useCallback(async (nextTagIds: string[], createTagPaths: string[] = []) => {
+    const nextDetails = await saveFolderTags({
+      folderPath: folder.path,
+      tagIds: nextTagIds,
+      createTagPaths,
+    });
+    setDetails(nextDetails);
+    await Promise.all([library.reload(), library.reloadDocuments(true)]);
+  }, [folder.path, library]);
+
+  if (loading) {
+    return <span className="affairs-binding-hint">{t("libraryTagAssignmentLoading")}</span>;
+  }
+
+  if (!details) {
+    return (
+      <span className="affairs-binding-hint">
+        {error || t("libraryTagAssignmentEmpty")}
+      </span>
+    );
+  }
+
+  return (
+    <>
+      <LibraryQuickTagAssignmentEditor
+        assignedTagIds={details.bindings.map((item) => item.tagId)}
+        assignableTags={assignableTags}
+        resolvedTagPaths={details.bindings.map((item) => item.tagPath)}
+        recommendedTags={details.recommendedTags ?? []}
+        emptyText={t("libraryTagAssignmentEmpty")}
+        inputLabel={t("libraryTagAssignmentTagsLabel")}
+        suggestionsLabel={t("libraryTagAssignmentSuggestionsLabel")}
+        onSave={saveTags}
+        onSaved={() => void refreshDetails()}
+        onError={(message) => setError(message || null)}
+        autoFocusInput={false}
+      />
+      {error ? (
+        <span className="affairs-binding-hint">{error}</span>
+      ) : null}
+    </>
+  );
+}
+
 function LibraryColorTag({
   label,
   path,
@@ -6032,10 +6195,12 @@ function PreviewPanel({
   preview,
   loading,
   error,
+  compact = false,
 }: {
   preview: LibraryPreview | null;
   loading: boolean;
   error: string | null;
+  compact?: boolean;
 }) {
   if (loading) {
     return <div className="preview-box">{t("libraryDocumentsLoading")}</div>;
