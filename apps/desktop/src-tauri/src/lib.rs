@@ -424,6 +424,20 @@ fn open_path(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn reveal_path_in_file_manager(path: String) -> Result<(), String> {
+    let normalized = path.trim();
+    if normalized.is_empty() {
+        return Err("路径不能为空".to_string());
+    }
+
+    let mut command = build_reveal_path_command(normalized);
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("在文件管理器中定位失败：{error}"))
+}
+
+#[tauri::command]
 fn show_library_context_menu(
     app: AppHandle,
     state: tauri::State<'_, Mutex<DesktopState>>,
@@ -558,10 +572,24 @@ fn build_open_path_command(path: &str) -> Command {
     command
 }
 
+#[cfg(target_os = "macos")]
+fn build_reveal_path_command(path: &str) -> Command {
+    let mut command = Command::new("open");
+    command.args(["-R", path]);
+    command
+}
+
 #[cfg(target_os = "windows")]
 fn build_open_path_command(path: &str) -> Command {
     let mut command = Command::new("cmd");
     command.args(["/C", "start", "", path]);
+    command
+}
+
+#[cfg(target_os = "windows")]
+fn build_reveal_path_command(path: &str) -> Command {
+    let mut command = Command::new("explorer");
+    command.arg(format!("/select,{path}"));
     command
 }
 
@@ -570,6 +598,11 @@ fn build_open_path_command(path: &str) -> Command {
     let mut command = Command::new("xdg-open");
     command.arg(path);
     command
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+fn build_reveal_path_command(path: &str) -> Command {
+    build_open_path_command(path)
 }
 
 fn backend_policy(persistent: bool) -> BackendPolicy {
@@ -867,6 +900,7 @@ pub fn run() {
             desktop_shell_status,
             http_service_hint,
             open_path,
+            reveal_path_in_file_manager,
             show_library_context_menu
         ])
         .on_menu_event(handle_menu_event)
