@@ -483,7 +483,24 @@ function resolveVisibleEntryTotal(
   entryCount: number,
   viewState: LibraryViewState
 ): number {
+  const directoryCount = fileItems.filter((item) => item.kind === "directory").length;
   const serverVisibleTotal = documentPage?.visibleEntryTotal;
+
+  if (viewState.browseMode === "folder") {
+    const documentTotal = documentPage?.total;
+    const normalizedServerVisibleTotal =
+      typeof serverVisibleTotal === "number" && Number.isFinite(serverVisibleTotal)
+        ? Math.floor(serverVisibleTotal)
+        : null;
+    if (typeof documentTotal === "number" && Number.isFinite(documentTotal)) {
+      return Math.max(
+        entryCount,
+        Math.max(directoryCount + Math.floor(documentTotal), normalizedServerVisibleTotal ?? 0)
+      );
+    }
+    return Math.max(entryCount, directoryCount, normalizedServerVisibleTotal ?? 0);
+  }
+
   if (typeof serverVisibleTotal === "number" && Number.isFinite(serverVisibleTotal)) {
     return Math.max(entryCount, Math.floor(serverVisibleTotal));
   }
@@ -492,13 +509,7 @@ function resolveVisibleEntryTotal(
   if (typeof documentTotal !== "number" || !Number.isFinite(documentTotal)) {
     return entryCount;
   }
-
-  if (viewState.browseMode !== "folder") {
-    return Math.max(entryCount, Math.floor(documentTotal));
-  }
-
-  const directoryCount = fileItems.filter((item) => item.kind === "directory").length;
-  return Math.max(entryCount, directoryCount + Math.floor(documentTotal));
+  return Math.max(entryCount, Math.floor(documentTotal));
 }
 
 function buildTagDirectoryEntries(
