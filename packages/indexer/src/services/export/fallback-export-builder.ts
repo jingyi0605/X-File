@@ -93,7 +93,9 @@ export async function buildFallbackExport(
     includedHiddenPaths: config.includedHiddenPaths
   });
   const files = scanner.scan(options.targetPath, options.signal);
-  const documents = files.map((file) => toFallbackDocument(config.rootDir, file));
+  const indexableFiles = files.filter((file) => config.maxFileSizeBytes <= 0 || file.size <= config.maxFileSizeBytes);
+  const skippedFiles = files.filter((file) => config.maxFileSizeBytes > 0 && file.size > config.maxFileSizeBytes);
+  const documents = indexableFiles.map((file) => toFallbackDocument(config.rootDir, file));
   const filesWritten: string[] = [];
 
   fs.mkdirSync(config.exportDir, { recursive: true });
@@ -163,13 +165,14 @@ export async function buildFallbackExport(
   await Promise.resolve();
 
   const indexedPaths = documents.map((document) => document.path);
+  const skippedPaths = skippedFiles.map((file) => file.relativePath);
   return {
     index: {
       scannedCount: files.length,
       indexedCount: documents.length,
       unchangedCount: 0,
       indexedPaths,
-      skippedPaths: [],
+      skippedPaths,
       failedPaths: [],
       failedCount: 0,
       failures: [],
@@ -178,8 +181,8 @@ export async function buildFallbackExport(
       deletedPaths: [],
       dirtyScope: {
         trigger: options.targetPath ? "incremental" : "full",
-        changedPaths: indexedPaths,
-        dirtyDirectories: [...new Set(documents.map((document) => directoryOf(document.path)))],
+        changedPaths: [...indexedPaths, ...skippedPaths].sort((left, right) => left.localeCompare(right, "zh-Hans-CN")),
+        dirtyDirectories: [...new Set([...documents.map((document) => directoryOf(document.path)), ...skippedPaths.map(directoryOf)])],
         dirtyTagPaths: [],
         dirtyRelations: []
       },
@@ -196,9 +199,9 @@ export async function buildFallbackExport(
         avgDerivedPerIndexedDocument: 0
       },
       skipStats: {
-        skippedCount: 0,
-        skippedByExtension: {},
-        skipCatalogRecords: 0
+        skippedCount: skippedPaths.length,
+        skippedByExtension: countSkippedByExtension(skippedFiles),
+        skipCatalogRecords: skippedPaths.length > 0 ? 1 : 0
       }
     },
     exportResult: {
@@ -291,6 +294,16 @@ function parentOf(folderPath: string): string | null {
 
 function stableDocumentId(value: string): string {
   return `doc_${crypto.createHash("sha1").update(value).digest("hex").slice(0, 16)}`;
+}
+
+function countSkippedByExtension(files: FileScanResult[]): Record<string, number> {
+  const values = new Map<string, number>();
+  for (const file of files) {
+    values.set(file.extension, (values.get(file.extension) ?? 0) + 1);
+  }
+  return Object.fromEntries(
+    [...values.entries()].sort((left, right) => left[0].localeCompare(right[0], "zh-Hans-CN")),
+  );
 }
 
 function writeJson(filePath: string, value: unknown): void {

@@ -84,6 +84,7 @@ export interface TextIndexProgress {
 
 const RSS_PROGRESS_DOCUMENT_INTERVAL = 2000;
 const RSS_PROGRESS_BATCH_INTERVAL = 10;
+const LARGE_FILE_SKIP_REASON = "file_too_large";
 
 function normalizeRelativePath(relativePath: string): string {
   return relativePath.split(path.sep).join("/");
@@ -152,6 +153,7 @@ export class TextIndexer {
       })();
     const runObservedAt = new Date().toISOString();
     const maxIndexConcurrency = Math.max(1, Math.floor(this.config.maxIndexConcurrency));
+    const maxFileSizeBytes = Math.max(0, Math.floor(this.config.maxFileSizeBytes));
     const collectChangedPaths = options.collectChangedPaths ?? Boolean(targetPath);
     const maxReportedFailures = 200;
     const indexedPaths: string[] = collectChangedPaths ? [] : [];
@@ -492,6 +494,19 @@ export class TextIndexer {
         const existing = writer.getActiveIndexedFileState(file.relativePath);
         if (isUnchangedFile(file, existing)) {
           unchangedCount += 1;
+          emitProgress();
+          continue;
+        }
+
+        if (maxFileSizeBytes > 0 && file.size > maxFileSizeBytes) {
+          handleProcessResult({
+            kind: "skip",
+            file,
+            adapter: "size_guard",
+            reasonCode: LARGE_FILE_SKIP_REASON,
+            message: `文件大小 ${file.size} 字节超过索引上限 ${maxFileSizeBytes} 字节，已跳过`,
+            parseDurationMs: 0,
+          });
           emitProgress();
           continue;
         }

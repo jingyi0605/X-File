@@ -162,8 +162,8 @@ export class FileScanner {
   }
 
   *scanIterator(targetPath?: string, signal?: AbortSignal): Generator<FileScanResult> {
-    const base = targetPath ? path.resolve(this.rootDir, targetPath) : this.rootDir;
-    if (!fs.existsSync(base)) {
+    const base = targetPath ? resolveSafeTargetPath(this.rootDir, targetPath) : this.rootDir;
+    if (!base || !fs.existsSync(base)) {
       return;
     }
 
@@ -239,6 +239,17 @@ export class FileScanner {
       inodeKey: buildInodeKey(stat),
     };
   }
+}
+
+
+function resolveSafeTargetPath(rootDir: string, targetPath: string): string | null {
+  const root = path.resolve(rootDir);
+  const resolved = path.resolve(root, targetPath);
+  const relative = path.relative(root, resolved);
+  if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
+    return resolved;
+  }
+  return null;
 }
 
 function buildInodeKey(stat: fs.Stats): string | null {

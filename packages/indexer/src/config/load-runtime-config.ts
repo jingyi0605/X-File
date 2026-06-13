@@ -3,6 +3,7 @@ import path from "node:path";
 import { AppError } from "../errors/app-error.js";
 import { APP_ERROR_CODES } from "../errors/error-codes.js";
 import type { LogLevel, RuntimeConfig } from "../types/runtime-config.js";
+import { normalizeIncludedHiddenPaths } from "../scanner/file-scanner.js";
 
 const CONFIG_FILE_NAMES = [
   "doc-semantic-index.config.json",
@@ -23,6 +24,7 @@ interface RuntimeConfigFilePayload {
   includedHiddenPaths?: string[];
   writeBatchSize?: number;
   maxIndexConcurrency?: number;
+  maxFileSizeBytes?: number;
   logLevel?: LogLevel;
 }
 
@@ -253,13 +255,13 @@ export function loadRuntimeConfig(cwd: string, options: LoadRuntimeConfigOptions
       ?? [],
   ) ?? [];
 
-  const includedHiddenPaths = readStringList(
+  const includedHiddenPaths = normalizeIncludedHiddenPaths(readStringList(
     args.includedHiddenPaths
       ?? args["included-hidden-paths"]
       ?? env.DOC_SEMANTIC_INDEX_INCLUDED_HIDDEN_PATHS
       ?? configFile.includedHiddenPaths
       ?? [],
-  ) ?? [];
+  ) ?? []);
 
   const writeBatchSize = readPositiveNumber(
     args.writeBatchSize
@@ -277,15 +279,24 @@ export function loadRuntimeConfig(cwd: string, options: LoadRuntimeConfigOptions
       ?? 1,
   );
 
+  const maxFileSizeBytes = readPositiveNumber(
+    args.maxFileSizeBytes
+      ?? args["max-file-size-bytes"]
+      ?? env.DOC_SEMANTIC_INDEX_MAX_FILE_SIZE_BYTES
+      ?? configFile.maxFileSizeBytes
+      ?? 50 * 1024 * 1024,
+  );
+
   if (
     !logLevel
     || watchDebounceMs === undefined
     || parserTimeoutMs === undefined
     || writeBatchSize === undefined
     || maxIndexConcurrency === undefined
+    || maxFileSizeBytes === undefined
   ) {
     throw new AppError(
-      "运行时配置中存在非法值，请检查 logLevel / watchDebounceMs / parserTimeoutMs / writeBatchSize / maxIndexConcurrency。",
+      "运行时配置中存在非法值，请检查 logLevel / watchDebounceMs / parserTimeoutMs / writeBatchSize / maxIndexConcurrency / maxFileSizeBytes。",
       APP_ERROR_CODES.CONFIG_INVALID_VALUE,
       {
         details: {
@@ -294,6 +305,7 @@ export function loadRuntimeConfig(cwd: string, options: LoadRuntimeConfigOptions
           parserTimeoutMs,
           writeBatchSize,
           maxIndexConcurrency,
+          maxFileSizeBytes,
           configFilePath,
         },
       },
@@ -313,6 +325,7 @@ export function loadRuntimeConfig(cwd: string, options: LoadRuntimeConfigOptions
     includedHiddenPaths,
     writeBatchSize,
     maxIndexConcurrency,
+    maxFileSizeBytes,
     logLevel,
   };
 }
