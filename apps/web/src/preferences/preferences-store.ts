@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react";
 
 export type AppLanguage = "zh-CN" | "en-US";
-export type ThemeId = "light" | "dark" | "sky-blue" | "eye-green";
+export type ThemeId = "light" | "dark" | "eye-green";
 
 export interface AccountPreferencesProfile {
   language: AppLanguage;
@@ -76,7 +76,7 @@ function normalizeProfile(value: Partial<AccountPreferencesProfile>): AccountPre
 }
 
 function isThemeId(value: unknown): value is ThemeId {
-  return value === "light" || value === "dark" || value === "sky-blue" || value === "eye-green";
+  return value === "light" || value === "dark" || value === "eye-green";
 }
 
 function persistProfile(profile: AccountPreferencesProfile): void {
