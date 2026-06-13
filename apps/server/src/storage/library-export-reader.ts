@@ -7,6 +7,7 @@ import type {
   LibraryDocumentRecord,
   LibraryFavoriteRecord,
   LibraryFolderNode,
+  LibraryIndexProgress,
   LibraryIndexStatus,
   LibrarySnapshot,
   LibraryTagNode,
@@ -135,6 +136,7 @@ export class LibraryExportReader {
     );
     const documents = this.readDocumentsFromManifest(exportDir, manifest);
     const tagCounts = countTags(documents);
+    const documentCount = statusFile?.document_count ?? documents.length;
     return {
       binding,
       defaultRootDir: resolveDefaultLibraryRootDir(),
@@ -147,12 +149,15 @@ export class LibraryExportReader {
           statusFile?.exported_at ??
           manifest.generated_at ??
           null,
+        // 稳态下面板摘要指标：优先使用上次运行记录的进度；缺失时用导出文档计数合成，
+        // 让“总文件数 / 已扫描 / 已更新”等指标即使未重新索引也能正常展示。
+        progress: fallbackStatus.progress ?? deriveSteadyProgress(documentCount),
         dirtyReasons: fallbackStatus.dirtyReasons,
       },
       tags: readTags(exportDir, manifest, tagCounts),
       favorites,
       folders: readFolders(exportDir, manifest),
-      documentCount: statusFile?.document_count ?? documents.length,
+      documentCount,
       lastError: fallbackStatus.errorSummary,
     };
   }
@@ -238,6 +243,26 @@ export class LibraryExportReader {
 
 function resolveExportDir(rootDir: string): string {
   return path.join(rootDir, ".ai-index", "exports");
+}
+
+/**
+ * 稳态进度合成：导出产物存在即代表这批文档已全部扫描完毕。
+ * 对齐父仓库面板语义——索引总数=当前数量=documentCount，问题数量=0，
+ * 本轮“更新数量”为 0（全部命中 unchanged），让面板摘要网格在未重新索引时也能正常展示。
+ */
+function deriveSteadyProgress(documentCount: number): LibraryIndexProgress | null {
+  if (!Number.isFinite(documentCount) || documentCount <= 0) {
+    return null;
+  }
+  return {
+    scannedCount: documentCount,
+    indexedCount: 0,
+    skippedCount: 0,
+    failedCount: 0,
+    unchangedCount: documentCount,
+    totalCount: documentCount,
+    maxConcurrency: null,
+  };
 }
 
 function emptySnapshot(
