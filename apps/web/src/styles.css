@@ -1835,6 +1835,10 @@ html[data-workbench-finder-column-resizing="true"] * {
   padding-bottom: 0;
 }
 
+.affairs-detail-hero-block {
+  padding-bottom: 0;
+}
+
 .detail-doc-icon {
   width: 38px;
   height: 32px;
@@ -2436,6 +2440,10 @@ mark {
   background: transparent;
 }
 
+.library-detail-text-preview-shell {
+  padding-top: 6px;
+}
+
 .file-viewer-html-frame-shell.library-detail-preview-shell {
   padding: 4px 4px 0;
 }
@@ -2446,10 +2454,62 @@ mark {
   padding: 6px 6px 0;
 }
 
+.library-detail-preview-shell .file-viewer-office-shell {
+  padding: 6px 6px 0;
+}
+
+.library-detail-preview-shell .file-viewer-markdown {
+  padding: 0 0 10px;
+}
+
+.library-detail-preview-shell .file-viewer-code-block {
+  border-radius: 12px;
+}
+
+.library-detail-preview-shell .file-viewer-code-header,
+.library-detail-preview-shell .file-viewer-markdown-copy-header {
+  min-height: 34px;
+  padding: 0 10px;
+  font-size: 11px;
+}
+
+.library-detail-preview-shell .file-viewer-code-body {
+  padding: 8px 0 8px;
+}
+
+.library-detail-preview-shell .file-viewer-code-line {
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 6px;
+}
+
+.library-detail-preview-shell .file-viewer-code-gutter {
+  font-size: 11px;
+}
+
+.library-detail-preview-shell .file-viewer-markdown-copy-block {
+  margin: 8px 0;
+  border-radius: 12px;
+}
+
+.library-detail-preview-shell .file-viewer-markdown-copy-block pre {
+  padding: 10px 12px;
+}
+
+.library-detail-preview-shell .file-viewer-office-stage {
+  min-height: 560px;
+}
+
 .library-detail-preview-shell .file-viewer-pdf-frame,
 .library-detail-preview-shell .file-viewer-html-frame,
 .library-detail-preview-shell .file-viewer-office-stage {
   min-height: 320px;
+}
+
+.status-text {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 [data-theme="dark"] .affairs-detail-panel {

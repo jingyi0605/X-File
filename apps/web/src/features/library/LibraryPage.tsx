@@ -2986,7 +2986,7 @@ function LibraryDetail({
   library,
   onRequestRename,
   onRequestDelete,
-  onRequestTagAssignment,
+  onRequestTagAssignment: _onRequestTagAssignment,
 }: {
   library: LibraryState;
   onRequestRename: (path: string) => void;
@@ -3008,15 +3008,11 @@ function LibraryDetail({
 
   return (
     <aside className="affairs-detail-panel library-detail" aria-label={t("libraryDetails")}>
-      <header
-        className="affairs-detail-tabs"
-        role="tablist"
-        aria-label={t("libraryDetails")}
-      >
-        <button type="button" className="active">
+      <header className="affairs-detail-tabs" role="tablist" aria-label={t("libraryDetails")}>
+        <button type="button" className="active" role="tab" aria-selected="true">
           {t("libraryObjectDetail")}
         </button>
-        <button type="button" disabled>
+        <button type="button" role="tab" aria-selected="false" disabled>
           {t("libraryAssistant")}
         </button>
       </header>
@@ -3024,92 +3020,118 @@ function LibraryDetail({
         <div className="affairs-detail-empty">{t("libraryNoSelection")}</div>
       ) : selectedFolder ? (
         <div className="affairs-detail-scroll">
-          <section className="affairs-detail-block affairs-detail-summary-block">
-            <span className="affairs-detail-eyebrow">
-              {t("libraryDirectoryDetail")}
-            </span>
-            <div className="affairs-detail-title-block">
-              <div className="affairs-doc-icon detail-doc-icon">
-                {renderFolderShape("row")}
+          <section className="affairs-detail-block affairs-detail-hero-block">
+            <div className="affairs-detail-headline affairs-detail-headline-document">
+              <div className="affairs-detail-headline-main affairs-detail-headline-main-centered">
+                <div className="affairs-detail-title-row">
+                  <div className="affairs-doc-icon detail-doc-icon">
+                    {renderFolderShape("row")}
+                  </div>
+                  <h2>{selectedFolder.name}</h2>
+                </div>
+                <LibraryDetailSummary
+                  summary={library.documentPage?.directoryStatus?.staleReason ?? ""}
+                />
               </div>
-              <h2>{selectedFolder.name}</h2>
-              <LibraryDetailSummary
-                summary={library.documentPage?.directoryStatus?.staleReason ?? ""}
+            </div>
+            <dl className="affairs-detail-meta-list">
+              <div>
+                <dt>{t("libraryMetaPath")}</dt>
+                <dd>{selectedFolder.path}</dd>
+              </div>
+              <div>
+                <dt>{t("libraryMetaUpdatedAt")}</dt>
+                <dd>{formatDateTime(selectedFolder.updatedAt)}</dd>
+              </div>
+              <div>
+                <dt>{t("libraryMetaKind")}</dt>
+                <dd>{t("libraryFinderKindFolder")}</dd>
+              </div>
+              <div>
+                <dt>{t("libraryMetaTags")}</dt>
+                <dd>
+                  {t("libraryCountDocuments", {
+                    count: selectedFolder.documentCount,
+                  })}
+                </dd>
+              </div>
+            </dl>
+            <div className="affairs-detail-tag-editor">
+              <div className="affairs-detail-tag-editor-header">
+                <strong>{t("libraryMetaTags")}</strong>
+                <span className="affairs-binding-hint">{t("libraryTagRecommend")}</span>
+              </div>
+              <LibraryInlineFolderTagEditor
+                library={library}
+                folder={selectedFolder}
               />
             </div>
-            <DetailRow label={t("libraryMetaPath")} value={selectedFolder.path} />
-            <DetailRow
-              label={t("libraryMetaUpdatedAt")}
-              value={formatDateTime(selectedFolder.updatedAt)}
-            />
-            <DetailRow
-              label={t("libraryMetaKind")}
-              value={t("libraryFinderKindFolder")}
-            />
-            <DetailRow
-              label={t("libraryMetaTags")}
-              value={t("libraryCountDocuments", {
-                count: selectedFolder.documentCount,
-              })}
-            />
           </section>
         </div>
       ) : selected ? (
         <div className="affairs-detail-scroll">
-          <section className="affairs-detail-block affairs-detail-summary-block">
-            <span className="affairs-detail-eyebrow">
-              {t("libraryDetails")}
-            </span>
-            <div className="affairs-detail-title-block">
-              <div className="affairs-doc-icon detail-doc-icon">
-                {renderDocumentShape(selected.path, "row")}
+          <section className="affairs-detail-block affairs-detail-hero-block">
+            <div className="affairs-detail-headline affairs-detail-headline-document">
+              <div className="affairs-detail-headline-main affairs-detail-headline-main-centered">
+                <div className="affairs-detail-title-row">
+                  <div className="affairs-doc-icon detail-doc-icon">
+                    {renderDocumentShape(selected.path, "row")}
+                  </div>
+                  <h2>{resolveLibraryDocumentDisplayName(selected)}</h2>
+                </div>
+                <LibraryDetailSummary summary={selected.summary} />
               </div>
-              <h2>{resolveLibraryDocumentDisplayName(selected)}</h2>
-              <LibraryDetailSummary summary={selected.summary} />
             </div>
-            <DetailPathRow
-              path={selected.path}
-              onSelectFolder={library.selectFolder}
-            />
-            <DetailRow
-              label={t("libraryMetaSize")}
-              value={formatBytes(selected.sizeBytes)}
-            />
-            <DetailRow
-              label={t("libraryMetaCreatedAt")}
-              value={formatDateTime(selected.createdAt)}
-            />
-            <DetailRow
-              label={t("libraryMetaUpdatedAt")}
-              value={formatDateTime(selected.updatedAt)}
-            />
-            {selectedLocalPath ? (
-              <DetailRow
-                label={t("libraryMetaLocalPath")}
-                value={selectedLocalPath}
+            <dl className="affairs-detail-meta-list">
+              <div>
+                <dt>{t("libraryMetaPath")}</dt>
+                <dd>
+                  <DetailPathRow
+                    path={selected.path}
+                    onSelectFolder={library.selectFolder}
+                    standalone={false}
+                  />
+                </dd>
+              </div>
+              <div>
+                <dt>{t("libraryMetaSize")}</dt>
+                <dd>{formatBytes(selected.sizeBytes)}</dd>
+              </div>
+              <div>
+                <dt>{t("libraryMetaCreatedAt")}</dt>
+                <dd>{formatDateTime(selected.createdAt)}</dd>
+              </div>
+              <div>
+                <dt>{t("libraryMetaUpdatedAt")}</dt>
+                <dd>{formatDateTime(selected.updatedAt)}</dd>
+              </div>
+              {selectedLocalPath ? (
+                <div>
+                  <dt>{t("libraryMetaLocalPath")}</dt>
+                  <dd>{selectedLocalPath}</dd>
+                </div>
+              ) : null}
+            </dl>
+            <div className="affairs-detail-tag-editor">
+              <div className="affairs-detail-tag-editor-header">
+                <strong>{t("libraryMetaTags")}</strong>
+                <LibraryTagRecommendationSummary details={selected} />
+              </div>
+              <LibraryInlineDocumentTagEditor
+                library={library}
+                document={selected}
               />
-            ) : null}
-          </section>
-
-          <section className="affairs-detail-block">
-            <div className="affairs-detail-headline">
-              <h3>{t("libraryMetaTags")}</h3>
-              <p>{t("libraryTagRecommend")}</p>
             </div>
-            <TagPills items={[...selected.tags, ...selected.derivedTags]} />
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={() =>
-                onRequestTagAssignment({ kind: "document", entry: selected })
-              }
-            >
-              {t("libraryEditTags")}
-            </button>
           </section>
-
-          <section className="affairs-detail-block">
-            <div className="affairs-detail-actions-grid">
+          <section className="affairs-detail-block affairs-detail-actions-block">
+            <div className="affairs-detail-actions-grid affairs-detail-actions-grid-single-row">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => library.selectFolder(resolveDocumentFolderPath(selected.path))}
+              >
+                {t("libraryContextLocateShort")}
+              </button>
               <button
                 type="button"
                 className="secondary-button"
@@ -3131,15 +3153,6 @@ function LibraryDetail({
               >
                 {t("libraryRename")}
               </button>
-              {selectedLocalPath ? (
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => void openPathInDesktop(selectedLocalPath)}
-                >
-                  {t("libraryContextOpenLocalApp")}
-                </button>
-              ) : null}
               <button
                 type="button"
                 className="danger-button"
@@ -3153,13 +3166,14 @@ function LibraryDetail({
           </section>
 
           <section className="affairs-detail-block affairs-preview-block">
-            <div className="affairs-detail-headline">
-              <h3>{t("libraryPreview")}</h3>
+            <div className="affairs-detail-viewer-header">
+              <span className="affairs-detail-viewer-title">{t("libraryPreview")}</span>
             </div>
             <PreviewPanel
               preview={preview}
               loading={library.previewLoading}
               error={library.previewError}
+              compact
             />
           </section>
         </div>
@@ -3174,7 +3188,13 @@ function isLibraryDirectoryEntry(entry: LibraryEntry): entry is LibraryDirectory
 
 const DETAIL_SUMMARY_COLLAPSE_LENGTH = 96;
 
-function LibraryDetailSummary({ summary }: { summary: string | null | undefined }) {
+function LibraryDetailSummary({
+  summary,
+  centered = false,
+}: {
+  summary: string | null | undefined;
+  centered?: boolean;
+}) {
   const [expanded, setExpanded] = useState(false);
   const normalized = summary?.trim() ?? "";
   if (!normalized) {
@@ -4197,6 +4217,7 @@ function LibraryQuickTagAssignmentEditor({
   onSave,
   onSaved,
   onError,
+  autoFocusInput = true,
 }: {
   assignedTagIds: string[];
   assignableTags: LibraryTagDetailWithRules[];
@@ -4208,6 +4229,7 @@ function LibraryQuickTagAssignmentEditor({
   onSave: (nextTagIds: string[], createTagPaths?: string[]) => Promise<void>;
   onSaved?: () => void;
   onError?: (message: string) => void;
+  autoFocusInput?: boolean;
 }) {
   const [query, setQuery] = useState("");
   const [submitting, setSubmitting] = useState(false);
