@@ -4531,6 +4531,48 @@ function formatLibraryTagRecomputeTask(task: {
   return t("libraryTagRecoveryQueued");
 }
 
+/* ── 标签管理模态框 ── 迁移自 CodingNS AffairsTagManagementModal ── */
+
+type TagManagementEditorMode = "create-root" | "create-child" | "edit";
+
+interface ManagedTagTreeNode {
+  tag: LibraryTagDetailWithRules;
+  children: ManagedTagTreeNode[];
+}
+
+function buildManagedTagTree(tags: LibraryTagDetailWithRules[]): ManagedTagTreeNode[] {
+  const map = new Map<string, ManagedTagTreeNode>();
+  const roots: ManagedTagTreeNode[] = [];
+  for (const tag of tags) {
+    map.set(tag.id, { tag, children: [] });
+  }
+  for (const tag of tags) {
+    const node = map.get(tag.id)!;
+    if (tag.parentId && map.has(tag.parentId)) {
+      map.get(tag.parentId)!.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+  return roots;
+}
+
+function flattenManagedTagTree(nodes: ManagedTagTreeNode[], depth = 0): Array<{ tag: LibraryTagDetailWithRules; depth: number }> {
+  const result: Array<{ tag: LibraryTagDetailWithRules; depth: number }> = [];
+  for (const node of nodes) {
+    result.push({ tag: node.tag, depth });
+    result.push(...flattenManagedTagTree(node.children, depth + 1));
+  }
+  return result;
+}
+
+function isSelectableParentTag(tag: LibraryTagDetailWithRules, selected: LibraryTagDetailWithRules | null): boolean {
+  if (!selected) return true;
+  if (tag.id === selected.id) return false;
+  if (isTagDescendant([tag], selected.id, tag.id)) return false;
+  return !isTagDescendant([selected], tag.id, selected.id);
+}
+
 function LibraryTagManagerModal({
   library,
   onClose,
@@ -4540,9 +4582,10 @@ function LibraryTagManagerModal({
 }) {
   const [tags, setTags] = useState<LibraryTagDetailWithRules[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [editorMode, setEditorMode] = useState<TagManagementEditorMode>("create-root");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [parentId, setParentId] = useState<string | null>(null);
+  const [parentId, setParentId] = useState<string>("");
   const [status, setStatus] = useState<"active" | "disabled">("active");
   const [smartRules, setSmartRules] = useState<EditableLibraryTagRule[]>([]);
   const [loading, setLoading] = useState(true);
@@ -4551,7 +4594,22 @@ function LibraryTagManagerModal({
   const [recomputeMessage, setRecomputeMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const selected = tags.find((tag) => tag.id === selectedId) ?? null;
+  const selectedEditableTag = tags.find((tag) => tag.id === selectedId) ?? null;
+  const visibleTags = tags.filter((tag) => tag.status !== "disabled" || tag.id === selectedId);
+  const treeNodes = useMemo(() => buildManagedTagTree(visibleTags), [visibleTags]);
+  const flattenedTags = useMemo(() => flattenManagedTagTree(treeNodes), [treeNodes]);
+  const parentOptions = useMemo(
+    () => flattenedTags.filter(({ tag }) => isSelectableParentTag(tag, selectedEditableTag)),
+    [flattenedTags, selectedEditableTag],
+  );
+
+  const currentEditTagId = editorMode === "edit" ? selectedEditableTag?.id ?? null : null;
+  const currentTagDocumentCount = selectedEditableTag?.documentCount ?? 0;
+  const normalizedSmartRules = smartRules.map((rule, index) => ({
+    ...rule,
+    priority: index,
+    matcher: normalizeLibraryTagRuleMatcher(rule),
+  }));
 
   async function loadTags(nextSelectedId = selectedId): Promise<void> {
     setLoading(true);
@@ -4573,18 +4631,62 @@ function LibraryTagManagerModal({
     setSelectedId(tag?.id ?? null);
     setName(tag?.name ?? "");
     setDescription(tag?.description ?? "");
-    setParentId(tag?.parentId ?? null);
+    setParentId(tag?.parentId ?? "");
     setStatus(tag?.status ?? "active");
     setSmartRules(cloneLibraryTagRules(tag?.smartRules ?? []));
   }
+
+  const resetEditor = (nextMode: TagManagementEditorMode, parentTag?: LibraryTagDetailWithRules | null) => {
+    setEditorMode(nextMode);
+    setError(null);
+    setName("");
+    setDescription("");
+    setParentId(nextMode === "create-child" ? parentTag?.id ?? "" : "");
+    setStatus("active");
+    setSmartRules([]);
+  };
+
+  const beginCreateRoot = () => {
+    resetEditor("create-root");
+  };
+
+  const beginCreateChild = () => {
+    if (!selectedEditableTag) return;
+    resetEditor("create-child", selectedEditableTag);
+  };
+
+  const reloadEditorFromSelected = () => {
+    if (!selectedEditableTag) {
+      beginCreateRoot();
+      return;
+    }
+    setEditorMode("edit");
+    setName(selectedEditableTag.name);
+    setDescription(selectedEditableTag.description ?? "");
+    setParentId(selectedEditableTag.parentId ?? "");
+    setStatus(selectedEditableTag.status);
+    setSmartRules(cloneLibraryTagRules(selectedEditableTag.smartRules ?? []));
+    setError(null);
+  };
 
   useEffect(() => {
     void loadTags(null);
   }, []);
 
+  // 自动切换编辑模式：有选中标签 → edit，无选中 → create-root
+  useEffect(() => {
+    if (selectedEditableTag) {
+      setEditorMode("edit");
+    } else if (!loading) {
+      setEditorMode("create-root");
+    }
+  }, [selectedEditableTag, loading]);
+
+  // 轮询恢复任务状态
   useEffect(() => {
     let cancelled = false;
-    let timer: number | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
     async function poll(): Promise<void> {
       try {
         const task = await getLibraryTagRecomputeTask();
@@ -4594,10 +4696,11 @@ function LibraryTagManagerModal({
           setRecomputing(false);
           return;
         }
-        setRecomputing(task.state === "queued" || task.state === "running");
+        const isRunning = task.state === "queued" || task.state === "running";
+        setRecomputing(isRunning);
         setRecomputeMessage(formatLibraryTagRecomputeTask(task));
-        if (task.state === "queued" || task.state === "running") {
-          timer = window.setTimeout(() => void poll(), 1200);
+        if (isRunning) {
+          timer = setTimeout(() => void poll(), 1200);
         }
       } catch (err) {
         if (!cancelled) {
@@ -4606,10 +4709,11 @@ function LibraryTagManagerModal({
         }
       }
     }
+
     void poll();
     return () => {
       cancelled = true;
-      if (timer !== null) window.clearTimeout(timer);
+      if (timer !== null) clearTimeout(timer);
     };
   }, [recomputing]);
 
@@ -4633,13 +4737,13 @@ function LibraryTagManagerModal({
   }
 
   async function createChildTag(): Promise<void> {
-    if (!selected) return;
+    if (!selectedEditableTag) return;
     setSaving(true);
     setError(null);
     try {
       const tag = await createLibraryTag({
         name: buildUniqueTagDraftName(tags, t("libraryTagNewChildName")),
-        parentId: selected.id,
+        parentId: selectedEditableTag.id,
         description: null,
         status: "active",
         smartRules: [],
@@ -4653,20 +4757,16 @@ function LibraryTagManagerModal({
   }
 
   async function saveSelected(): Promise<void> {
-    if (!selected) return;
+    if (!selectedEditableTag) return;
     setSaving(true);
     setError(null);
     try {
-      const tag = await updateLibraryTag(selected.id, {
+      const tag = await updateLibraryTag(selectedEditableTag.id, {
         name,
-        parentId,
+        parentId: parentId || null,
         description: description.trim() || null,
         status,
-        smartRules: smartRules.map((rule, index) => ({
-          ...rule,
-          priority: index,
-          matcher: normalizeLibraryTagRuleMatcher(rule),
-        })),
+        smartRules: normalizedSmartRules,
       });
       await loadTags(tag.id);
       await library.reload();
@@ -4680,15 +4780,16 @@ function LibraryTagManagerModal({
 
   async function deleteSelected(): Promise<void> {
     if (
-      !selected ||
-      !window.confirm(t("libraryTagDeleteConfirm", { tag: selected.path }))
+      !selectedEditableTag ||
+      !window.confirm(t("libraryTagDeleteConfirm", { tag: selectedEditableTag.path }))
     ) {
       return;
     }
     setSaving(true);
     setError(null);
     try {
-      await deleteLibraryTag(selected.id);
+      await deleteLibraryTag(selectedEditableTag.id);
+      beginCreateRoot();
       await loadTags(null);
       await library.reload();
       await library.reloadDocuments(true);
@@ -4720,37 +4821,67 @@ function LibraryTagManagerModal({
     }
   }
 
-  const parentOptions = tags.filter(
-    (tag) =>
-      tag.id !== selectedId && !isTagDescendant(tags, tag.id, selectedId),
-  );
-
-  return (
-    <DesktopModal
-      title={t("libraryTagManagerTitle")}
-      description={t("libraryTagManagerDescription")}
-      onClose={onClose}
-      dismissible={!saving}
-      footer={
-        <ModalActions>
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={saving}
-            onClick={onClose}
-          >
-            {t("actionClose")}
-          </button>
-        </ModalActions>
+  const handleSave = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      if (editorMode === "edit" && selectedEditableTag) {
+        await updateLibraryTag(selectedEditableTag.id, {
+          name: name.trim(),
+          parentId: parentId || null,
+          description: description.trim() || null,
+          status,
+          smartRules: normalizedSmartRules,
+        });
+      } else if (editorMode === "create-root") {
+        await createLibraryTag({
+          name: name.trim() || buildUniqueTagDraftName(tags, t("libraryTagNewName")),
+          parentId: null,
+          description: description.trim() || null,
+          status,
+          smartRules: normalizedSmartRules,
+        });
+      } else if (editorMode === "create-child") {
+        await createLibraryTag({
+          name: name.trim() || buildUniqueTagDraftName(tags, t("libraryTagNewChildName")),
+          parentId: (selectedEditableTag?.id ?? parentId) || null,
+          description: description.trim() || null,
+          status,
+          smartRules: normalizedSmartRules,
+        });
       }
-    >
-      {error ? (
-        <div className="affairs-binding-hint affairs-create-error">{error}</div>
-      ) : null}
-      <div className="library-tag-manager-grid">
+      if (editorMode === "edit") {
+        await loadTags(selectedEditableTag?.id ?? null);
+      } else {
+        await loadTags(null);
+      }
+      await library.reload();
+      await library.reloadDocuments(true);
+    } catch (err) {
+      setError(toApiErrorMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const editorTitle = editorMode === "edit"
+    ? t("libraryTagEditorEditTitle")
+    : editorMode === "create-child"
+      ? t("libraryTagNewChildName")
+      : t("libraryTagCreateRootAction");
+
+  const saveActionLabel = editorMode === "edit"
+    ? t("libraryTagSaveAction")
+    : t("libraryTagCreateRootAction");
+
+  const content = (
+    <div className="affairs-library-settings-form affairs-tag-management-shell">
+      <div className="affairs-tag-management-layout">
         <ModalSection
+          className="affairs-tag-management-tree-panel"
           heading={t("libraryTagTreeSectionTitle")}
-          actions={
+        >
+          <div className="affairs-tag-management-toolbar">
             <button
               type="button"
               className="secondary-button"
@@ -4759,152 +4890,111 @@ function LibraryTagManagerModal({
             >
               {t("libraryTagCreateRootAction")}
             </button>
-          }
-        >
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={saving || !selectedEditableTag}
+              onClick={() => void createChildTag()}
+            >
+              {t("libraryTagCreateChildAction")}
+            </button>
+          </div>
           {loading ? (
-            <ModalEmptyState title={t("libraryTagAssignmentLoading")} compact />
+            <ModalEmptyState title={t("libraryTagManagerLoading")} compact />
           ) : null}
           {!loading && tags.length === 0 ? (
-            <ModalEmptyState title={t("libraryTagTreeEmpty")} compact />
+            <ModalEmptyState
+              compact
+              title={t("libraryTagTreeEmpty")}
+            />
           ) : null}
-          <div className="library-tag-manager-list">
-            {tags.map((tag) => (
-              <button
-                key={tag.id}
-                type="button"
-                className={selectedId === tag.id ? "active" : undefined}
-                style={{
-                  paddingLeft: `${12 + tag.path.split("/").length * 12}px`,
+          {!loading && treeNodes.length > 0 ? (
+            <div className="affairs-tag-management-tree" role="tree" aria-label={t("libraryTagTreeSectionTitle")}>
+              <LibraryTagManagementTreeNodes
+                nodes={treeNodes}
+                selectedTagId={currentEditTagId}
+                onSelect={(tagId) => {
+                  const tag = tags.find((t) => t.id === tagId) ?? null;
+                  if (tag) {
+                    setSelectedId(tag.id);
+                    setEditorMode("edit");
+                    setName(tag.name);
+                    setDescription(tag.description ?? "");
+                    setParentId(tag.parentId ?? "");
+                    setStatus(tag.status);
+                    setSmartRules(cloneLibraryTagRules(tag.smartRules ?? []));
+                    setError(null);
+                  }
                 }}
-                onClick={() => applySelectedTag(tag)}
-              >
-                <span>{tag.name}</span>
-                <small>
-                  {tag.status === "disabled"
-                    ? t("libraryTagDisabled")
-                    : `${tag.documentCount}`}
-                </small>
-              </button>
-            ))}
-          </div>
+              />
+            </div>
+          ) : null}
         </ModalSection>
 
-        <ModalSection
-          heading={
-            selected
-              ? t("libraryTagEditorEditTitle")
-              : t("libraryTagEditorEmptyTitle")
-          }
-          actions={
-            selected ? (
-              <button
-                type="button"
-                className="secondary-button"
-                disabled={saving}
-                onClick={() => void createChildTag()}
-              >
-                {t("libraryTagCreateChildAction")}
-              </button>
-            ) : null
-          }
-        >
-          {!selected ? (
-            <ModalEmptyState
-              title={t("libraryTagEditorEmptyDescription")}
-              compact
-            />
-          ) : (
-            <>
-              <ModalField label={t("libraryTagNameLabel")}>
-                <input
-                  aria-label={t("libraryTagNameLabel")}
-                  value={name}
-                  onChange={(event) => setName(event.target.value)}
-                />
-              </ModalField>
+        <div className="affairs-tag-management-editor-column">
+          <ModalSection
+            className="affairs-tag-management-editor"
+            heading={editorTitle}
+          >
+            {editorMode === "edit" && selectedEditableTag ? (
+              <div className="affairs-tag-management-editor-summary">
+                <div className="affairs-tag-management-editor-summary-item">
+                  <span className="affairs-tag-management-editor-summary-label">路径</span>
+                  <strong className="affairs-tag-management-editor-summary-value">{selectedEditableTag.path}</strong>
+                </div>
+                <div className="affairs-tag-management-editor-summary-item">
+                  <span className="affairs-tag-management-editor-summary-label">{t("libraryTagDocumentCountLabel")}</span>
+                  <strong className="affairs-tag-management-editor-summary-value">{currentTagDocumentCount}</strong>
+                </div>
+              </div>
+            ) : null}
+            <ModalField label={t("libraryTagNameLabel")}>
+              <input
+                className="affairs-tag-name-input"
+                aria-label={t("libraryTagNameLabel")}
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder={t("libraryTagNameLabel")}
+              />
+            </ModalField>
+            {editorMode === "edit" ? (
               <ModalField label={t("libraryTagParentLabel")}>
                 <select
+                  className="affairs-tag-parent-select"
                   aria-label={t("libraryTagParentLabel")}
-                  value={parentId ?? ""}
-                  onChange={(event) => setParentId(event.target.value || null)}
+                  value={parentId}
+                  onChange={(event) => setParentId(event.target.value)}
                 >
                   <option value="">{t("libraryTagParentRootOption")}</option>
-                  {parentOptions.map((tag) => (
+                  {parentOptions.map(({ tag, depth }) => (
                     <option key={tag.id} value={tag.id}>
-                      {tag.path}
+                      {`${"　".repeat(depth)}${tag.path}`}
                     </option>
                   ))}
                 </select>
               </ModalField>
-              <ModalField label={t("libraryTagDescriptionLabel")}>
-                <textarea
-                  aria-label={t("libraryTagDescriptionLabel")}
-                  value={description}
-                  rows={3}
-                  onChange={(event) => setDescription(event.target.value)}
-                />
-              </ModalField>
-              <ModalField label={t("libraryTagStatusLabel")}>
-                <select
-                  aria-label={t("libraryTagStatusLabel")}
-                  value={status}
-                  onChange={(event) =>
-                    setStatus(
-                      event.target.value === "disabled" ? "disabled" : "active",
-                    )
-                  }
-                >
-                  <option value="active">{t("libraryTagStatusActive")}</option>
-                  <option value="disabled">
-                    {t("libraryTagStatusDisabled")}
-                  </option>
-                </select>
-              </ModalField>
-              <div className="library-tag-manager-meta">
-                <span>{t("libraryTagDocumentCountLabel")}</span>
-                <strong>{selected.documentCount}</strong>
-              </div>
-              <ModalSection
-                className="library-tag-smart-rules-section"
-                heading={t("libraryTagSmartRulesSectionTitle")}
-                description={t("libraryTagSmartRulesSectionDescription")}
-                actions={
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    disabled={saving}
-                    onClick={() =>
-                      setSmartRules((current) => [
-                        ...current,
-                        createEditableLibraryTagRule(current.length),
-                      ])
-                    }
-                  >
-                    {t("libraryTagSmartRuleAddAction")}
-                  </button>
-                }
-              >
-                {smartRules.length === 0 ? (
-                  <ModalEmptyState
-                    title={t("libraryTagSmartRulesEmpty")}
-                    description={t("libraryTagSmartRulesEmptyDescription")}
-                    compact
-                  />
-                ) : (
-                  <div className="library-tag-smart-rule-list">
-                    {smartRules.map((rule, index) => (
-                      <div
-                        key={rule.id}
-                        className="library-tag-smart-rule-card"
-                      >
-                        <div className="library-tag-smart-rule-header">
-                          <strong>
-                            {t("libraryTagSmartRuleOrderHint", {
-                              index: index + 1,
-                            })}
-                          </strong>
-                          <label className="library-tag-smart-rule-enabled">
+            ) : null}
+          </ModalSection>
+
+          <ModalSection
+            className="affairs-tag-management-editor"
+            heading={t("libraryTagSmartRulesSectionTitle")}
+          >
+            {smartRules.length === 0 ? (
+              <div className="affairs-tag-management-empty-note">{t("libraryTagSmartRulesEmpty")}</div>
+            ) : (
+              <div className="affairs-tag-smart-rule-list">
+                {smartRules.map((rule, index) => (
+                  <div key={rule.id} className="affairs-tag-smart-rule-card">
+                    <div className="affairs-tag-smart-rule-header">
+                      <strong className="affairs-tag-smart-rule-title">
+                        {t("libraryTagSmartRuleOrderHint", { index: index + 1 })}
+                      </strong>
+                      <div className="affairs-tag-smart-rule-header-actions">
+                        <label className="affairs-tag-smart-rule-toggle" data-disabled={saving ? "true" : undefined}>
+                          <span className="affairs-tag-smart-rule-toggle-switch">
                             <input
+                              className="affairs-tag-smart-rule-toggle-input"
                               type="checkbox"
                               checked={rule.enabled !== false}
                               disabled={saving}
@@ -4912,331 +5002,381 @@ function LibraryTagManagerModal({
                                 const enabled = event.target.checked;
                                 setSmartRules((current) =>
                                   current.map((item) =>
-                                    item.id === rule.id
-                                      ? { ...item, enabled }
-                                      : item,
+                                    item.id === rule.id ? { ...item, enabled } : item,
                                   ),
                                 );
                               }}
                             />
-                            {t("libraryTagSmartRuleEnabledLabel")}
-                          </label>
-                          <button
-                            type="button"
-                            className="secondary-button"
+                            <span className="affairs-tag-smart-rule-toggle-track" aria-hidden="true">
+                              <span className="affairs-tag-smart-rule-toggle-thumb" />
+                            </span>
+                          </span>
+                          <span className="affairs-tag-smart-rule-toggle-label">{t("libraryTagSmartRuleEnabledLabel")}</span>
+                        </label>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          disabled={saving}
+                          onClick={() =>
+                            setSmartRules((current) =>
+                              current
+                                .filter((item) => item.id !== rule.id)
+                                .map((item, currentIndex) => ({
+                                  ...item,
+                                  priority: currentIndex,
+                                })),
+                            )
+                          }
+                        >
+                          {t("libraryTagSmartRuleRemoveAction")}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="affairs-tag-smart-rule-top-row">
+                      <ModalField label={t("libraryTagSmartRuleRelationLabel")} className="affairs-tag-smart-rule-field">
+                        <select
+                          className="affairs-tag-smart-rule-relation-select"
+                          aria-label={t("libraryTagSmartRuleRelationLabel")}
+                          value={rule.relation}
+                          disabled={saving}
+                          onChange={(event) => {
+                            const relation = event.target.value as LibraryTagRule["relation"];
+                            setSmartRules((current) =>
+                              current.map((item) =>
+                                item.id === rule.id ? { ...item, relation } : item,
+                              ),
+                            );
+                          }}
+                        >
+                          {(["and", "or", "not"] as const).map((relation) => (
+                            <option key={relation} value={relation}>
+                              {resolveLibraryTagRuleRelationLabel(relation)}
+                            </option>
+                          ))}
+                        </select>
+                      </ModalField>
+                      <ModalField label={t("libraryTagSmartRuleTypeLabel")} className="affairs-tag-smart-rule-field">
+                        <select
+                          className="affairs-tag-smart-rule-type-select"
+                          aria-label={t("libraryTagSmartRuleTypeLabel")}
+                          value={rule.ruleType}
+                          disabled={saving}
+                          onChange={(event) => {
+                            const ruleType = event.target.value as LibraryTagRule["ruleType"];
+                            setSmartRules((current) =>
+                              current.map((item) =>
+                                item.id === rule.id
+                                  ? { ...item, ruleType, matcher: buildDefaultLibraryTagRuleMatcher(ruleType) }
+                                  : item,
+                              ),
+                            );
+                          }}
+                        >
+                          {(
+                            [
+                              "file_name_contains",
+                              "file_content_contains",
+                              "file_extension_in",
+                              "modified_time_between",
+                              "document_path_in_folder",
+                            ] as const
+                          ).map((ruleType) => (
+                            <option key={ruleType} value={ruleType}>
+                              {resolveLibraryTagRuleTypeLabel(ruleType)}
+                            </option>
+                          ))}
+                        </select>
+                      </ModalField>
+                    </div>
+                    <div className="affairs-tag-smart-rule-value-row">
+                      {rule.ruleType === "file_name_contains" ||
+                      rule.ruleType === "file_content_contains" ? (
+                        <ModalField label={t("libraryTagSmartRuleKeywordLabel")} className="affairs-tag-smart-rule-field">
+                          <input
+                            aria-label={t("libraryTagSmartRuleKeywordLabel")}
+                            value={String(
+                              (rule.matcher as { keyword?: string }).keyword ?? "",
+                            )}
                             disabled={saving}
-                            onClick={() =>
+                            placeholder={t("libraryTagSmartRuleKeywordPlaceholder")}
+                            onChange={(event) => {
+                              const keyword = event.target.value;
                               setSmartRules((current) =>
-                                current
-                                  .filter((item) => item.id !== rule.id)
-                                  .map((item, currentIndex) => ({
-                                    ...item,
-                                    priority: currentIndex,
-                                  })),
-                              )
-                            }
-                          >
-                            {t("libraryTagSmartRuleRemoveAction")}
-                          </button>
-                        </div>
-                        <div className="library-tag-smart-rule-grid">
-                          <ModalField
-                            label={t("libraryTagSmartRuleRelationLabel")}
-                          >
-                            <select
-                              aria-label={t("libraryTagSmartRuleRelationLabel")}
-                              value={rule.relation}
-                              disabled={saving}
-                              onChange={(event) => {
-                                const relation = event.target
-                                  .value as LibraryTagRule["relation"];
-                                setSmartRules((current) =>
-                                  current.map((item) =>
-                                    item.id === rule.id
-                                      ? { ...item, relation }
-                                      : item,
-                                  ),
-                                );
-                              }}
-                            >
-                              {(["and", "or", "not"] as const).map(
-                                (relation) => (
-                                  <option key={relation} value={relation}>
-                                    {resolveLibraryTagRuleRelationLabel(
-                                      relation,
-                                    )}
-                                  </option>
+                                current.map((item) =>
+                                  item.id === rule.id
+                                    ? { ...item, matcher: { keyword } }
+                                    : item,
                                 ),
+                              );
+                            }}
+                          />
+                        </ModalField>
+                      ) : null}
+                      {rule.ruleType === "file_extension_in" ? (
+                        <ModalField label={t("libraryTagSmartRuleExtensionsLabel")} className="affairs-tag-smart-rule-field">
+                          <input
+                            aria-label={t("libraryTagSmartRuleExtensionsLabel")}
+                            value={
+                              Array.isArray(
+                                (rule.matcher as { extensions?: string[] }).extensions,
+                              )
+                                ? (
+                                    (rule.matcher as { extensions?: string[] }).extensions ?? []
+                                  ).join(", ")
+                                : ""
+                            }
+                            disabled={saving}
+                            placeholder={t("libraryTagSmartRuleExtensionsPlaceholder")}
+                            onChange={(event) => {
+                              const extensions = event.target.value
+                                .split(/[，,\n]/g)
+                                .map((item) => item.trim())
+                                .filter(Boolean);
+                              setSmartRules((current) =>
+                                current.map((item) =>
+                                  item.id === rule.id
+                                    ? { ...item, matcher: { extensions } }
+                                    : item,
+                                ),
+                              );
+                            }}
+                          />
+                        </ModalField>
+                      ) : null}
+                      {rule.ruleType === "modified_time_between" ? (
+                        <>
+                          <ModalField label={t("libraryTagSmartRuleModifiedStartLabel")} className="affairs-tag-smart-rule-field">
+                            <input
+                              type="datetime-local"
+                              aria-label={t("libraryTagSmartRuleModifiedStartLabel")}
+                              value={String(
+                                (rule.matcher as { start?: string }).start ?? "",
                               )}
-                            </select>
-                          </ModalField>
-                          <ModalField label={t("libraryTagSmartRuleTypeLabel")}>
-                            <select
-                              aria-label={t("libraryTagSmartRuleTypeLabel")}
-                              value={rule.ruleType}
                               disabled={saving}
                               onChange={(event) => {
-                                const ruleType = event.target
-                                  .value as LibraryTagRule["ruleType"];
+                                const start = event.target.value;
                                 setSmartRules((current) =>
                                   current.map((item) =>
                                     item.id === rule.id
                                       ? {
                                           ...item,
-                                          ruleType,
-                                          matcher:
-                                            buildDefaultLibraryTagRuleMatcher(
-                                              ruleType,
-                                            ),
+                                          matcher: {
+                                            ...(item.matcher as Record<string, unknown>),
+                                            start,
+                                          },
                                         }
                                       : item,
                                   ),
                                 );
                               }}
-                            >
-                              {(
-                                [
-                                  "file_name_contains",
-                                  "file_content_contains",
-                                  "file_extension_in",
-                                  "modified_time_between",
-                                  "document_path_in_folder",
-                                ] as const
-                              ).map((ruleType) => (
-                                <option key={ruleType} value={ruleType}>
-                                  {resolveLibraryTagRuleTypeLabel(ruleType)}
-                                </option>
-                              ))}
-                            </select>
+                            />
                           </ModalField>
-                        </div>
-                        <div className="library-tag-smart-rule-value">
-                          {rule.ruleType === "file_name_contains" ||
-                          rule.ruleType === "file_content_contains" ? (
-                            <ModalField
-                              label={t("libraryTagSmartRuleKeywordLabel")}
-                            >
-                              <input
-                                aria-label={t("libraryTagSmartRuleKeywordLabel")}
-                                value={String(
-                                  (rule.matcher as { keyword?: string })
-                                    .keyword ?? "",
-                                )}
-                                disabled={saving}
-                                placeholder={t(
-                                  "libraryTagSmartRuleKeywordPlaceholder",
-                                )}
-                                onChange={(event) => {
-                                  const keyword = event.target.value;
-                                  setSmartRules((current) =>
-                                    current.map((item) =>
-                                      item.id === rule.id
-                                        ? { ...item, matcher: { keyword } }
-                                        : item,
-                                    ),
-                                  );
-                                }}
-                              />
-                            </ModalField>
-                          ) : null}
-                          {rule.ruleType === "file_extension_in" ? (
-                            <ModalField
-                              label={t("libraryTagSmartRuleExtensionsLabel")}
-                            >
-                              <input
-                                aria-label={t(
-                                  "libraryTagSmartRuleExtensionsLabel",
-                                )}
-                                value={
-                                  Array.isArray(
-                                    (rule.matcher as { extensions?: string[] })
-                                      .extensions,
-                                  )
-                                    ? (
-                                        (
-                                          rule.matcher as {
-                                            extensions?: string[];
-                                          }
-                                        ).extensions ?? []
-                                      ).join(", ")
-                                    : ""
-                                }
-                                disabled={saving}
-                                placeholder={t(
-                                  "libraryTagSmartRuleExtensionsPlaceholder",
-                                )}
-                                onChange={(event) => {
-                                  const extensions = event.target.value
-                                    .split(/[，,\n]/g)
-                                    .map((item) => item.trim())
-                                    .filter(Boolean);
-                                  setSmartRules((current) =>
-                                    current.map((item) =>
-                                      item.id === rule.id
-                                        ? { ...item, matcher: { extensions } }
-                                        : item,
-                                    ),
-                                  );
-                                }}
-                              />
-                            </ModalField>
-                          ) : null}
-                          {rule.ruleType === "modified_time_between" ? (
-                            <div className="library-tag-smart-rule-grid">
-                              <ModalField
-                                label={t(
-                                  "libraryTagSmartRuleModifiedStartLabel",
-                                )}
-                              >
-                                <input
-                                  aria-label={t(
-                                    "libraryTagSmartRuleModifiedStartLabel",
-                                  )}
-                                  type="datetime-local"
-                                  value={String(
-                                    (rule.matcher as { start?: string })
-                                      .start ?? "",
-                                  )}
-                                  disabled={saving}
-                                  onChange={(event) => {
-                                    const start = event.target.value;
-                                    setSmartRules((current) =>
-                                      current.map((item) =>
-                                        item.id === rule.id
-                                          ? {
-                                              ...item,
-                                              matcher: {
-                                                ...(item.matcher as Record<
-                                                  string,
-                                                  unknown
-                                                >),
-                                                start,
-                                              },
-                                            }
-                                          : item,
-                                      ),
-                                    );
-                                  }}
-                                />
-                              </ModalField>
-                              <ModalField
-                                label={t("libraryTagSmartRuleModifiedEndLabel")}
-                              >
-                                <input
-                                  aria-label={t(
-                                    "libraryTagSmartRuleModifiedEndLabel",
-                                  )}
-                                  type="datetime-local"
-                                  value={String(
-                                    (rule.matcher as { end?: string }).end ??
-                                      "",
-                                  )}
-                                  disabled={saving}
-                                  onChange={(event) => {
-                                    const end = event.target.value;
-                                    setSmartRules((current) =>
-                                      current.map((item) =>
-                                        item.id === rule.id
-                                          ? {
-                                              ...item,
-                                              matcher: {
-                                                ...(item.matcher as Record<
-                                                  string,
-                                                  unknown
-                                                >),
-                                                end,
-                                              },
-                                            }
-                                          : item,
-                                      ),
-                                    );
-                                  }}
-                                />
-                              </ModalField>
-                            </div>
-                          ) : null}
-                          {rule.ruleType === "document_path_in_folder" ? (
-                            <ModalField
-                              label={t("libraryTagSmartRuleFolderPathLabel")}
-                            >
-                              <input
-                                aria-label={t(
-                                  "libraryTagSmartRuleFolderPathLabel",
-                                )}
-                                value={String(
-                                  (
-                                    rule.matcher as {
-                                      folderPath?: string | null;
-                                    }
-                                  ).folderPath ?? ".",
-                                )}
-                                disabled={saving}
-                                placeholder={t(
-                                  "libraryTagSmartRuleFolderPathPlaceholder",
-                                )}
-                                onChange={(event) => {
-                                  const folderPath = event.target.value;
-                                  setSmartRules((current) =>
-                                    current.map((item) =>
-                                      item.id === rule.id
-                                        ? { ...item, matcher: { folderPath } }
-                                        : item,
-                                    ),
-                                  );
-                                }}
-                              />
-                            </ModalField>
-                          ) : null}
-                        </div>
-                      </div>
-                    ))}
+                          <ModalField label={t("libraryTagSmartRuleModifiedEndLabel")} className="affairs-tag-smart-rule-field">
+                            <input
+                              type="datetime-local"
+                              aria-label={t("libraryTagSmartRuleModifiedEndLabel")}
+                              value={String(
+                                (rule.matcher as { end?: string }).end ?? "",
+                              )}
+                              disabled={saving}
+                              onChange={(event) => {
+                                const end = event.target.value;
+                                setSmartRules((current) =>
+                                  current.map((item) =>
+                                    item.id === rule.id
+                                      ? {
+                                          ...item,
+                                          matcher: {
+                                            ...(item.matcher as Record<string, unknown>),
+                                            end,
+                                          },
+                                        }
+                                      : item,
+                                  ),
+                                );
+                              }}
+                            />
+                          </ModalField>
+                        </>
+                      ) : null}
+                      {rule.ruleType === "document_path_in_folder" ? (
+                        <ModalField label={t("libraryTagSmartRuleFolderPathLabel")} className="affairs-tag-smart-rule-field">
+                          <input
+                            aria-label={t("libraryTagSmartRuleFolderPathLabel")}
+                            value={String(
+                              (rule.matcher as { folderPath?: string | null }).folderPath ?? ".",
+                            )}
+                            disabled={saving}
+                            placeholder={t("libraryTagSmartRuleFolderPathPlaceholder")}
+                            onChange={(event) => {
+                              const folderPath = event.target.value;
+                              setSmartRules((current) =>
+                                current.map((item) =>
+                                  item.id === rule.id
+                                    ? { ...item, matcher: { folderPath } }
+                                    : item,
+                                ),
+                              );
+                            }}
+                          />
+                        </ModalField>
+                      ) : null}
+                    </div>
                   </div>
-                )}
-              </ModalSection>
-              <ModalSection
-                className="library-tag-recovery-section"
-                heading={t("libraryTagRecoverySectionTitle")}
-                description={t("libraryTagRecoverySectionDescription")}
+                ))}
+              </div>
+            )}
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={saving}
+              onClick={() => {
+                setSmartRules((current) => [
+                  ...current,
+                  createEditableLibraryTagRule(current.length),
+                ]);
+              }}
+            >
+              {t("libraryTagSmartRuleAddAction")}
+            </button>
+          </ModalSection>
+
+          <ModalSection
+            className="affairs-tag-management-editor"
+            heading={t("libraryTagRecoverySectionTitle")}
+            description={t("libraryTagRecoverySectionDescription")}
+          >
+            <div className="affairs-tag-recovery-status">
+              <div className="affairs-tag-recovery-status-grid">
+                <span className="affairs-tag-recovery-status-label">状态</span>
+                <span className="affairs-tag-recovery-status-value">
+                  {recomputeMessage ?? t("libraryTagRecoveryStatusIdle")}
+                </span>
+              </div>
+            </div>
+            <div className="affairs-tag-management-batch-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={saving || recomputing}
+                onClick={() => void requestRecompute()}
               >
-                <div className="library-tag-recovery-status">
-                  <span>
-                    {recomputeMessage ?? t("libraryTagRecoveryStatusIdle")}
-                  </span>
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    disabled={saving || recomputing}
-                    onClick={() => void requestRecompute()}
-                  >
-                    {recomputing
-                      ? t("libraryTagRecoveryRunningAction")
-                      : t("libraryTagRecoveryAction")}
-                  </button>
-                </div>
-              </ModalSection>
-              <ModalActions align="between">
-                <button
-                  type="button"
-                  className="danger-button"
-                  disabled={saving}
-                  onClick={() => void deleteSelected()}
-                >
-                  {t("libraryTagDeleteAction")}
-                </button>
-                <button
-                  type="button"
-                  className="primary-button"
-                  disabled={saving}
-                  onClick={() => void saveSelected()}
-                >
-                  {saving ? t("settingsSaving") : t("libraryTagSaveAction")}
-                </button>
-              </ModalActions>
-            </>
-          )}
-        </ModalSection>
+                {recomputing ? t("libraryTagRecoveryRunningAction") : t("libraryTagRecoveryAction")}
+              </button>
+            </div>
+          </ModalSection>
+
+          {editorMode === "edit" && selectedEditableTag ? (
+            <ModalSection
+              className="affairs-tag-management-danger"
+              heading="危险操作"
+            >
+              <button
+                type="button"
+                className="secondary-button danger-button"
+                disabled={saving}
+                onClick={() => void deleteSelected()}
+              >
+                {t("libraryTagDeleteAction")}
+              </button>
+            </ModalSection>
+          ) : null}
+        </div>
       </div>
+      <ModalActions className="affairs-library-settings-actions">
+        <button type="button" className="secondary-button" disabled={saving} onClick={onClose}>
+          关闭
+        </button>
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={saving}
+          onClick={() => {
+            if (editorMode === "edit") {
+              reloadEditorFromSelected();
+              return;
+            }
+            if (editorMode === "create-child") {
+              resetEditor("create-child", selectedEditableTag);
+              return;
+            }
+            beginCreateRoot();
+          }}
+        >
+          {editorMode === "edit" ? "还原" : "重置"}
+        </button>
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={saving || !name.trim()}
+          onClick={() => void handleSave()}
+        >
+          {saving ? "保存中…" : saveActionLabel}
+        </button>
+      </ModalActions>
+      {error ? <span className="affairs-binding-error">{error}</span> : null}
+    </div>
+  );
+
+  return (
+    <DesktopModal
+      title={t("libraryTagManagerTitle")}
+      description={t("libraryTagManagerDescription")}
+      size="wide"
+      layout="form"
+      className="affairs-library-settings-modal"
+      onClose={onClose}
+      dismissible={!saving}
+    >
+      {content}
     </DesktopModal>
+  );
+}
+
+function LibraryTagManagementTreeNodes({
+  nodes,
+  selectedTagId,
+  depth = 0,
+  onSelect,
+}: {
+  nodes: ManagedTagTreeNode[];
+  selectedTagId: string | null;
+  depth?: number;
+  onSelect: (tagId: string) => void;
+}) {
+  return (
+    <ul className="affairs-tag-management-tree-list">
+      {nodes.map((node) => (
+        <li
+          key={node.tag.id}
+          className="affairs-tag-management-tree-node"
+          role="treeitem"
+          aria-selected={selectedTagId === node.tag.id}
+          data-depth={depth}
+        >
+          <button
+            type="button"
+            className={selectedTagId === node.tag.id ? "affairs-tag-management-tree-button active" : "affairs-tag-management-tree-button"}
+            aria-label={node.tag.name}
+            onClick={() => onSelect(node.tag.id)}
+          >
+            <span className="affairs-tag-management-tree-button-main">
+              <span className="affairs-tag-management-tree-main">
+                <span className="affairs-tag-management-tree-name">{node.tag.name}</span>
+              </span>
+            </span>
+          </button>
+          {node.children.length > 0 ? (
+            <LibraryTagManagementTreeNodes
+              nodes={node.children}
+              selectedTagId={selectedTagId}
+              depth={depth + 1}
+              onSelect={onSelect}
+            />
+          ) : null}
+        </li>
+      ))}
+    </ul>
   );
 }
 
