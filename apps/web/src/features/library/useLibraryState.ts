@@ -148,7 +148,7 @@ export function useLibraryState(): LibraryState {
         ? []
         : await listLibraryTags().catch(() => [] as LibraryTagNode[]);
       setSnapshot(nextSnapshot);
-      setTags(nextTags.length ? nextTags : nextSnapshot.tags);
+      setTags(mergeTagSources(nextSnapshot.tags, nextTags));
       const nextLibraryId = nextSnapshot.binding?.libraryId ?? "default";
       if (nextLibraryId !== viewState.libraryId) {
         setViewState(readLibraryViewState(nextLibraryId));
@@ -635,4 +635,27 @@ function resolveTagRootType(tagRecords: LibraryTagNode[], pathValue: string): st
     return matched.rootType.trim();
   }
   return normalizedPath.split("/")[0] ?? normalizedPath;
+}
+
+/**
+ * 合并快照标签与 API 标签。
+ * 快照标签来自索引器导出，包含系统派生的内置标签（时间、类型）；
+ * API 标签来自 X-File 标签存储，只包含用户创建的自定义标签。
+ * 以快照标签为基底，补充 API 中快照尚未包含的新标签（如刚创建、重算尚未完成的自定义标签），
+ * 确保侧边栏标签树始终同时展示内置标签和自定义标签。
+ */
+function mergeTagSources(snapshotTags: LibraryTagNode[], apiTags: LibraryTagNode[]): LibraryTagNode[] {
+  if (!apiTags.length) {
+    return snapshotTags;
+  }
+  if (!snapshotTags.length) {
+    return apiTags;
+  }
+  const tagMap = new Map<string, LibraryTagNode>(snapshotTags.map((tag) => [tag.path, tag]));
+  for (const tag of apiTags) {
+    if (!tagMap.has(tag.path)) {
+      tagMap.set(tag.path, tag);
+    }
+  }
+  return Array.from(tagMap.values());
 }

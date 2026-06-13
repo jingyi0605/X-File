@@ -789,7 +789,9 @@ function LibraryDesktopSidebar({
 }) {
   const snapshot = library.snapshot;
   const selectedTagPath = library.viewState.selectedTagPath;
-  const tags = library.tags.length ? library.tags : (snapshot?.tags ?? []);
+  // library.tags 已由 useLibraryState.mergeTagSources 合并了快照标签（含内置标签）与 API 标签（含自定义标签），
+  // 直接使用即可，不再做有条件的切换，避免自定义标签存在时内置标签丢失。
+  const tags = library.tags;
   const [tagSearchOpen, setTagSearchOpen] = useState(false);
   const [tagSearchQuery, setTagSearchQuery] = useState("");
   const [tagTreeState, setTagTreeState] = useState<LibraryTagTreeState>(() => readLibraryTagTreeState());
