@@ -32,7 +32,8 @@ type RunLibraryIndexOnce = (options: RunLibraryIndexOnceOptions) => Promise<unkn
 export class LibraryIndexService {
   constructor(
     private readonly taskManager: TaskManager,
-    private readonly runtimeStore: IndexRuntimeStore
+    private readonly runtimeStore: IndexRuntimeStore,
+    private readonly runLibraryIndexOnceOverride?: RunLibraryIndexOnce
   ) {
     this.registerTasks();
   }
@@ -125,7 +126,7 @@ export class LibraryIndexService {
           runningTaskId: context.taskId
         }));
 
-        const runLibraryIndexOnce = await loadRunLibraryIndexOnce();
+        const runLibraryIndexOnce = this.runLibraryIndexOnceOverride ?? await loadRunLibraryIndexOnce();
         await runLibraryIndexOnce({
           rootDir: input.binding.rootDir,
           targetPath: input.targetPath ?? undefined,

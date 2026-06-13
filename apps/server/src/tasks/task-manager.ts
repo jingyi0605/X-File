@@ -39,16 +39,26 @@ interface TaskRecord<Output = unknown> {
   summary: TaskSummary;
   promise: Promise<Output>;
   controller: AbortController;
-  timeout: NodeJS.Timeout;
+  timeout: NodeJS.Timeout | null;
   runningStage: string | null;
 }
 
-const QUEUE_TIMEOUT_MS = 30_000;
+export interface TaskManagerOptions {
+  queueTimeoutMs?: number;
+}
+
+const DEFAULT_QUEUE_TIMEOUT_MS = 30_000;
 
 export class TaskManager {
   private readonly definitions = new Map<string, TaskDefinition<unknown, unknown>>();
   private readonly inflight = new Map<string, TaskRecord>();
   private readonly latest = new Map<string, TaskRecord>();
+  private readonly queueTimeoutMs: number;
+  private taskSequence = 0;
+
+  constructor(options: TaskManagerOptions = {}) {
+    this.queueTimeoutMs = options.queueTimeoutMs ?? DEFAULT_QUEUE_TIMEOUT_MS;
+  }
 
   has(taskType: string): boolean {
     return this.definitions.has(taskType);
@@ -76,7 +86,7 @@ export class TaskManager {
       };
     }
 
-    const taskId = `${taskType}:${hashKey(input.key)}:${Date.now().toString(36)}`;
+    const taskId = `${taskType}:${hashKey(input.key)}:${Date.now().toString(36)}:${(this.taskSequence += 1).toString(36)}`;
     const controller = new AbortController();
     const summary: TaskSummary = {
       taskId,
@@ -93,47 +103,59 @@ export class TaskManager {
     };
 
     let record: TaskRecord<Output>;
-    const timeout = setTimeout(() => {
-      if (record.summary.state === "queued") {
-        record.summary.state = "queue_timeout";
-        record.summary.failedAt = new Date().toISOString();
-        record.summary.errorSummary = "任务排队超时";
-        this.inflight.delete(runtimeKey);
-      }
-    }, QUEUE_TIMEOUT_MS);
+    let startTask!: () => void;
+    let rejectTask!: (error: Error) => void;
 
-    const promise = Promise.resolve().then(async () => {
-      if (summary.state === "queue_timeout") {
-        throw new Error("任务排队超时");
+    const expireQueuedTask = (): void => {
+      if (record.summary.state !== "queued") {
+        return;
       }
-      summary.state = "running";
-      summary.startedAt = new Date().toISOString();
-      const runTimeout = setTimeout(() => controller.abort(), definition.timeoutMs);
-      try {
-        const output = await definition.run(input.input as unknown, {
-          taskId,
-          queuedAt: summary.queuedAt,
-          startedAt: () => summary.startedAt,
-          signal: controller.signal,
-          setStage: (stage) => {
-            record.runningStage = stage;
-            record.summary.runningStage = stage;
+      record.summary.state = "queue_timeout";
+      record.summary.failedAt = new Date().toISOString();
+      record.summary.errorSummary = "任务排队超时";
+      this.inflight.delete(runtimeKey);
+      rejectTask(new Error("任务排队超时"));
+    };
+
+    const promise = new Promise<Output>((resolve, reject) => {
+      rejectTask = reject;
+      startTask = () => {
+        void Promise.resolve().then(async () => {
+          if (summary.state === "queue_timeout") {
+            throw new Error("任务排队超时");
+          }
+          summary.state = "running";
+          summary.startedAt = new Date().toISOString();
+          const runTimeout = setTimeout(() => controller.abort(), definition.timeoutMs);
+          try {
+            const output = await definition.run(input.input as unknown, {
+              taskId,
+              queuedAt: summary.queuedAt,
+              startedAt: () => summary.startedAt,
+              signal: controller.signal,
+              setStage: (stage) => {
+                record.runningStage = stage;
+                record.summary.runningStage = stage;
+              }
+            });
+            summary.state = "fresh";
+            summary.completedAt = new Date().toISOString();
+            summary.errorSummary = null;
+            resolve(output as Output);
+          } catch (error) {
+            summary.state = "failed";
+            summary.failedAt = new Date().toISOString();
+            summary.errorSummary = error instanceof Error ? error.message : String(error);
+            reject(error instanceof Error ? error : new Error(String(error)));
+          } finally {
+            clearTimeout(runTimeout);
+            if (record.timeout) {
+              clearTimeout(record.timeout);
+            }
+            this.inflight.delete(runtimeKey);
           }
         });
-        summary.state = "fresh";
-        summary.completedAt = new Date().toISOString();
-        summary.errorSummary = null;
-        return output as Output;
-      } catch (error) {
-        summary.state = "failed";
-        summary.failedAt = new Date().toISOString();
-        summary.errorSummary = error instanceof Error ? error.message : String(error);
-        throw error;
-      } finally {
-        clearTimeout(runTimeout);
-        clearTimeout(timeout);
-        this.inflight.delete(runtimeKey);
-      }
+      };
     });
 
     promise.catch(() => {
@@ -144,11 +166,19 @@ export class TaskManager {
       summary,
       promise,
       controller,
-      timeout,
+      timeout: null,
       runningStage: null
     };
     this.inflight.set(runtimeKey, record as TaskRecord);
     this.latest.set(runtimeKey, record as TaskRecord);
+
+    if (this.queueTimeoutMs <= 0) {
+      expireQueuedTask();
+    } else {
+      record.timeout = setTimeout(expireQueuedTask, this.queueTimeoutMs);
+      startTask();
+    }
+
     return this.snapshotRecord(record);
   }
 
