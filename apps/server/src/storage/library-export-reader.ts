@@ -368,8 +368,13 @@ function filterDocuments(
     }
 
     if (selectedTags.length > 0) {
-      const documentTags = new Set([...document.tags, ...document.derivedTags]);
-      if (!selectedTags.every((tagPath) => documentTags.has(tagPath))) {
+      // 子树匹配：文档命中选中标签 ⟺ 文档某个标签等于选中标签、或是选中标签的子孙路径。
+      // 这样点击父标签能筛出所有子标签文档，与父标签 badge 的聚合计数保持一致。
+      const documentTagPaths = [...document.tags, ...document.derivedTags];
+      const matchesSelectedTag = (selectedPath: string) => documentTagPaths.some(
+        (tagPath) => tagPath === selectedPath || tagPath.startsWith(`${selectedPath}/`),
+      );
+      if (!selectedTags.every(matchesSelectedTag)) {
         return false;
       }
     }
@@ -569,14 +574,37 @@ function matchesFavorite(
     .every((tagPath) => documentTags.has(tagPath));
 }
 
+// 把标签路径展开为「自身 + 所有祖先」路径数组，复用项目既有的 "/" 分隔 + 前缀语义。
+// 例："时间/2026/06" → ["时间", "时间/2026", "时间/2026/06"]
+function expandTagAncestorPaths(tagPath: string): string[] {
+  const segments = tagPath
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  const paths: string[] = [];
+  for (let index = 1; index <= segments.length; index += 1) {
+    paths.push(segments.slice(0, index).join("/"));
+  }
+  return paths;
+}
+
+// 父标签应聚合子标签的文件数量：对每个文档，先把它的标签路径展开到所有祖先路径并用
+// Set 去重，再给每个路径 +1。这样每个文档对每个祖先最多贡献 1，避免「文档同时打父子
+// 标签」时重复计数。readTags 只遍历 taxonomy 节点，不在 taxonomy 的孤儿祖先键会被忽略。
 function countTags(documents: LibraryDocumentRecord[]): Record<string, number> {
   const counts: Record<string, number> = {};
   for (const document of documents) {
+    const expandedPaths = new Set<string>();
     for (const tagPath of new Set([
       ...document.tags,
       ...document.derivedTags,
     ])) {
-      counts[tagPath] = (counts[tagPath] ?? 0) + 1;
+      for (const ancestorPath of expandTagAncestorPaths(tagPath)) {
+        expandedPaths.add(ancestorPath);
+      }
+    }
+    for (const expandedPath of expandedPaths) {
+      counts[expandedPath] = (counts[expandedPath] ?? 0) + 1;
     }
   }
   return counts;
