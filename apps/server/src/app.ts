@@ -40,6 +40,9 @@ export interface CreateServerOptions {
 export function createServer(options: CreateServerOptions = {}) {
   const server = Fastify({
     logger: true,
+    // 移除每个请求的 "incoming request" / "request completed" 日志，
+    // 只保留 error/warn 及路由内手动日志
+    disableRequestLogging: true,
   });
 
   server.addHook("onRequest", async (request, reply) => {
