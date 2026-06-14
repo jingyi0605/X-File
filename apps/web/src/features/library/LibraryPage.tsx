@@ -73,6 +73,10 @@ import {
 } from "./LibraryFileCodeViewer";
 import { useLibraryState, type LibraryState } from "./useLibraryState";
 import {
+  WorkbenchPanelResizer,
+  useResizablePanels,
+} from "./WorkbenchPanelResizer";
+import {
   DEFAULT_FINDER_COLUMN_WIDTHS,
   FINDER_COLUMN_MIN_WIDTHS,
   type FinderColumnKey,
@@ -277,6 +281,7 @@ export function LibraryPage({
   platformData,
 }: LibraryPageProps) {
   const library = useLibraryState();
+  const panels = useResizablePanels();
   const binding = library.snapshot?.binding ?? null;
   const shouldShowInitialization = library.requiresInitialization || !binding;
   const shouldShowDisabled = Boolean(binding && !binding.enabled);
@@ -556,11 +561,26 @@ export function LibraryPage({
       data-os-family={platformData.osFamily}
       data-overlay-titlebar={platformData.overlayTitlebar ? "true" : undefined}
     >
-      <section className="workbench-window xfile-workbench-window">
+      <section
+        className="workbench-window xfile-workbench-window workbench-window-resizable"
+        ref={panels.containerRef}
+        style={
+          panels.gridTemplateColumns
+            ? { gridTemplateColumns: panels.gridTemplateColumns }
+            : undefined
+        }
+      >
         <LibraryDesktopSidebar
           library={library}
           onOpenSettings={onOpenSettings}
           onOpenTagManager={() => setTagManagerOpen(true)}
+        />
+        <WorkbenchPanelResizer
+          side="left"
+          active={panels.activeSide === "left"}
+          ariaLabel={t("libraryResizeSidebar")}
+          onResizeStart={panels.startResize}
+          onReset={panels.resetSize}
         />
         <section className="affairs-main-panel">
           {tagAssignmentTask ? (
@@ -596,6 +616,13 @@ export function LibraryPage({
             onOpenLibraryViewer={openLibraryViewer}
           />
         </section>
+        <WorkbenchPanelResizer
+          side="right"
+          active={panels.activeSide === "right"}
+          ariaLabel={t("libraryResizeDetail")}
+          onResizeStart={panels.startResize}
+          onReset={panels.resetSize}
+        />
         <LibraryDetail
           library={library}
           onRequestRename={(path) =>
