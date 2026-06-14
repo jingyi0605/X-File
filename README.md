@@ -8,7 +8,7 @@ X-File 是从 CodingNS 拆出的文档库独立应用。当前仓库已经建立
 - `apps/server`：Fastify + TypeScript 后端，提供健康检查、文档库 API、HTTP 服务状态和集成入口。
 - `apps/desktop`：Tauri 2 桌面壳骨架，包含窗口配置、Rust 入口、系统托盘菜单、常驻策略和后端子进程托管入口。
 - `docs`：验收说明和 CodingNS 接入说明。
-- `scripts`：macOS / Windows 构建骨架校验脚本。
+- `scripts`：版本同步、macOS 签名公证、Windows 打包和发布前置校验脚本。
 
 ## 脚本
 
@@ -99,23 +99,64 @@ GET /api/integration/status
 - `docs/20260608-CodingNS接入X-File说明.md`
 - `docs/20260608-X-File第一版验收说明.md`
 
-## 桌面打包骨架
+## 桌面打包与发布
+
+X-File 用 Tauri 2 打包为 macOS（universal `.app` / `.dmg`）和 Windows（NSIS `.exe` / MSI）应用，通过 GitHub Releases + `tauri-plugin-updater` 提供 dev / stable 双更新通道。整体链路参考父项目 CodingNS。
 
 关键文件：
 
-- `apps/desktop/src-tauri/tauri.conf.json`
-- `apps/desktop/src-tauri/Cargo.toml`
-- `apps/desktop/src-tauri/src/main.rs`
+- `apps/desktop/src-tauri/tauri.conf.json`：bundle 目标、updater 公钥与 endpoint。
+- `apps/desktop/src-tauri/src/updater.rs`：检查 / 下载 / 安装更新，按通道（stable / dev）选择 endpoint。
+- `apps/desktop/src-tauri/src/lib.rs`：注册 updater 命令（`check_for_update` / `download_update` / `install_update` / `get_release_channel` / `set_release_channel` / `open_external_url`）。
+- `scripts/sync-version.mjs`：以根 `VERSION` 为唯一真源同步全仓版本号。
+- `scripts/build-macos.sh`：universal 构建 + 自动接 `release-macos.sh` 签名公证。
+- `scripts/release-macos.sh`：Developer ID 签名 + DMG 重建 + Apple 公证 + stapling + Gatekeeper 校验。
+- `scripts/build-windows.sh`：Windows 打包（按版本通道切 NSIS / MSI）。
+- `.github/workflows/desktop-release.yml`：tag 触发的跨平台打包发布 CI。
+- `.github/workflows/ci.yml`：PR 类型检查 + 测试 + 构建。
 
-当前已接入 Tauri updater 插件并预留签名发布所需的配置占位，但不等于已经完成真实自动更新验收。macOS 和 Windows 本地脚本默认只做骨架校验；发布前必须配置真实 updater secrets，并在 Windows 实机 runner 上跑安装包构建。Windows 代码签名证书是可选项，不影响 updater 正常更新。
+### 版本管理
 
-发布前置检查：
+版本号统一来自根目录 `VERSION` 文件（semver）。改版本后执行：
 
 ```bash
-node scripts/check-desktop-release-secrets.mjs --platform windows --require-real-secrets
+# 改 VERSION（例如 0.2.0 或 0.2.0-dev.1），再同步
+pnpm version:sync   # 同步到 package.json / tauri.conf.json / Cargo.toml / Cargo.lock
 ```
 
-Windows 实机构建入口：
+### 发布流程
+
+1. 改 `VERSION`，跑 `pnpm version:sync`，提交。
+2. 打 tag：`git tag v<VERSION>`（如 `v0.2.0` 或 `v0.2.0-dev.1`），推送。
+3. `desktop-release.yml` 自动触发：macOS universal 签名公证 + Windows 打包 + 生成 `latest.json` + 上传到 GitHub Release。
+4. 通道由版本号决定：
+   - **stable**（`VERSION` 不含 `-`，如 `0.2.0`）：产物上传到版本 tag release，GitHub `releases/latest` 自动指向。客户端 stable 通道查 `releases/latest/download/latest.json`。
+   - **dev**（`VERSION` 含 `-`，如 `0.2.0-dev.1`）：版本 tag release 标记为 prerelease，同时维护滚动 release `dev-latest`（含 `latest.json` 指针）。客户端 dev 通道查 `releases/download/dev-latest/latest.json`。
+
+### 必需的 secrets
+
+在仓库 Settings → Secrets（或 `release` environment）配置：
+
+macOS 签名公证（复用 Apple Developer ID 证书）：
+
+- `APPLE_CERTIFICATE_P12_BASE64` / `APPLE_CERTIFICATE_PASSWORD` / `APPLE_KEYCHAIN_PASSWORD`
+- `APPLE_SIGN_IDENTITY` / `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID`
+
+Tauri updater 签名：
+
+- `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`：minisign 私钥，签更新包。
+- `X_FILE_UPDATER_PUBLIC_KEY`（secret）：公钥，值必须与 `tauri.conf.json` 的 `plugins.updater.pubkey` 一致。
+- `X_FILE_UPDATER_ENDPOINT`（vars）：stable URL 占位（双通道下运行时按通道选，仅校验用）。
+
+Windows 代码签名默认不做（沿用父项目现状），仅保留 Tauri updater 的 minisign 签名保证自动更新可验签。
+
+发布前置检查（本地）：
+
+```bash
+node scripts/check-desktop-release-secrets.mjs --platform macos --require-real-secrets
+```
+
+Windows self-hosted 实机构建入口（手动，保留用于实机调试）：
 
 ```text
 .github/workflows/x-file-windows-build.yml
@@ -123,7 +164,7 @@ Windows 实机构建入口：
 
 ## 当前边界
 
-- 已有自动更新插件、签名配置占位和 Windows runner 工作流，但没有声称真实自动更新或真实 Windows 安装包已经验证。
+- 已建立 dev/stable 双更新通道（GitHub Releases + Tauri updater）和 tag 触发的跨平台发布 CI；macOS 签名公证复用 Apple Developer ID 证书，Windows 不做 authenticode 签名（首次运行有 SmartScreen 警告）。
 - 不主动启动长期 dev server。
 - 已实现基础系统托盘菜单；不实现开机自启和 deep link 注册。
 - 桌面壳能托管后端子进程并优先寻找打包资源里的 `x-file-server/main.js`；发布包仍需要携带 Node runtime 或改为真正 sidecar，不能假设用户机器一定有 Node。

@@ -28,6 +28,7 @@ import { LanguageSwitcher } from "../../shared/i18n/LanguageSwitcher";
 import { ThemeSwitcher } from "../../shared/theme/ThemeSwitcher";
 import { formatDateTime } from "../../shared/format";
 import { DesktopModal, ModalActions } from "../../shared/modal";
+import { UpdatePanel } from "./UpdatePanel";
 
 interface SettingsPageProps {
   onSaved?: () => void;
@@ -609,15 +610,7 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
           </div>
         </form>
     ),
-    updates: (
-      <section className="settings-section">
-        <h2>{t("settingsUpdatesTitle")}</h2>
-        <div className="modal-empty-state" data-compact="true">
-          <strong className="modal-empty-state-title">{t("settingsUpdatesPendingTitle")}</strong>
-          <p className="modal-empty-state-description">{t("settingsUpdatesPendingDescription")}</p>
-        </div>
-      </section>
-    )
+    updates: <UpdatePanel />
   };
 
   const content = (

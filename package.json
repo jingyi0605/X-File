@@ -1,6 +1,6 @@
 {
   "name": "x-file",
-  "version": "0.1.0",
+  "version": "0.1.0-dev.1",
   "private": true,
   "description": "X-File 文档库独立应用骨架",
   "type": "module",
@@ -16,6 +16,7 @@
     "build:macos": "bash scripts/build-macos.sh",
     "build:windows": "bash scripts/build-windows.sh",
     "prepare:bundled-server": "node scripts/prepare-bundled-server.mjs",
+    "version:sync": "node scripts/sync-version.mjs",
     "dev": "bash scripts/dev-all.sh",
     "dev:debug": "bash scripts/dev-all.sh",
     "dev:all": "bash scripts/dev-all.sh"

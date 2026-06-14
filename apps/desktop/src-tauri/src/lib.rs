@@ -1,3 +1,5 @@
+mod updater;
+
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::path::PathBuf;
@@ -8,7 +10,7 @@ use tauri::menu::{
     Menu, MenuBuilder, MenuEvent, MenuItemBuilder, SubmenuBuilder,
 };
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 
 #[cfg(target_os = "macos")]
 use {
@@ -881,10 +883,52 @@ fn should_autostart_backend() -> bool {
         .unwrap_or(true)
 }
 
+#[tauri::command]
+async fn check_for_update(
+    app: AppHandle,
+    channel: String,
+) -> Result<updater::DesktopReleaseState, String> {
+    updater::check_for_update(&app, &channel).await
+}
+
+#[tauri::command]
+async fn download_update(
+    app: AppHandle,
+    channel: String,
+    state: State<'_, updater::DownloadedDesktopUpdateState>,
+) -> Result<updater::UpdateDownloadResult, String> {
+    Ok(updater::download_update(&app, state.inner(), &channel).await)
+}
+
+#[tauri::command]
+async fn install_update(
+    app: AppHandle,
+    channel: String,
+    state: State<'_, updater::DownloadedDesktopUpdateState>,
+) -> Result<updater::UpdateInstallResult, String> {
+    Ok(updater::install_update(&app, state.inner(), &channel).await)
+}
+
+#[tauri::command]
+fn get_release_channel(app: AppHandle) -> String {
+    updater::read_release_channel(&app)
+}
+
+#[tauri::command]
+fn set_release_channel(app: AppHandle, channel: String) -> Result<(), String> {
+    updater::write_release_channel(&app, &channel)
+}
+
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    updater::open_external(&url)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Mutex::new(DesktopState::new()))
+        .manage(updater::DownloadedDesktopUpdateState::default())
         .setup(|app| {
             setup_tray(app)?;
             configure_backend_process(app);
@@ -901,7 +945,13 @@ pub fn run() {
             http_service_hint,
             open_path,
             reveal_path_in_file_manager,
-            show_library_context_menu
+            show_library_context_menu,
+            check_for_update,
+            download_update,
+            install_update,
+            get_release_channel,
+            set_release_channel,
+            open_external_url
         ])
         .on_menu_event(handle_menu_event)
         .on_window_event(|window, event| {

@@ -89,7 +89,9 @@ if (requireRealSecrets) {
     configuredEndpoint &&
     configuredEndpoint !== process.env.X_FILE_UPDATER_ENDPOINT
   ) {
-    failures.push("X_FILE_UPDATER_ENDPOINT 和 tauri.conf.json 的第一个 updater endpoint 不一致。");
+    // 双通道下运行时 endpoint 由 channel 决定（stable 走 releases/latest，dev 走 dev-latest），
+    // 单一 X_FILE_UPDATER_ENDPOINT 无法表达两个 URL，故降级为提醒而非硬性失败。
+    warnings.push("X_FILE_UPDATER_ENDPOINT 和 tauri.conf.json 的第一个 updater endpoint 不一致（双通道下仅作提醒，运行时按通道选择）。");
   }
 }
 
