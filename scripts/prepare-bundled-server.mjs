@@ -11,24 +11,18 @@ const runtimeResourceDir = join(resourcesDir, "x-file-runtime");
 const nodeVersion = process.env.X_FILE_BUNDLED_NODE_VERSION || "22.16.0";
 const force = process.argv.includes("--force") || process.env.X_FILE_FORCE_BUNDLED_SERVER === "1";
 
-// Windows 上 npm/pnpm 是 .cmd 批处理，execFileSync 默认找不到；补 .cmd 后缀。
-// 完整路径（含扩展名或路径分隔符）不处理，避免破坏 nodeBin 这类可执行文件路径。
-function resolveCommand(command) {
-  if (process.platform === "win32") {
-    if (/\.(exe|cmd|bat)$/i.test(command) || /[\\/]/.test(command)) {
-      return command;
-    }
-    return `${command}.cmd`;
-  }
-  return command;
+// Windows 上 npm/pnpm 是 .cmd 批处理，execFileSync 直接执行会报 EINVAL；
+// 对裸命令走 shell（cmd.exe 解析 .cmd），对可执行文件路径（nodeBin 等）直接执行。
+function isExecutablePath(command) {
+  return /[\\/]/.test(command) || /\.(exe|bat)$/i.test(command);
 }
 
 function run(command, args, options = {}) {
-  const resolved = resolveCommand(command);
-  console.log(`[x-file bundle] ${resolved} ${args.join(" ")}`);
-  execFileSync(resolved, args, {
+  console.log(`[x-file bundle] ${command} ${args.join(" ")}`);
+  execFileSync(command, args, {
     cwd: options.cwd ?? rootDir,
     stdio: "inherit",
+    shell: process.platform === "win32" && !isExecutablePath(command),
     env: {
       ...process.env,
       ...options.env
@@ -37,10 +31,10 @@ function run(command, args, options = {}) {
 }
 
 function runWithOutput(command, args, options = {}) {
-  const resolved = resolveCommand(command);
-  return execFileSync(resolved, args, {
+  return execFileSync(command, args, {
     cwd: options.cwd ?? rootDir,
     encoding: "utf8",
+    shell: process.platform === "win32" && !isExecutablePath(command),
     env: {
       ...process.env,
       ...options.env
