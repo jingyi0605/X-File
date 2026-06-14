@@ -68,6 +68,16 @@ find_built_macos_app() {
 
 sign_macos_app() {
   local app_path="$1"
+  # 后端 node_modules 里的原生模块（.node/.dylib）藏在 Contents/Resources/x-file-server 深处，
+  # codesign --deep 偶尔漏签，导致 notarization 报 "binary is not signed"。
+  # 先逐一显式签名这些 Mach-O 叶子（含 secure timestamp），再 --deep 签整个 .app。
+  log_info "对 .app 内原生二进制（.node/.dylib）逐一签名..."
+  local binary
+  while IFS= read -r -d '' binary; do
+    if file "$binary" | grep -q "Mach-O"; then
+      codesign --force --timestamp --options runtime --sign "$APPLE_SIGN_IDENTITY" "$binary" 2>/dev/null || true
+    fi
+  done < <(find "$app_path" -type f \( -name "*.node" -o -name "*.dylib" \) -print0 2>/dev/null)
   log_info "对 .app 执行 Developer ID 签名..."
   codesign --force --deep --timestamp --options runtime --sign "$APPLE_SIGN_IDENTITY" "$app_path"
 }

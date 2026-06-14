@@ -1,6 +1,6 @@
 [package]
 name = "x-file-desktop"
-version = "0.1.0-dev.7"
+version = "0.1.0-dev.8"
 description = "X-File 文档库独立应用桌面壳"
 edition = "2021"
 
