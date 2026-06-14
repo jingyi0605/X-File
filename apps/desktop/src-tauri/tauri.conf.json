@@ -1,12 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "X-File",
-  "version": "0.1.0-dev.1",
+  "version": "0.1.0-dev.2",
   "identifier": "top.codingns.xfile",
   "build": {
     "beforeDevCommand": "pnpm --filter @x-file/web dev",
     "devUrl": "http://127.0.0.1:17320",
-    "beforeBuildCommand": "pnpm --filter @x-file/web build && pnpm --filter @x-file/shared build && pnpm --filter @x-file/indexer build && pnpm --filter @x-file/server build && node ../../scripts/prepare-bundled-server.mjs",
+    "beforeBuildCommand": "pnpm --filter @x-file/shared build && pnpm --filter @x-file/indexer build && pnpm --filter @x-file/web build && pnpm --filter @x-file/server build && node ../../scripts/prepare-bundled-server.mjs",
     "frontendDist": "../../web/dist"
   },
   "app": {
