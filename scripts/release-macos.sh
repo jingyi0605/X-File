@@ -14,11 +14,12 @@ TAURI_DIR="$REPO_DIR/apps/desktop/src-tauri"
 MACOS_RELEASE_DIR="$TAURI_DIR/target/release/macos-release"
 MACOS_TARGET="${X_FILE_MACOS_TARGET:-universal-apple-darwin}"
 
-# 颜色输出
+# 颜色输出。日志统一走 stderr，避免在 $(...) 子shell（如 create_macos_release_dmg）
+# 里污染被捕获的 stdout（那应当只含 echo 的返回值，如 dmg 路径）。
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
-log_info()    { echo -e "${BLUE}[INFO]${NC} $1"; }
-log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
-log_warn()    { echo -e "${YELLOW}[WARN]${NC} $1"; }
+log_info()    { echo -e "${BLUE}[INFO]${NC} $1" >&2; }
+log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1" >&2; }
+log_warn()    { echo -e "${YELLOW}[WARN]${NC} $1" >&2; }
 log_error()   { echo -e "${RED}[ERROR]${NC} $1" >&2; }
 
 # 校验签名公证必需的环境变量；缺失则提示并跳过（不报错）。
