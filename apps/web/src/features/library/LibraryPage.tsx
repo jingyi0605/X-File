@@ -69,6 +69,7 @@ import {
 import {
   CodePreview,
   MarkdownPreview,
+  OnlyOfficePreview,
   detectLanguage,
 } from "./LibraryFileCodeViewer";
 import { useLibraryState, type LibraryState } from "./useLibraryState";
@@ -3234,12 +3235,18 @@ function LibraryDetailSummary({
     : normalized;
 
   return (
-    <div className="affairs-detail-summary">
-      <p className="affairs-detail-summary-text">{visibleSummary}</p>
+    <div className={`affairs-detail-summary-block${centered ? " centered" : ""}`}>
+      <p
+        className="affairs-detail-summary"
+        data-expanded={expanded ? "true" : undefined}
+      >
+        {visibleSummary}
+      </p>
       {shouldCollapse ? (
         <button
           type="button"
-          className="affairs-detail-link-button"
+          className="affairs-detail-summary-toggle"
+          aria-expanded={expanded}
           onClick={() => setExpanded((current) => !current)}
         >
           {expanded ? t("libraryCollapseText") : t("libraryExpandText")}
@@ -4412,7 +4419,7 @@ function LibraryQuickTagAssignmentEditor({
           <span>{inputLabel}</span>
           <input
             value={query}
-            autoFocus
+            autoFocus={autoFocusInput}
             disabled={submitting}
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={(event) => {
@@ -6251,54 +6258,54 @@ function PreviewPanel({
 
   if (preview.kind === "image" && preview.previewUrl) {
     return (
-      <img
-        className="preview-image"
-        src={preview.previewUrl}
-        alt={preview.path}
-      />
+      <div className="file-viewer-media-shell library-detail-preview-shell">
+        <div className="file-viewer-image-stage">
+          <img
+            className="preview-image file-viewer-image"
+            src={preview.previewUrl}
+            alt={preview.path}
+          />
+        </div>
+      </div>
     );
   }
 
-  if (
-    (preview.kind === "pdf" || preview.kind === "html") &&
-    preview.previewUrl
-  ) {
+  if ((preview.kind === "pdf" || preview.kind === "html") && preview.previewUrl) {
     return (
-      <a
-        className="preview-link"
-        href={preview.previewUrl}
-        target="_blank"
-        rel="noreferrer"
-      >
-        {t("libraryPreviewOpenResource")}
-      </a>
+      <div className={preview.kind === "pdf" ? "file-viewer-pdf-shell library-detail-preview-shell" : "file-viewer-html-frame-shell library-detail-preview-shell"}>
+        <iframe
+          className={preview.kind === "pdf" ? "library-file-viewer-frame file-viewer-pdf-frame" : "library-file-viewer-frame file-viewer-html-frame"}
+          src={preview.previewUrl}
+          title={preview.path}
+        />
+      </div>
     );
   }
 
   if (preview.kind === "office" && preview.onlyOffice) {
     return (
-      <div className="preview-box">
-        <a
-          className="preview-link"
-          href={preview.onlyOffice.documentUrl}
-          target="_blank"
-          rel="noreferrer"
-        >
-          {t("libraryPreviewOnlyOffice")}
-        </a>
-        <small>
-          {preview.onlyOffice.editorMode === "edit"
-            ? t("libraryPreviewOfficeEdit")
-            : t("libraryPreviewOfficeView")}
-        </small>
+      <div className="library-detail-preview-shell">
+        <OnlyOfficePreview onlyOffice={preview.onlyOffice} filePath={preview.path} />
+      </div>
+    );
+  }
+
+  if (preview.kind === "markdown") {
+    return (
+      <div className="library-detail-preview-shell library-detail-text-preview-shell">
+        <MarkdownPreview content={preview.content || t("libraryPreviewEmpty")} />
       </div>
     );
   }
 
   return (
-    <pre className="preview-box text">
-      {preview.content || t("libraryPreviewEmpty")}
-    </pre>
+    <div className="library-detail-preview-shell library-detail-text-preview-shell">
+      <CodePreview
+        content={preview.content || t("libraryPreviewEmpty")}
+        language={detectLanguage(preview.path)}
+        overviewTotalLines={Math.max(1, (preview.content || t("libraryPreviewEmpty")).split(/\r?\n/).length)}
+      />
+    </div>
   );
 }
 
@@ -6441,42 +6448,53 @@ function DetailRow({ label, value }: { label: string; value: string }) {
 function DetailPathRow({
   path,
   onSelectFolder,
+  standalone = true,
 }: {
   path: string;
   onSelectFolder: (path: string | null, selectedEntryPath?: string | null) => void;
+  standalone?: boolean;
 }) {
   const segments = path.split("/").filter(Boolean);
   if (segments.length <= 1) {
-    return (
-      <DetailRow label={t("libraryMetaPath")} value={path} />
-    );
+    if (!standalone) {
+      return <span>{path}</span>;
+    }
+    return <DetailRow label={t("libraryMetaPath")} value={path} />;
+  }
+
+  const pathContent = (
+    <span className="detail-path-segments">
+      {segments.map((segment, index) => {
+        const currentPath = segments.slice(0, index + 1).join("/");
+        const isFileName = index === segments.length - 1;
+        return (
+          <Fragment key={currentPath}>
+            {index > 0 ? <span className="detail-path-separator">/</span> : null}
+            {isFileName ? (
+              <span>{segment}</span>
+            ) : (
+              <button
+                type="button"
+                className="affairs-detail-path-segment"
+                onClick={() => onSelectFolder(currentPath)}
+              >
+                {segment}
+              </button>
+            )}
+          </Fragment>
+        );
+      })}
+    </span>
+  );
+
+  if (!standalone) {
+    return pathContent;
   }
 
   return (
     <div className="detail-row" data-testid="library-detail-path-row">
       <span>{t("libraryMetaPath")}</span>
-      <strong className="detail-path-segments">
-        {segments.map((segment, index) => {
-          const currentPath = segments.slice(0, index + 1).join("/");
-          const isFileName = index === segments.length - 1;
-          return (
-            <Fragment key={currentPath}>
-              {index > 0 ? <span className="detail-path-separator">/</span> : null}
-              {isFileName ? (
-                <span>{segment}</span>
-              ) : (
-                <button
-                  type="button"
-                  className="affairs-detail-link-button detail-path-button"
-                  onClick={() => onSelectFolder(currentPath)}
-                >
-                  {segment}
-                </button>
-              )}
-            </Fragment>
-          );
-        })}
-      </strong>
+      <strong>{pathContent}</strong>
     </div>
   );
 }
@@ -6491,6 +6509,21 @@ function TagPills({ items }: { items: string[] }) {
         <small>{t("libraryNoTags")}</small>
       )}
     </div>
+  );
+}
+
+function LibraryTagRecommendationSummary({
+  details,
+}: {
+  details: Extract<LibraryEntry, { kind: "document" }>;
+}) {
+  const recommendCount = compactDocumentTagPaths(details.derivedTags).length;
+  return (
+    <span className="affairs-binding-hint">
+      {recommendCount > 0
+        ? t("libraryTagRecommendCount", { count: recommendCount })
+        : t("libraryTagRecommend")}
+    </span>
   );
 }
 
@@ -7507,6 +7540,28 @@ async function openPathInDesktop(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function revealPathInDesktop(path: string): Promise<boolean> {
+  try {
+    const tauriApi = await import("@tauri-apps/api/core");
+    await tauriApi.invoke("reveal_path_in_file_manager", { path });
+    return true;
+  } catch {
+    return openPathInDesktop(resolveParentPath(path) ?? path);
+  }
+}
+
+function resolveParentPath(pathValue: string): string | null {
+  const normalized = pathValue.trim().replace(/[\\/]+$/g, "");
+  if (!normalized) {
+    return null;
+  }
+  const slashIndex = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
+  if (slashIndex <= 0) {
+    return null;
+  }
+  return normalized.slice(0, slashIndex);
 }
 
 function isFolderFavorite(library: LibraryState, path: string): boolean {
