@@ -125,8 +125,17 @@ function deployServer(nodeBin) {
     npm_config_node_linker: "hoisted",
     npm_config_node_gyp: process.env.npm_config_node_gyp ?? ""
   };
+  // Windows 上 pnpm deploy 创建 node_modules/.bin/*.CMD 偶发 EPERM（Defender 实时扫描占用句柄）。
+  // .bin 只是 CLI shim（pino/rc/semver 命令行），server 运行入口 node dist/main.js 不依赖它。
+  // 策略：deploy 报错时验证关键依赖是否已部署完整，完整则忽略 .bin 失败。
+  const isServerDeployed = () => [
+    join(serverResourceDir, "dist", "main.js"),
+    join(serverResourceDir, "node_modules", "better-sqlite3", "build", "Release", "better_sqlite3.node"),
+    join(serverResourceDir, "node_modules", "fastify", "package.json")
+  ].every(existsSync);
+
   let lastError;
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
     rmSync(serverResourceDir, { recursive: true, force: true });
     try {
       run("pnpm", ["--filter", "@x-file/server", "--prod", "deploy", serverResourceDir], {
@@ -137,6 +146,11 @@ function deployServer(nodeBin) {
     } catch (error) {
       lastError = error;
       console.error(`[x-file bundle] pnpm deploy 第 ${attempt} 次失败：${String(error.message || error)}`);
+      if (isServerDeployed()) {
+        console.error("[x-file bundle] 关键依赖已部署，忽略 .bin/*.CMD 创建失败（server 运行不依赖 CLI shim）");
+        lastError = null;
+        break;
+      }
     }
   }
   if (lastError) {
