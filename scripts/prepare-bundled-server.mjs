@@ -11,9 +11,22 @@ const runtimeResourceDir = join(resourcesDir, "x-file-runtime");
 const nodeVersion = process.env.X_FILE_BUNDLED_NODE_VERSION || "22.16.0";
 const force = process.argv.includes("--force") || process.env.X_FILE_FORCE_BUNDLED_SERVER === "1";
 
+// Windows 上 npm/pnpm 是 .cmd 批处理，execFileSync 默认找不到；补 .cmd 后缀。
+// 完整路径（含扩展名或路径分隔符）不处理，避免破坏 nodeBin 这类可执行文件路径。
+function resolveCommand(command) {
+  if (process.platform === "win32") {
+    if (/\.(exe|cmd|bat)$/i.test(command) || /[\\/]/.test(command)) {
+      return command;
+    }
+    return `${command}.cmd`;
+  }
+  return command;
+}
+
 function run(command, args, options = {}) {
-  console.log(`[x-file bundle] ${command} ${args.join(" ")}`);
-  execFileSync(command, args, {
+  const resolved = resolveCommand(command);
+  console.log(`[x-file bundle] ${resolved} ${args.join(" ")}`);
+  execFileSync(resolved, args, {
     cwd: options.cwd ?? rootDir,
     stdio: "inherit",
     env: {
@@ -24,7 +37,8 @@ function run(command, args, options = {}) {
 }
 
 function runWithOutput(command, args, options = {}) {
-  return execFileSync(command, args, {
+  const resolved = resolveCommand(command);
+  return execFileSync(resolved, args, {
     cwd: options.cwd ?? rootDir,
     encoding: "utf8",
     env: {
@@ -72,7 +86,10 @@ function ensureBundledNode() {
   const bundledNodeBin = join(bundledNodeDir, process.platform === "win32" ? "node.exe" : "node");
   mkdirSync(bundledNodeDir, { recursive: true });
   copyFileSync(installedNodeBin, bundledNodeBin);
-  run("chmod", ["755", bundledNodeBin]);
+  // Windows 没有 chmod，文件权限由 ACL 管理，跳过。
+  if (process.platform !== "win32") {
+    run("chmod", ["755", bundledNodeBin]);
+  }
   rmSync(installDir, { recursive: true, force: true });
 
   console.log(`[x-file bundle] 已准备 Node ${runWithOutput(bundledNodeBin, ["-v"])}`);
@@ -146,7 +163,11 @@ function smokeTest(nodeBin) {
 
 function directorySize(path) {
   if (!existsSync(path)) {
-    return 0;
+    return "0";
+  }
+  // Windows 没有 du，跳过大小统计（仅用于日志展示）。
+  if (process.platform === "win32") {
+    return "?";
   }
   const output = runWithOutput("du", ["-sh", path]);
   return output.split(/\s+/)[0] ?? "0";
