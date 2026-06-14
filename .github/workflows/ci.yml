@@ -35,15 +35,20 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: 构建共享包（为 typecheck 提供 workspace 类型声明）
+        # server 的 typecheck 依赖 @x-file/shared / @x-file/indexer 的 dist 类型声明，
+        # 必须先构建它们，否则全新 CI 环境会报 Cannot find module。
+        run: |
+          pnpm --filter @x-file/shared build
+          pnpm --filter @x-file/indexer build
+
       - name: Typecheck（全仓 TS）
         run: pnpm typecheck
 
       - name: Web 单元测试
         run: pnpm --filter @x-file/web test
 
-      - name: 构建共享包与前后端
+      - name: 构建前后端
         run: |
-          pnpm --filter @x-file/shared build
-          pnpm --filter @x-file/indexer build
           pnpm --filter @x-file/server build
           pnpm --filter @x-file/web build
