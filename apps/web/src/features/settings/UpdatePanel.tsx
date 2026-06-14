@@ -29,7 +29,7 @@ interface UpdateDownloadResult {
   progress: { downloaded: number; contentLength: number | null; percent: number | null } | null;
 }
 
-type Channel = "stable" | "dev";
+type Channel = "stable" | "beta";
 
 // 桌面壳内才有 __TAURI_INTERNALS__；网页模式下隐藏更新操作。
 function isDesktopContext(): boolean {
@@ -68,7 +68,7 @@ export function UpdatePanel() {
       try {
         const { invoke } = await import("@tauri-apps/api/core");
         const saved = await invoke<string>("get_release_channel");
-        setChannel(saved === "dev" ? "dev" : "stable");
+        setChannel(saved === "beta" ? "beta" : "stable");
       } catch {
         // 读取失败回退 stable，静默处理。
       }
@@ -178,9 +178,9 @@ export function UpdatePanel() {
             </button>
             <button
               type="button"
-              className={channel === "dev" ? "primary-button" : "secondary-button"}
+              className={channel === "beta" ? "primary-button" : "secondary-button"}
               disabled={busy}
-              onClick={() => void handleChannelChange("dev")}
+              onClick={() => void handleChannelChange("beta")}
             >
               {t("settingsUpdatesChannelDev")}
             </button>

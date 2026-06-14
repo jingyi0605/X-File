@@ -120,18 +120,18 @@ X-File 用 Tauri 2 打包为 macOS（universal `.app` / `.dmg`）和 Windows（N
 版本号统一来自根目录 `VERSION` 文件（semver）。改版本后执行：
 
 ```bash
-# 改 VERSION（例如 0.2.0 或 0.2.0-dev.1），再同步
+# 改 VERSION（例如 0.2.0 或 0.2.0-beta.1），再同步
 pnpm version:sync   # 同步到 package.json / tauri.conf.json / Cargo.toml / Cargo.lock
 ```
 
 ### 发布流程
 
 1. 改 `VERSION`，跑 `pnpm version:sync`，提交。
-2. 打 tag：`git tag v<VERSION>`（如 `v0.2.0` 或 `v0.2.0-dev.1`），推送。
+2. 打 tag：`git tag v<VERSION>`（如 `v0.2.0` 或 `v0.2.0-beta.1`），推送。
 3. `desktop-release.yml` 自动触发：macOS universal 签名公证 + Windows 打包 + 生成 `latest.json` + 上传到 GitHub Release。
 4. 通道由版本号决定：
    - **stable**（`VERSION` 不含 `-`，如 `0.2.0`）：产物上传到版本 tag release，GitHub `releases/latest` 自动指向。客户端 stable 通道查 `releases/latest/download/latest.json`。
-   - **dev**（`VERSION` 含 `-`，如 `0.2.0-dev.1`）：版本 tag release 标记为 prerelease，同时维护滚动 release `dev-latest`（含 `latest.json` 指针）。客户端 dev 通道查 `releases/download/dev-latest/latest.json`。
+   - **beta**（`VERSION` 含 `-`，如 `0.2.0-beta.1`）：版本 tag release 标记为 prerelease，同时维护滚动 release `beta-latest`（含 `latest.json` 指针）。客户端 beta 通道查 `releases/download/beta-latest/latest.json`。
 
 ### 必需的 secrets
 

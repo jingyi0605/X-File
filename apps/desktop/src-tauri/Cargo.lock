@@ -4950,7 +4950,7 @@ dependencies = [
 
 [[package]]
 name = "x-file-desktop"
-version = "0.1.0-dev.10"
+version = "0.1.0-beta.1"
 dependencies = [
  "chrono",
  "objc2",

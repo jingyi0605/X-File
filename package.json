@@ -1,6 +1,6 @@
 {
   "name": "x-file",
-  "version": "0.1.0-dev.10",
+  "version": "0.1.0-beta.1",
   "private": true,
   "description": "X-File 文档库独立应用骨架",
   "type": "module",

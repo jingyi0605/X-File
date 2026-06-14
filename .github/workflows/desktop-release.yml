@@ -1,9 +1,9 @@
 name: desktop-build-and-release
 
 # X-File 桌面打包 + 发布 CI。
-# 参考 CodingNS .github/workflows/desktop-release.yml（去掉 Android，工具链对齐 X-File，新增 dev 通道）。
-# 触发：push tag v*（如 v0.1.0 / v0.1.0-dev.1）或手动 workflow_dispatch。
-# 通道由 VERSION 文件的 semver prerelease 后缀决定：含 -（如 -dev.1）→ dev 通道；不含 → stable 通道。
+# 参考 CodingNS .github/workflows/desktop-release.yml（去掉 Android，工具链对齐 X-File，新增 beta 通道）。
+# 触发：push tag v*（如 v0.1.0 / v0.1.0-beta.1）或手动 workflow_dispatch。
+# 通道由 VERSION 文件的 semver prerelease 后缀决定：含 -（如 -dev.1）→ beta 通道；不含 → stable 通道。
 
 on:
   workflow_dispatch:
@@ -412,10 +412,10 @@ jobs:
 
           gh release upload "${tag_name}" "${files[@]}" --repo "${GH_REPO}" --clobber
 
-      - name: 维护 dev 通道滚动 release（dev-latest）
-        # dev 版时：维护 dev-latest 滚动 release，上传 latest.json 作为指针。
-        # dev 通道客户端查 releases/download/dev-latest/latest.json，其中的 url 指向版本 tag 的安装包。
-        # stable 版时：GitHub releases/latest 自动指向最新正式版，无需维护 dev-latest。
+      - name: 维护 beta 通道滚动 release（beta-latest）
+        # beta 版时：维护 beta-latest 滚动 release，上传 latest.json 作为指针。
+        # beta 通道客户端查 releases/download/beta-latest/latest.json，其中的 url 指向版本 tag 的安装包。
+        # stable 版时：GitHub releases/latest 自动指向最新正式版，无需维护 beta-latest。
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
@@ -425,17 +425,17 @@ jobs:
           version="$(tr -d '[:space:]' < VERSION)"
 
           if [[ "$version" != *-* ]]; then
-            echo "稳定版 ${version}：GitHub releases/latest 自动指向，无需维护 dev-latest。"
+            echo "稳定版 ${version}：GitHub releases/latest 自动指向，无需维护 beta-latest。"
             exit 0
           fi
 
-          echo "开发版 ${version}：维护 dev-latest 滚动 release。"
-          gh release delete dev-latest --yes --cleanup-tag --repo "${GH_REPO}" || true
-          gh release create dev-latest \
+          echo "开发版 ${version}：维护 beta-latest 滚动 release。"
+          gh release delete beta-latest --yes --cleanup-tag --repo "${GH_REPO}" || true
+          gh release create beta-latest \
             --target "$GITHUB_SHA" \
             --prerelease \
             --title "开发版（最新）" \
             --notes "X-File 最新开发版自动更新清单指针。安装包在对应版本 tag 的 release 下。" \
             --repo "${GH_REPO}"
-          gh release upload dev-latest release-assets/latest.json --repo "${GH_REPO}" --clobber
-          echo "dev-latest 已更新，dev 通道客户端将查到版本 ${version}。"
+          gh release upload beta-latest release-assets/latest.json --repo "${GH_REPO}" --clobber
+          echo "beta-latest 已更新，beta 通道客户端将查到版本 ${version}。"

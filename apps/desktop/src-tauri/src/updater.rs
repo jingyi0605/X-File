@@ -1,5 +1,5 @@
 // X-File 桌面更新模块。
-// 能力：检查 / 下载 / 安装更新，支持 stable 与 dev 双通道。
+// 能力：检查 / 下载 / 安装更新，支持 stable 与 beta 双通道。
 // 参考 CodingNS apps/desktop/src-tauri/src/updater.rs：
 //   - 去掉窗口 chrome metrics（X-File 自有 macOS 侧栏实现，前端不依赖 updater 提供 chrome 信息）；
 //   - 把 resolve_updater_endpoint 真正实现为双通道分叉（父项目此处 `let _ = channel;` 丢弃了通道参数）；
@@ -18,8 +18,8 @@ const GITHUB_RELEASES_OWNER: &str = "jingyi0605";
 const GITHUB_RELEASES_REPO: &str = "X-File";
 const STABLE_UPDATER_MANIFEST_URL: &str =
   "https://github.com/jingyi0605/X-File/releases/latest/download/latest.json";
-const DEV_UPDATER_MANIFEST_URL: &str =
-  "https://github.com/jingyi0605/X-File/releases/download/dev-latest/latest.json";
+const BETA_UPDATER_MANIFEST_URL: &str =
+  "https://github.com/jingyi0605/X-File/releases/download/beta-latest/latest.json";
 const DEFAULT_CHANNEL: &str = "stable";
 const CHANNEL_FILE_NAME: &str = "release-channel.json";
 
@@ -314,10 +314,10 @@ fn build_updater(
 
 /// 双通道 endpoint 分叉。这是 X-File 相对父项目的核心增强：
 /// 父项目此处 `let _ = channel;` 永远返回 stable URL，只有单通道；
-/// X-File 按 channel 选 stable（GitHub 原生 latest）或 dev（dev-latest 滚动 tag）。
+/// X-File 按 channel 选 stable（GitHub 原生 latest）或 beta（beta-latest 滚动 tag）。
 fn resolve_updater_endpoint(channel: &str) -> String {
   match channel {
-    "dev" => DEV_UPDATER_MANIFEST_URL.to_string(),
+    "beta" => BETA_UPDATER_MANIFEST_URL.to_string(),
     _ => STABLE_UPDATER_MANIFEST_URL.to_string(),
   }
 }
@@ -419,7 +419,8 @@ fn resolve_channel_file(app: &AppHandle) -> Option<PathBuf> {
 
 fn normalize_channel(channel: &str) -> String {
   match channel {
-    "dev" => "dev".to_string(),
+    // 兼容历史 dev 值，统一归入 beta 通道。
+    "beta" | "dev" => "beta".to_string(),
     _ => "stable".to_string(),
   }
 }

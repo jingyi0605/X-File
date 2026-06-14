@@ -549,7 +549,7 @@ export const zhCN = {
   settingsUpdatesChannelDescription:
     "选择接收更新的通道。稳定版经过完整验证；开发版获取最新功能但可能不稳定。",
   settingsUpdatesChannelStable: "稳定版",
-  settingsUpdatesChannelDev: "开发版",
+  settingsUpdatesChannelDev: "Beta 版",
   settingsUpdatesStatusTitle: "版本状态",
   settingsUpdatesCurrentVersion: "当前版本",
   settingsUpdatesLatestVersion: "最新版本",
@@ -1206,7 +1206,7 @@ export const enUS = {
   settingsUpdatesChannelDescription:
     "Choose which channel to receive updates from. Stable is fully validated; Dev gets the newest features but may be less stable.",
   settingsUpdatesChannelStable: "Stable",
-  settingsUpdatesChannelDev: "Dev (beta)",
+  settingsUpdatesChannelDev: "Beta",
   settingsUpdatesStatusTitle: "Version status",
   settingsUpdatesCurrentVersion: "Current version",
   settingsUpdatesLatestVersion: "Latest version",
