@@ -114,19 +114,34 @@ function resolveInstalledNodeBin(baseDir) {
 }
 
 function deployServer(nodeBin) {
-  rmSync(serverResourceDir, { recursive: true, force: true });
   mkdirSync(dirname(serverResourceDir), { recursive: true });
 
   // pnpm deploy 使用 hoisted node_modules，避免 Tauri 复制资源时丢掉 pnpm 顶层 symlink。
-  run("pnpm", ["--filter", "@x-file/server", "--prod", "deploy", serverResourceDir], {
-    env: {
-      npm_execpath: process.env.npm_execpath ?? "",
-      npm_node_execpath: nodeBin,
-      NODE: nodeBin,
-      npm_config_node_linker: "hoisted",
-      npm_config_node_gyp: process.env.npm_config_node_gyp ?? ""
+  // Windows 上创建 node_modules/.bin/*.CMD 偶发 EPERM（Defender 实时扫描占用句柄），清理后重试。
+  const deployEnv = {
+    npm_execpath: process.env.npm_execpath ?? "",
+    npm_node_execpath: nodeBin,
+    NODE: nodeBin,
+    npm_config_node_linker: "hoisted",
+    npm_config_node_gyp: process.env.npm_config_node_gyp ?? ""
+  };
+  let lastError;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    rmSync(serverResourceDir, { recursive: true, force: true });
+    try {
+      run("pnpm", ["--filter", "@x-file/server", "--prod", "deploy", serverResourceDir], {
+        env: deployEnv
+      });
+      lastError = null;
+      break;
+    } catch (error) {
+      lastError = error;
+      console.error(`[x-file bundle] pnpm deploy 第 ${attempt} 次失败：${String(error.message || error)}`);
     }
-  });
+  }
+  if (lastError) {
+    throw lastError;
+  }
 
   const entry = join(serverResourceDir, "dist", "main.js");
   if (!existsSync(entry)) {
