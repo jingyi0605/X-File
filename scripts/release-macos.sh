@@ -46,16 +46,20 @@ resolve_notarytool_args() {
 }
 
 # 定位 build 阶段产出的 .app（优先 universal target，回退默认 target）。
+# 注意：不能用 ls *.app（ls 会列出 .app 目录的内容而非路径本身），用 glob for 循环取完整路径。
 find_built_macos_app() {
   local candidates=(
     "$TAURI_DIR/target/${MACOS_TARGET}/release/bundle/macos"
     "$TAURI_DIR/target/release/bundle/macos"
   )
   for dir in "${candidates[@]}"; do
-    if compgen -G "$dir/*.app" > /dev/null; then
-      ls -1 "$dir"/*.app | head -n 1
-      return 0
-    fi
+    local app
+    for app in "$dir"/*.app; do
+      if [[ -e "$app" ]]; then
+        echo "$app"
+        return 0
+      fi
+    done
   done
   log_error "找不到 build 阶段产出的 .app（target=${MACOS_TARGET}）。请先跑 build-macos.sh。"
   return 1
