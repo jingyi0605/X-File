@@ -16,9 +16,9 @@ import { OnlyOfficeSettingsStore } from "../storage/onlyoffice-settings-store.js
 import { TaskManager } from "../tasks/task-manager.js";
 import { OnlyOfficeService } from "./onlyoffice-service.js";
 
-test("ONLYOFFICE 预览覆盖 doc/xls/ppt 和 openxml 格式", () => {
+test("ONLYOFFICE 预览只覆盖 openxml 格式", () => {
   const { service, rootDir } = createOnlyOfficeFixture();
-  for (const fileName of ["a.doc", "b.docx", "c.xls", "d.xlsx", "e.ppt", "f.pptx"]) {
+  for (const fileName of ["b.docx", "d.xlsx", "f.pptx"]) {
     fs.writeFileSync(path.join(rootDir, fileName), "office", "utf8");
     const preview = service.buildLibraryPreview({
       filePath: fileName,
@@ -30,10 +30,10 @@ test("ONLYOFFICE 预览覆盖 doc/xls/ppt 和 openxml 格式", () => {
     };
 
     assert.equal(editorConfig.document.fileType, path.extname(fileName).slice(1));
-    assert.equal(preview.documentUrl.includes(`/preview/library-files/`), true);
-    if (fileName.endsWith(".xls") || fileName.endsWith(".xlsx")) {
+    assert.equal(preview.documentUrl.includes(`/api/library/preview-file/`), true);
+    if (fileName.endsWith(".xlsx")) {
       assert.equal(editorConfig.documentType, "cell");
-    } else if (fileName.endsWith(".ppt") || fileName.endsWith(".pptx")) {
+    } else if (fileName.endsWith(".pptx")) {
       assert.equal(editorConfig.documentType, "slide");
     } else {
       assert.equal(editorConfig.documentType, "word");
@@ -63,6 +63,69 @@ test("ONLYOFFICE 回调保存成功后提交后台刷新", async () => {
     assert.deepEqual(status.dirtyReasons, ["onlyoffice_callback"]);
   } finally {
     await downloadServer.close();
+  }
+});
+
+test("ONLYOFFICE 预览链接可以命中受控文件路由并返回真实文件流", async () => {
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "x-file-onlyoffice-preview-home-"));
+  const previousHome = process.env.HOME;
+  process.env.HOME = tempHome;
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "x-file-onlyoffice-preview-library-"));
+  const relativePath = "04-日常办公/化工行业AI培训/化工企业AIAgent交流-IT运维场景.pptx";
+  const absoluteDir = path.join(rootDir, path.dirname(relativePath));
+  fs.mkdirSync(absoluteDir, { recursive: true });
+  const expected = Buffer.from("PK-test-openxml-preview");
+  fs.writeFileSync(path.join(rootDir, relativePath), expected);
+
+  const settingsStore = new OnlyOfficeSettingsStore({ dataDir: path.join(tempHome, ".x-file") });
+  settingsStore.write({
+    enabled: true,
+    serverUrl: "http://onlyoffice.local",
+    publicBaseUrl: "http://127.0.0.1:17321",
+    callbackBaseUrl: "http://127.0.0.1:17321",
+    userDisplayName: null,
+    userAvatarUrl: null,
+    jwtSecret: null,
+    createdAt: "2026-06-08T00:00:00.000Z",
+    updatedAt: "2026-06-08T00:00:00.000Z"
+  });
+
+  try {
+    const { createServer } = await import("../app.js");
+    const app = createServer({ httpServerRuntimeState: { running: false } });
+    const binding = await app.inject({
+      method: "PUT",
+      url: "/api/library/binding",
+      payload: { rootDir, completeInitialization: true }
+    });
+    assert.equal(binding.statusCode, 200);
+
+    const previewResponse = await app.inject({
+      method: "GET",
+      url: `/api/library/preview?path=${encodeURIComponent(relativePath)}`
+    });
+    assert.equal(previewResponse.statusCode, 200);
+    const preview = previewResponse.json();
+    assert.equal(preview.onlyOffice?.documentUrl.includes("/api/library/preview-file/"), true);
+
+    const previewPath = new URL(preview.onlyOffice.documentUrl).pathname;
+    const fileResponse = await app.inject({
+      method: "GET",
+      url: previewPath
+    });
+    assert.equal(fileResponse.statusCode, 200);
+    assert.equal(
+      fileResponse.headers["content-type"],
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    );
+    assert.deepEqual(Buffer.from(fileResponse.rawPayload), expected);
+    await app.close();
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHome;
+    }
   }
 });
 

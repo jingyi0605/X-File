@@ -268,13 +268,15 @@ export class OnlyOfficeService {
     version: string | null;
     editable?: boolean;
     displayMode?: OnlyOfficeDisplayMode;
+    previewPath?: string;
   }): LibraryOnlyOfficePreview {
     const setting = this.requireEnabledSetting();
-    const fileLink = this.libraryPreviewLinkService.createOnlyOfficeLink(input.filePath);
     const binding = this.libraryService.getBinding();
     if (!binding) {
       throw new LibraryError(400, "LIBRARY_NOT_BOUND", "请先绑定文档库根目录");
     }
+    const previewPath = input.previewPath ?? this.libraryPreviewLinkService.createOnlyOfficeLink(input.filePath).apiPreviewPath;
+    const documentUrl = new URL(previewPath, ensureTrailingSlash(setting.publicBaseUrl!)).toString();
     return this.buildPreviewPayload({
       setting,
       libraryId: binding.libraryId,
@@ -284,7 +286,7 @@ export class OnlyOfficeService {
       version: input.version,
       editable: input.editable ?? true,
       displayMode: input.displayMode ?? "default",
-      documentUrl: new URL(fileLink.previewPath, ensureTrailingSlash(setting.publicBaseUrl!)).toString()
+      documentUrl
     });
   }
 
@@ -462,7 +464,7 @@ function buildOnlyOfficeConfigData(input: {
   const title = path.basename(input.filePath);
   const key = crypto
     .createHash("sha256")
-    .update(`${input.filePath}:${input.version ?? "unknown"}`)
+    .update(`x-file:${input.filePath}:${input.version ?? "unknown"}`)
     .digest("hex")
     .slice(0, 48);
 
@@ -540,13 +542,10 @@ function buildOnlyOfficeEditorConfig(
 
 function resolveOnlyOfficeDocumentType(fileType: string): "word" | "cell" | "slide" {
   switch (fileType) {
-    case "xls":
     case "xlsx":
       return "cell";
-    case "ppt":
     case "pptx":
       return "slide";
-    case "doc":
     case "docx":
     default:
       return "word";

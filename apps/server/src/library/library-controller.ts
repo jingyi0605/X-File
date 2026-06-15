@@ -80,11 +80,13 @@ export class LibraryController {
     }
 
     if (preview.supported && preview.kind === "office") {
+      const previewLink = this.previewLinkService.createOnlyOfficeLink(filePath);
       preview.onlyOffice = this.onlyOfficeService.buildLibraryPreview({
         filePath,
         version: preview.version,
         editable: true,
-        displayMode: normalizeOnlyOfficeDisplayMode(request.query.displayMode)
+        displayMode: normalizeOnlyOfficeDisplayMode(request.query.displayMode),
+        previewPath: previewLink.apiPreviewPath
       });
       preview.previewUrl = preview.onlyOffice.documentUrl;
     }
@@ -129,9 +131,10 @@ export class LibraryController {
         decodeURIComponent(request.params.token),
         decodeRelativePath(request.params["*"])
       );
-      reply.header("content-type", file.contentType);
-      reply.header("cache-control", "private, max-age=60");
-      reply.send(fs.createReadStream(file.absolutePath));
+      reply.header("Cache-Control", "no-store");
+      reply.header("X-Content-Type-Options", "nosniff");
+      reply.type(file.contentType);
+      reply.send(fs.readFileSync(file.absolutePath));
     } catch (error) {
       const response = toLibraryErrorResponse(error);
       reply.code(response.statusCode).send(response.body);

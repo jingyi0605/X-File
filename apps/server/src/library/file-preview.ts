@@ -22,7 +22,7 @@ const IMAGE_FILE_EXTENSIONS = new Set([
   ".ico"
 ]);
 const PDF_FILE_EXTENSIONS = new Set([".pdf"]);
-const OFFICE_FILE_EXTENSIONS = new Set([".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"]);
+const OFFICE_FILE_EXTENSIONS = new Set([".docx", ".xlsx", ".pptx"]);
 
 export const RESOURCE_PREVIEW_KINDS = new Set<LibraryPreviewKind>(["html", "image", "pdf", "office"]);
 
@@ -44,11 +44,8 @@ export const PREVIEW_CONTENT_TYPES = new Map<string, string>([
   [".ico", "image/x-icon"],
   [".bmp", "image/bmp"],
   [".pdf", "application/pdf"],
-  [".doc", "application/msword"],
   [".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
-  [".xls", "application/vnd.ms-excel"],
   [".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
-  [".ppt", "application/vnd.ms-powerpoint"],
   [".pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"],
   [".txt", "text/plain; charset=utf-8"],
   [".wasm", "application/wasm"],

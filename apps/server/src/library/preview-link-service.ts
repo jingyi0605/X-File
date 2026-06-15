@@ -9,11 +9,11 @@ const LIBRARY_PREVIEW_TOKEN_TTL_MS = 2 * 60 * 60 * 1000;
 interface LibraryPreviewTokenPayload {
   libraryId: string;
   expiresAt: number;
-  previewPath?: string;
 }
 
 export interface LibraryPreviewLinkResult {
   previewPath: string;
+  apiPreviewPath: string;
   previewUrl: string;
   expiresAt: string;
 }
@@ -77,7 +77,7 @@ export class LibraryPreviewLinkService {
     });
     const contentType = resolvePreviewContentType(resolved.relativePath);
 
-    if (resolved.binding.libraryId !== payload.libraryId || resolved.relativePath !== payload.previewPath) {
+    if (resolved.binding.libraryId !== payload.libraryId) {
       throw buildInvalidPreviewTokenError();
     }
 
@@ -102,12 +102,12 @@ export class LibraryPreviewLinkService {
     const expiresAt = Date.now() + LIBRARY_PREVIEW_TOKEN_TTL_MS;
     const token = this.createToken({
       libraryId,
-      expiresAt,
-      previewPath: relativePath
+      expiresAt
     });
 
     return {
       previewPath: buildLibraryPublicPreviewPath(token, relativePath),
+      apiPreviewPath: buildLibraryApiPreviewPath(token, relativePath),
       previewUrl: "",
       expiresAt: new Date(expiresAt).toISOString()
     };
@@ -138,7 +138,7 @@ export class LibraryPreviewLinkService {
       throw buildInvalidPreviewTokenError();
     }
 
-    if (!payload.libraryId || typeof payload.expiresAt !== "number" || !payload.previewPath) {
+    if (!payload.libraryId || typeof payload.expiresAt !== "number") {
       throw buildInvalidPreviewTokenError();
     }
 
@@ -159,6 +159,10 @@ export class LibraryPreviewLinkService {
 
 export function buildLibraryPublicPreviewPath(token: string, relativePath: string): string {
   return `/preview/library-files/${encodeURIComponent(token)}/${encodeRelativePath(relativePath)}`;
+}
+
+export function buildLibraryApiPreviewPath(token: string, relativePath: string): string {
+  return `/api/library/preview-file/${encodeURIComponent(token)}/${encodeRelativePath(relativePath)}`;
 }
 
 function encodeRelativePath(relativePath: string): string {
