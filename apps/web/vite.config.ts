@@ -23,6 +23,10 @@ export default defineConfig(({ mode }) => {
         "/api": {
           target: `http://${toProxyTargetHost(serverHost)}:${serverPort}`,
           changeOrigin: true
+        },
+        "/preview": {
+          target: `http://${toProxyTargetHost(serverHost)}:${serverPort}`,
+          changeOrigin: true
         }
       }
     }

@@ -64,6 +64,12 @@ interface ServerFormState {
   port: string;
 }
 
+interface PublicBaseUrlOptions {
+  currentValue: string | null;
+  existingValue: string;
+  serverState: HttpServerState | null;
+}
+
 type SettingsTabId = "appearance" | "library" | "integration" | "network" | "updates";
 
 const LIBRARY_PRESET_EXTENSIONS = [
@@ -308,7 +314,11 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
     setOnlyOfficeForm({
       enabled: settings.enabled,
       serverUrl: settings.serverUrl ?? "",
-      publicBaseUrl: settings.publicBaseUrl ?? "",
+      publicBaseUrl: resolveSuggestedPublicBaseUrl({
+        currentValue: settings.publicBaseUrl,
+        existingValue: onlyOfficeForm.publicBaseUrl,
+        serverState
+      }),
       callbackBaseUrl: settings.callbackBaseUrl ?? "",
       userDisplayName: settings.userDisplayName ?? "",
       userAvatarUrl: settings.userAvatarUrl ?? "",
@@ -324,6 +334,14 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
       persistent: state.persistent,
       port: String(state.port)
     });
+    setOnlyOfficeForm((current) => ({
+      ...current,
+      publicBaseUrl: resolveSuggestedPublicBaseUrl({
+        currentValue: current.publicBaseUrl,
+        existingValue: current.publicBaseUrl,
+        serverState: state
+      })
+    }));
   }
 
   async function loadHostDirectory(targetPath?: string | null): Promise<void> {
@@ -708,6 +726,45 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
       />
     </>
   );
+}
+
+function resolveSuggestedPublicBaseUrl(input: PublicBaseUrlOptions): string {
+  const normalizedCurrent = input.currentValue?.trim() ?? "";
+  if (normalizedCurrent && !looksLikeDevWebAddress(normalizedCurrent)) {
+    return normalizedCurrent;
+  }
+
+  const runtimeBaseUrl = buildRuntimePublicBaseUrl(input.serverState);
+  if (runtimeBaseUrl) {
+    return runtimeBaseUrl;
+  }
+
+  return input.existingValue;
+}
+
+function buildRuntimePublicBaseUrl(serverState: HttpServerState | null): string {
+  if (!serverState) {
+    return "";
+  }
+
+  if (typeof window !== "undefined" && /^https?:$/i.test(window.location.protocol)) {
+    return window.location.origin;
+  }
+
+  return `http://127.0.0.1:${serverState.port}`;
+}
+
+function looksLikeDevWebAddress(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === "http:"
+      && (url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "10.255.0.83")
+      && url.port === "17320"
+    );
+  } catch {
+    return false;
+  }
 }
 
 function TextInput({
