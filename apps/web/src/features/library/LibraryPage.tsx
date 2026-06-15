@@ -184,6 +184,9 @@ interface LibraryTagAssignmentTaskState {
   readonly targetPath: string;
   readonly status: "running" | "completed" | "failed";
   readonly message: string | null;
+  readonly totalCount: number;
+  readonly successCount: number;
+  readonly failedCount: number;
 }
 
 interface IndexStatusPopoverRow {
@@ -586,15 +589,6 @@ export function LibraryPage({
           onReset={panels.resetSize}
         />
         <section className="affairs-main-panel">
-          {tagAssignmentTask ? (
-            <LibraryTagTaskEntry
-              task={tagAssignmentTask}
-              expanded={tagAssignmentTaskExpanded}
-              onToggle={() =>
-                setTagAssignmentTaskExpanded((current) => !current)
-              }
-            />
-          ) : null}
           {library.error ? (
             <div className="affairs-library-error-strip">
               <strong>{t("libraryErrorTitle")}</strong>
@@ -617,6 +611,11 @@ export function LibraryPage({
             }
             onOpenSearch={() => setSearchOpen(true)}
             onOpenLibraryViewer={openLibraryViewer}
+            tagAssignmentTask={tagAssignmentTask}
+            tagAssignmentTaskExpanded={tagAssignmentTaskExpanded}
+            onToggleTagAssignmentTask={() =>
+              setTagAssignmentTaskExpanded((current) => !current)
+            }
           />
         </section>
         <WorkbenchPanelResizer
@@ -814,28 +813,39 @@ function LibraryTagTaskEntry({
         onClick={onToggle}
       >
         <span className={`library-tag-task-dot state-${statusDotState}`} aria-hidden="true" />
-        <span className="library-tag-task-text">{t("libraryTagTaskTriggerTitle")}</span>
         <span className="library-tag-task-badge">{statusText}</span>
       </button>
       {expanded ? (
         <div
-          className="library-tag-task-popover"
+          className="library-tag-task-popover library-index-status-popover-card"
           role="status"
           aria-label={t("libraryTagTaskRecentLabel")}
         >
-          <div className="library-tag-task-popover-header">
+          <div className="library-tag-task-popover-header library-index-status-popover-header">
             <strong>{t("libraryTagTaskPopoverTitle")}</strong>
           </div>
-          <div className="library-tag-task-popover-grid">
-            <div className="library-tag-task-popover-row">
-              <span className="library-tag-task-popover-label">
+          <div className="library-tag-task-popover-grid library-index-status-popover-grid">
+            <div className="library-tag-task-popover-row library-index-status-popover-row">
+              <span className="library-tag-task-popover-label library-index-status-popover-label">
                 {task.kind === "folder" ? t("libraryTagTaskFolderLabel") : t("libraryTagTaskDocumentLabel")}
               </span>
-              <span className="library-tag-task-popover-value">{task.targetPath}</span>
+              <span className="library-tag-task-popover-value library-index-status-popover-value" data-multiline="true">{task.targetPath}</span>
             </div>
-            <div className="library-tag-task-popover-row">
-              <span className="library-tag-task-popover-label">{t("libraryTagTaskStatusLabel")}</span>
-              <span className="library-tag-task-popover-value">{statusText}</span>
+            <div className="library-tag-task-popover-row library-index-status-popover-row">
+              <span className="library-tag-task-popover-label library-index-status-popover-label">{t("libraryTagTaskStatusLabel")}</span>
+              <span className="library-tag-task-popover-value library-index-status-popover-value">{statusText}</span>
+            </div>
+            <div className="library-tag-task-popover-row library-index-status-popover-row">
+              <span className="library-tag-task-popover-label library-index-status-popover-label">{t("libraryTagTaskTotalLabel")}</span>
+              <span className="library-tag-task-popover-value library-index-status-popover-value">{task.totalCount}</span>
+            </div>
+            <div className="library-tag-task-popover-row library-index-status-popover-row">
+              <span className="library-tag-task-popover-label library-index-status-popover-label">{t("libraryTagTaskSuccessLabel")}</span>
+              <span className="library-tag-task-popover-value library-index-status-popover-value">{task.successCount}</span>
+            </div>
+            <div className="library-tag-task-popover-row library-index-status-popover-row">
+              <span className="library-tag-task-popover-label library-index-status-popover-label">{t("libraryTagTaskFailedLabel")}</span>
+              <span className="library-tag-task-popover-value library-index-status-popover-value">{task.failedCount}</span>
             </div>
           </div>
           {task.status === "running" ? (
@@ -865,6 +875,46 @@ function resolveLibraryTagTaskStatusText(
   if (status === "completed") return t("libraryTagTaskCompleted");
   if (status === "failed") return t("libraryTagTaskFailed");
   return t("libraryTagTaskRunning");
+}
+
+function resolveTagAssignmentTaskTotalCount(
+  target: PendingTagAssignmentTarget,
+  library: LibraryState,
+): number {
+  if (target.kind === "document") {
+    return 1;
+  }
+  return resolvePositiveInteger(
+    library.entries.find((entry): entry is LibraryDirectoryEntry =>
+      entry.kind !== "document" && entry.path === target.folderPath,
+    )?.documentCount,
+  )
+    ?? resolvePositiveInteger(
+      resolveDocumentCount(library.snapshot?.folders.find((folder) => folder.path === target.folderPath)),
+    )
+    ?? 1;
+}
+
+function resolveTagAssignmentResultCount(
+  target: PendingTagAssignmentTarget,
+  fallbackCount: number,
+): number {
+  if (target.kind === "document") {
+    return 1;
+  }
+  return fallbackCount;
+}
+
+function resolvePositiveInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.trunc(value)
+    : null;
+}
+
+function resolveDocumentCount(value: unknown): unknown {
+  return typeof value === "object" && value !== null && "documentCount" in value
+    ? value.documentCount
+    : null;
 }
 
 function LibraryDesktopSidebar({
@@ -1697,6 +1747,9 @@ function LibraryStage({
   onRequestTagAssignment: _onRequestTagAssignment,
   onOpenSearch,
   onOpenLibraryViewer,
+  tagAssignmentTask,
+  tagAssignmentTaskExpanded,
+  onToggleTagAssignmentTask,
 }: {
   library: LibraryState;
   onOpenSettings: () => void;
@@ -1710,6 +1763,9 @@ function LibraryStage({
   onRequestTagAssignment: (target: LibraryContextMenuTarget) => void;
   onOpenSearch: () => void;
   onOpenLibraryViewer: (entry: LibraryDocumentEntry) => void;
+  tagAssignmentTask: LibraryTagAssignmentTaskState | null;
+  tagAssignmentTaskExpanded: boolean;
+  onToggleTagAssignmentTask: () => void;
 }) {
   const directoryStatus = library.documentPage?.directoryStatus ?? null;
   const blankTarget: LibraryContextMenuTarget = {
@@ -1724,6 +1780,9 @@ function LibraryStage({
         directoryStatus={directoryStatus}
         onRequestCreate={onRequestCreate}
         onOpenSearch={onOpenSearch}
+        tagAssignmentTask={tagAssignmentTask}
+        tagAssignmentTaskExpanded={tagAssignmentTaskExpanded}
+        onToggleTagAssignmentTask={onToggleTagAssignmentTask}
       />
       <div
         className="affairs-stage-content"
@@ -1775,6 +1834,9 @@ function LibraryStageToolbar({
   directoryStatus: _directoryStatus,
   onRequestCreate,
   onOpenSearch,
+  tagAssignmentTask,
+  tagAssignmentTaskExpanded,
+  onToggleTagAssignmentTask,
 }: {
   library: LibraryState;
   directoryStatus: {
@@ -1784,6 +1846,9 @@ function LibraryStageToolbar({
   } | null;
   onRequestCreate: (state: PendingCreateState) => void;
   onOpenSearch: () => void;
+  tagAssignmentTask: LibraryTagAssignmentTaskState | null;
+  tagAssignmentTaskExpanded: boolean;
+  onToggleTagAssignmentTask: () => void;
 }) {
   const sortOptions: Array<{ value: LibrarySortMode; label: string }> = [
     { value: "recent", label: t("librarySortRecent") },
@@ -1894,6 +1959,13 @@ function LibraryStageToolbar({
         >
           {renderRefreshIcon()}
         </button>
+        {tagAssignmentTask ? (
+          <LibraryTagTaskEntry
+            task={tagAssignmentTask}
+            expanded={tagAssignmentTaskExpanded}
+            onToggle={onToggleTagAssignmentTask}
+          />
+        ) : null}
         <LibraryIndexStatusPopover
           status={library.snapshot?.status ?? null}
           documentCount={library.snapshot?.documentCount ?? 0}
@@ -3145,7 +3217,10 @@ function LibraryDetail({
             <div className="affairs-detail-tag-editor">
               <div className="affairs-detail-tag-editor-header">
                 <strong>{t("libraryMetaTags")}</strong>
-                <LibraryTagRecommendationSummary details={selected} />
+                <LibraryTagRecommendationSummary
+                  documentId={selected.documentId}
+                  refreshKey={[...selected.tags, ...selected.derivedTags].join("|")}
+                />
               </div>
               <LibraryInlineDocumentTagEditor
                 library={library}
@@ -4174,6 +4249,9 @@ function LibraryTagAssignmentModal({
       targetPath: target.kind === "document" ? target.path : target.folderPath,
       status: "running",
       message: null,
+      totalCount: resolveTagAssignmentTaskTotalCount(target, library),
+      successCount: 0,
+      failedCount: 0,
     };
     onTaskChange(task);
     try {
@@ -4188,11 +4266,27 @@ function LibraryTagAssignmentModal({
           createTagPaths,
         });
       setDetails(nextDetails);
-      onTaskChange({ ...task, status: "completed" });
+      const completedCount = resolveTagAssignmentResultCount(
+        target,
+        task.totalCount,
+      );
+      onTaskChange({
+        ...task,
+        status: "completed",
+        totalCount: completedCount,
+        successCount: completedCount,
+        failedCount: 0,
+      });
       await Promise.all([library.reload(), library.reloadDocuments(true)]);
     } catch (err) {
       const message = toApiErrorMessage(err);
-      onTaskChange({ ...task, status: "failed", message });
+      onTaskChange({
+        ...task,
+        status: "failed",
+        message,
+        successCount: 0,
+        failedCount: task.totalCount,
+      });
       throw err;
     }
   }
@@ -4283,12 +4377,12 @@ function LibraryQuickTagAssignmentEditor({
     [resolvedTagPaths, selectedTags],
   );
   const recommendedVisibleTags = useMemo(() => {
-    const assignableTagIdSet = new Set(assignableTags.map((tag) => tag.id));
+    const selectedTagPaths = new Set(visibleTagPaths);
     return (recommendedTags ?? [])
-      .filter((tag) => assignableTagIdSet.has(tag.tagId) && !selectedTagIds.has(tag.tagId))
+      .filter((tag) => !selectedTagIds.has(tag.tagId) && !selectedTagPaths.has(tag.path))
       .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path, "zh-Hans-CN"))
       .slice(0, 8);
-  }, [assignableTags, recommendedTags, selectedTagIds]);
+  }, [recommendedTags, selectedTagIds, visibleTagPaths]);
   const selectedTagByPath = useMemo(() => {
     const map = new Map<string, LibraryTagDetailWithRules>();
     selectedTags.forEach((tag) => map.set(tag.path, tag));
@@ -6549,14 +6643,36 @@ function TagPills({ items }: { items: string[] }) {
 }
 
 function LibraryTagRecommendationSummary({
-  details,
+  documentId,
+  refreshKey,
 }: {
-  details: Extract<LibraryEntry, { kind: "document" }>;
+  documentId: string;
+  refreshKey: string;
 }) {
-  const recommendCount = compactDocumentTagPaths(details.derivedTags).length;
+  const [recommendCount, setRecommendCount] = useState<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setRecommendCount(null);
+    void getDocumentTagDetails(documentId)
+      .then((details) => {
+        if (!cancelled) {
+          setRecommendCount(details.recommendedTags?.length ?? 0);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setRecommendCount(0);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [documentId, refreshKey]);
+
   return (
     <span className="affairs-binding-hint">
-      {recommendCount > 0
+      {recommendCount && recommendCount > 0
         ? t("libraryTagRecommendCount", { count: recommendCount })
         : t("libraryTagRecommend")}
     </span>
@@ -6892,6 +7008,16 @@ function buildIndexStatusPopoverModel(
       t("libraryDirectoryStatusLastFailedAtLabel"),
       directoryStatus.lastFailedAt,
     );
+    pushIndexStatusDetail(
+      directoryRows,
+      t("libraryDirectoryStatusGeneratedAtLabel"),
+      directoryStatus.generatedAt ?? null,
+    );
+    pushIndexStatusDetail(
+      directoryRows,
+      t("libraryDirectoryStatusFilesystemObservedAtLabel"),
+      directoryStatus.filesystemObservedAt ?? null,
+    );
     if (directoryStatus.runningTaskId?.trim()) {
       directoryRows.push({
         label: t("libraryDirectoryStatusRunningTaskIdLabel"),
@@ -6903,6 +7029,13 @@ function buildIndexStatusPopoverModel(
       directoryRows.push({
         label: t("libraryDirectoryStatusErrorSummaryLabel"),
         value: directoryStatus.errorSummary.trim(),
+        multiline: true,
+      });
+    }
+    if (directoryStatus.staleReason?.trim()) {
+      directoryRows.push({
+        label: t("libraryDirectoryStatusStaleReasonLabel"),
+        value: directoryStatus.staleReason.trim(),
         multiline: true,
       });
     }
@@ -7729,11 +7862,7 @@ function resolveAssignedTagIds(
 
 function isAssignableLibraryTag(tag: LibraryTagNode | LibraryTagDetailWithRules): boolean {
   const detail = tag as LibraryTagDetailWithRules;
-  if (detail.status && detail.status !== "active") {
-    return false;
-  }
-  const rootType = tag.rootType.trim().toLowerCase();
-  return rootType !== "类型" && rootType !== "type" && rootType !== "时间" && rootType !== "time";
+  return !detail.status || detail.status === "active";
 }
 
 function normalizeTagPathInput(value: string): string {

@@ -368,6 +368,7 @@ export class TagService {
           ...(storedBinding?.manualTagIds ?? []),
           ...effectiveFolderBindings.map((item) => item.tagId),
         ],
+        excludedTagPaths: catalogResolved.map((item) => item.path),
         modifiedAt: catalogContext?.modifiedAt,
       }),
     };
@@ -1053,16 +1054,7 @@ function stableTagRuleId(
 }
 
 function isBusinessTagDefinition(tag: StoredTagDefinition): boolean {
-  if (tag.status === "disabled") {
-    return false;
-  }
-  const rootType = tag.rootType.trim().toLowerCase();
-  return (
-    rootType !== "类型" &&
-    rootType !== "type" &&
-    rootType !== "时间" &&
-    rootType !== "time"
-  );
+  return tag.status !== "disabled";
 }
 
 function buildRecommendationTargetText(
@@ -1649,12 +1641,19 @@ function buildTagRecommendations(
     targetPath: string;
     title: string;
     excludedTagIds: string[];
+    excludedTagPaths?: string[];
     modifiedAt?: string;
   },
 ) {
   const excludedTagIds = new Set(input.excludedTagIds);
+  const excludedTagPaths = new Set(
+    (input.excludedTagPaths ?? []).map((tagPath) => tagPath.trim()).filter(Boolean),
+  );
   const definitions = data.tags.filter(
-    (tag) => isBusinessTagDefinition(tag) && !excludedTagIds.has(tag.id),
+    (tag) =>
+      isBusinessTagDefinition(tag) &&
+      !excludedTagIds.has(tag.id) &&
+      !excludedTagPaths.has(tag.path),
   );
   if (definitions.length === 0) {
     return [];
