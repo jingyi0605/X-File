@@ -5129,11 +5129,18 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
 /* 迁移 CodingNS 文件查看器：默认弹窗可拖拽边缘调整尺寸，右上角提供独立窗口按钮。 */
 .file-viewer-modal.library-file-viewer-modal {
   width: min(1120px, calc(100vw - 56px));
-  height: min(82vh, 820px);
   max-height: min(88vh, 920px);
-  min-height: min(72vh, 720px);
+  min-height: min(78vh, 760px);
   text-size-adjust: 100%;
   -webkit-text-size-adjust: 100%;
+}
+
+.file-viewer-modal.library-file-viewer-modal[data-size="full"] {
+  width: calc(100vw - 48px);
+  max-width: calc(100vw - 48px);
+  height: calc(100vh - 48px);
+  max-height: calc(100vh - 48px);
+  min-height: calc(100vh - 48px);
 }
 
 .file-viewer-modal.library-file-viewer-modal.is-resizable {
@@ -5174,6 +5181,71 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   overflow: hidden;
   overflow-y: hidden;
   padding: 0;
+}
+
+.file-viewer-header-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 0;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+}
+
+.file-viewer-header-action-buttons {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.file-viewer-header-controls > *,
+.file-viewer-header-action-buttons > *,
+.file-viewer-header-switch > *,
+.file-viewer-size-switch > * {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.file-viewer-header-switch,
+.file-viewer-size-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  width: fit-content;
+  padding: 2px;
+  border-radius: 8px;
+  border: 1px solid var(--modal-control-border);
+  background: color-mix(in srgb, var(--modal-control-surface) 90%, transparent);
+}
+
+.file-viewer-switch-button {
+  min-height: 26px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: none;
+}
+
+.file-viewer-switch-button[data-active="true"] {
+  background: var(--modal-pill-active-surface);
+  color: var(--modal-pill-active-color);
+}
+
+.file-viewer-switch-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.file-viewer-save-button {
+  min-width: 72px;
 }
 
 .file-viewer-detach-button svg {
@@ -6678,7 +6750,7 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   justify-content: center;
   overflow: auto;
   overflow-y: auto;
-  padding: 12px;
+  padding: 6px;
   border-radius: 14px;
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--bg-hover) 76%, transparent), transparent),
@@ -6691,7 +6763,7 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   min-height: 100%;
   align-items: center;
   justify-content: center;
-  padding: 8px;
+  padding: 6px;
 }
 
 .file-viewer-media-shell[data-mode="actual"] .file-viewer-image-stage,
@@ -7234,7 +7306,7 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
     display: contents;
   }
 
-  .workbench-modal-layer .workbench-modal-card.file-viewer-modal .file-viewer-tab,
+  .workbench-modal-layer .workbench-modal-card.file-viewer-modal .file-viewer-switch-button,
   .workbench-modal-layer .workbench-modal-card.file-viewer-modal .file-viewer-action-button,
   .workbench-modal-layer .workbench-modal-card.file-viewer-modal .primary-button {
     width: 100%;
@@ -7259,7 +7331,7 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
       opacity var(--transition-fast);
   }
 
-  .workbench-modal-layer .workbench-modal-card.file-viewer-modal .file-viewer-tab:hover:not(:disabled),
+  .workbench-modal-layer .workbench-modal-card.file-viewer-modal .file-viewer-switch-button:hover:not(:disabled),
   .workbench-modal-layer .workbench-modal-card.file-viewer-modal .file-viewer-action-button:hover:not(:disabled),
   .workbench-modal-layer .workbench-modal-card.file-viewer-modal .primary-button:hover:not(:disabled) {
     border-color: var(--app-button-border-hover);
@@ -7267,14 +7339,14 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
     color: var(--app-button-color);
   }
 
-  .workbench-modal-layer .workbench-modal-card.file-viewer-modal .file-viewer-tab[data-active="true"],
+  .workbench-modal-layer .workbench-modal-card.file-viewer-modal .file-viewer-switch-button[data-active="true"],
   .workbench-modal-layer .workbench-modal-card.file-viewer-modal .file-viewer-action-button[data-active="true"] {
     border-color: var(--app-button-border-hover);
     background: var(--modal-control-surface-active);
     color: var(--app-button-color);
   }
 
-  .workbench-modal-layer .workbench-modal-card.file-viewer-modal .file-viewer-tab:disabled,
+  .workbench-modal-layer .workbench-modal-card.file-viewer-modal .file-viewer-switch-button:disabled,
   .workbench-modal-layer .workbench-modal-card.file-viewer-modal .file-viewer-action-button:disabled,
   .workbench-modal-layer .workbench-modal-card.file-viewer-modal .primary-button:disabled {
     opacity: 0.55;
@@ -7293,7 +7365,7 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   }
 
 
-  .file-viewer-size-group {
+  .file-viewer-size-switch {
     display: none;
   }
 
@@ -20979,6 +21051,8 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
 .file-viewer-modal-body.library-file-viewer-body > .file-viewer-html-frame-shell,
 .file-viewer-modal-body.library-file-viewer-body > .file-viewer-media-shell,
 .file-viewer-modal-body.library-file-viewer-body > .file-viewer-pdf-shell,
+.file-viewer-modal-body.library-file-viewer-body > .file-viewer-office-shell,
+.file-viewer-modal-body.library-file-viewer-body > .library-file-viewer-office-shell,
 .file-viewer-modal-body.library-file-viewer-body > .library-file-viewer-fallback {
   min-width: 0;
   min-height: 0;
@@ -20998,8 +21072,41 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
 
 .file-viewer-modal-body.library-file-viewer-body > .file-viewer-html-frame-shell,
 .file-viewer-modal-body.library-file-viewer-body > .file-viewer-media-shell,
-.file-viewer-modal-body.library-file-viewer-body > .file-viewer-pdf-shell {
-  padding: 10px;
+.file-viewer-modal-body.library-file-viewer-body > .file-viewer-pdf-shell,
+.file-viewer-modal-body.library-file-viewer-body > .file-viewer-office-shell,
+.file-viewer-modal-body.library-file-viewer-body > .library-file-viewer-office-shell {
+  padding: 4px;
+}
+
+.file-viewer-modal.library-file-viewer-modal.is-office-viewer {
+  width: calc(100vw - 48px);
+  max-width: calc(100vw - 48px);
+  height: calc(100vh - 48px);
+  max-height: calc(100vh - 48px);
+  min-height: calc(100vh - 48px);
+  border-radius: 16px;
+}
+
+.file-viewer-modal.library-file-viewer-modal.is-office-viewer .desktop-modal-header {
+  padding: 14px 18px 12px;
+}
+
+.file-viewer-modal-body.library-file-viewer-body:has(> .file-viewer-office-shell) {
+  padding: 0;
+  background: color-mix(in srgb, var(--bg-primary) 96%, transparent);
+}
+
+.file-viewer-modal-body.library-file-viewer-body:has(> .file-viewer-office-shell) > .file-viewer-office-shell {
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.file-viewer-modal-body.library-file-viewer-body:has(> .file-viewer-office-shell) .file-viewer-office-stage {
+  min-height: 0;
+  height: 100%;
+  border-radius: 0;
+  box-shadow: none;
 }
 
 /* 迁移 CodingNS Markdown 基础美化，供文件查看器 Markdown 查看模式使用。 */

@@ -158,6 +158,97 @@ describe("第 1 批：文档预览、编辑写回、Office 阅读视图与目录
     });
   });
 
+  it("双击 Office 文档后使用铺满屏幕的查看器布局，并且不复用右侧栏的小预览壳层", async () => {
+    libraryApiMock.listLibraryDocuments.mockResolvedValue(
+      createDocumentList([createDocumentRecord({ documentId: "doc-office-full", path: "docs/报价单.docx" })]),
+    );
+    libraryApiMock.getLibraryPreview.mockResolvedValue(createPreview({
+      path: "docs/报价单.docx",
+      kind: "office",
+      content: null,
+      version: "office-v2",
+      onlyOffice: {
+        apiScriptUrl: "https://office.example/api.js",
+        editorMode: "view",
+        documentUrl: "https://office.example/reading",
+        callbackUrl: "https://office.example/callback",
+        editorConfig: {},
+      },
+    }));
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
+
+    fireEvent.doubleClick(await screen.findByRole("button", { name: /报价单\.docx/ }));
+
+    const dialog = await screen.findByRole("dialog", { name: "报价单.docx" });
+    const modalCard = dialog.closest(".desktop-modal-card");
+    expect(modalCard).not.toBeNull();
+    expect(modalCard?.getAttribute("data-size")).toBe("full");
+    expect(modalCard?.className.includes("is-office-viewer")).toBe(true);
+    expect(dialog.querySelector(".library-file-viewer-office-shell")).toBeNull();
+    expect(dialog.querySelector(".file-viewer-office-shell")).not.toBeNull();
+    expect(dialog.querySelector(".library-file-viewer-fallback")).toBeNull();
+  });
+
+  it("双击 PPT 文档后默认使用铺满屏幕的查看器布局", async () => {
+    libraryApiMock.listLibraryDocuments.mockResolvedValue(
+      createDocumentList([createDocumentRecord({ documentId: "doc-ppt-full", path: "slides/路演稿.pptx" })]),
+    );
+    libraryApiMock.getLibraryPreview.mockResolvedValue(createPreview({
+      path: "slides/路演稿.pptx",
+      kind: "office",
+      content: null,
+      version: "ppt-office-v1",
+      onlyOffice: {
+        apiScriptUrl: "https://office.example/api.js",
+        editorMode: "view",
+        documentUrl: "https://office.example/presentation",
+        callbackUrl: "https://office.example/callback",
+        editorConfig: {},
+      },
+    }));
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
+
+    fireEvent.doubleClick(await screen.findByRole("button", { name: /路演稿\.pptx/ }));
+
+    const dialog = await screen.findByRole("dialog", { name: "路演稿.pptx" });
+    const modalCard = dialog.closest(".desktop-modal-card");
+    expect(modalCard?.getAttribute("data-size")).toBe("full");
+    expect(modalCard?.className.includes("is-resizable")).toBe(false);
+    expect(screen.queryByRole("button", { name: "标准" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "铺满" })).toBeNull();
+  });
+
+  it("普通文档查看器支持通过按钮在标准和铺满之间切换", async () => {
+    libraryApiMock.listLibraryDocuments.mockResolvedValue(
+      createDocumentList([createDocumentRecord({ documentId: "doc-size-toggle", path: "docs/切换.md" })]),
+    );
+    libraryApiMock.getLibraryPreview.mockResolvedValue(createPreview({
+      path: "docs/切换.md",
+      kind: "markdown",
+      content: "# 切换尺寸",
+      version: "md-size-v1",
+    }));
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
+
+    fireEvent.doubleClick(await screen.findByRole("button", { name: /切换\.md/ }));
+
+    const dialog = await screen.findByRole("dialog", { name: "切换.md" });
+    const modalCard = dialog.closest(".desktop-modal-card");
+    expect(modalCard?.getAttribute("data-size")).toBe("regular");
+
+    await userEvent.click(screen.getByRole("button", { name: "铺满" }));
+    expect(modalCard?.getAttribute("data-size")).toBe("full");
+
+    await userEvent.click(screen.getByRole("button", { name: "标准" }));
+    expect(modalCard?.getAttribute("data-size")).toBe("regular");
+  });
+
   it("右侧对象详情栏会把 Markdown 按富文本渲染，而不是退回纯文本 pre", async () => {
     libraryApiMock.listLibraryDocuments.mockResolvedValue(
       createDocumentList([createDocumentRecord({ documentId: "doc-markdown", path: "docs/说明.md" })]),

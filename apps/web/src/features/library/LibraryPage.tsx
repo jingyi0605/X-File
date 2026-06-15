@@ -53,6 +53,7 @@ import { t } from "../../i18n";
 import { formatBytes, formatDateTime, getPathName } from "../../shared/format";
 import {
   DesktopModal,
+  type DesktopModalSizePreset,
   ModalActions,
   ModalEmptyState,
   ModalField,
@@ -101,6 +102,7 @@ interface LibraryPageProps {
 type LibraryDocumentEntry = Extract<LibraryEntry, { kind: "document" }>;
 type LibraryFolderEntry = Extract<LibraryEntry, { kind: "folder" }>;
 type LibraryDirectoryEntry = Extract<LibraryEntry, { kind: "folder" | "tag-directory" }>;
+type ViewerModalSizePreset = Extract<DesktopModalSizePreset, "regular" | "full">;
 
 type LibraryContextMenuTarget =
   | { kind: "blank"; folderPath: string | null }
@@ -5674,6 +5676,7 @@ function LibraryFileViewerModal({
   const [preview, setPreview] = useState<LibraryPreview | null>(null);
   const [editorContent, setEditorContent] = useState("");
   const [mode, setMode] = useState<ViewerMode>("preview");
+  const [modalSizePreset, setModalSizePreset] = useState<ViewerModalSizePreset>("regular");
   const [presentationProject, setPresentationProject] = useState<DocumentProject | null>(null);
   const [presentationSavedContent, setPresentationSavedContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -5690,6 +5693,7 @@ function LibraryFileViewerModal({
     setEditorContent("");
     setPresentationProject(null);
     setPresentationSavedContent(null);
+    setModalSizePreset("regular");
     void getLibraryPreviewForViewer(viewerState.filePath)
       .then((nextPreview) => {
         if (cancelled) {
@@ -5742,6 +5746,9 @@ function LibraryFileViewerModal({
     ? presentationSavedContent
     : editorContent;
   const isDirty = Boolean(preview && canSave && savedComparableContent !== (preview.content ?? ""));
+  const useForcedFullSize = preview?.kind === "office" || isPresentationFile(viewerState.filePath);
+  const activeModalSizePreset: ViewerModalSizePreset = useForcedFullSize ? "full" : modalSizePreset;
+  const isOfficeViewer = preview?.kind === "office";
 
   useEffect(() => {
     if (!viewerTabs.length) {
@@ -5840,12 +5847,12 @@ function LibraryFileViewerModal({
   const headerActions = (
     <div className="file-viewer-header-controls">
       {viewerTabs.length > 1 ? (
-        <div className="file-viewer-header-tabs" role="tablist" aria-label={t("fileViewerModeLabel")}>
+        <div className="file-viewer-header-switch" role="tablist" aria-label={t("fileViewerModeLabel")}>
           {viewerTabs.map((viewerMode) => (
             <button
               key={viewerMode}
               type="button"
-              className="file-viewer-tab"
+              className="file-viewer-switch-button"
               data-active={mode === viewerMode ? "true" : undefined}
               onClick={() => setMode(viewerMode)}
             >
@@ -5854,12 +5861,32 @@ function LibraryFileViewerModal({
           ))}
         </div>
       ) : null}
+      {!useForcedFullSize ? (
+        <div className="file-viewer-size-switch" role="group" aria-label={t("fileViewerSizeLabel")}>
+          <button
+            type="button"
+            className="file-viewer-switch-button"
+            data-active={activeModalSizePreset === "regular" ? "true" : undefined}
+            onClick={() => setModalSizePreset("regular")}
+          >
+            {t("fileViewerSizeDefault")}
+          </button>
+          <button
+            type="button"
+            className="file-viewer-switch-button"
+            data-active={activeModalSizePreset === "full" ? "true" : undefined}
+            onClick={() => setModalSizePreset("full")}
+          >
+            {t("fileViewerSizeFull")}
+          </button>
+        </div>
+      ) : null}
       <div className="file-viewer-header-action-buttons">
         {saveMessage ? <span className="file-viewer-save-status">{saveMessage}</span> : null}
         {canSave ? (
           <button
             type="button"
-            className="primary-button file-viewer-action-button"
+            className="primary-button file-viewer-save-button"
             disabled={saving || !isDirty}
             onClick={() => void saveContent()}
           >
@@ -5883,9 +5910,9 @@ function LibraryFileViewerModal({
       open
       title={viewerState.title}
       description={viewerState.filePath}
-      size="regular"
+      size={activeModalSizePreset}
       layout="viewer"
-      className="file-viewer-modal library-file-viewer-modal is-resizable"
+      className={`file-viewer-modal library-file-viewer-modal${isOfficeViewer ? " is-office-viewer" : ""}${activeModalSizePreset !== "full" ? " is-resizable" : ""}`}
       bodyClassName="file-viewer-modal-body library-file-viewer-body"
       titleClassName="file-viewer-title"
       headerActions={headerActions}
@@ -5939,7 +5966,11 @@ function LibraryFileViewerSurface({
   onPresentationProjectChange: (project: DocumentProject | null) => void;
   onSave: () => void;
 }) {
-  if (loading || error || !preview || !preview.supported || preview.kind === "office") {
+  if (!loading && !error && preview?.supported && preview.kind === "office" && preview.onlyOffice) {
+    return <OnlyOfficePreview onlyOffice={preview.onlyOffice} filePath={preview.path} />;
+  }
+
+  if (loading || error || !preview || !preview.supported) {
     return (
       <div className="library-file-viewer-fallback">
         <PreviewPanel preview={preview} loading={loading} error={error} />
@@ -6166,6 +6197,11 @@ function resolveViewerModeLabel(mode: ViewerMode): string {
   if (mode === "presentation") return t("fileViewerPresentation");
   if (mode === "preview") return t("fileViewerPreview");
   return t("fileViewerEdit");
+}
+
+function isPresentationFile(filePath: string | null): boolean {
+  const extension = filePath?.split(".").pop()?.toLowerCase() ?? "";
+  return extension === "ppt" || extension === "pptx";
 }
 
 function openLibraryPreviewDetachedWindow(
