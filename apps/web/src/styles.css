@@ -2655,8 +2655,10 @@ mark {
 .settings-page {
   flex: 1 1 auto;
   min-height: 0;
-  overflow: auto;
-  padding: 18px;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 14px;
 }
 .settings-grid {
   display: grid;
@@ -2667,25 +2669,26 @@ mark {
 .settings-section {
   display: grid;
   align-content: start;
+  min-width: 0;
   border: 1px solid var(--panel-border);
   border-radius: 14px;
   background: var(--panel-bg-strong);
-  padding: 16px;
+  padding: 12px;
   box-shadow: var(--panel-shadow);
 }
 .settings-section h2 {
   font-size: 14px;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 .settings-section p {
   color: var(--text-secondary);
   font-size: 12px;
-  line-height: 1.65;
+  line-height: 1.55;
 }
 .settings-section label {
   display: grid;
-  gap: 6px;
-  margin-top: 12px;
+  gap: 5px;
+  margin-top: 10px;
   color: var(--text-secondary);
   font-size: 12px;
   font-weight: 700;
@@ -2705,6 +2708,7 @@ mark {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: var(--space-3);
+  min-width: 0;
   margin-bottom: var(--section-gap);
   padding: var(--space-2);
   border: 1px solid var(--modal-panel-border);
@@ -2716,8 +2720,9 @@ mark {
   display: grid;
   gap: 2px;
   align-content: center;
-  min-height: calc(var(--app-button-height) + 18px);
-  padding: 0 var(--app-button-padding-x);
+  min-width: 0;
+  min-height: calc(var(--app-button-height) + 8px);
+  padding: 0 14px;
   border: 1px solid transparent;
   border-radius: var(--app-button-radius);
   color: var(--text-secondary);
@@ -2754,6 +2759,7 @@ mark {
 .settings-tab-panel {
   display: grid;
   align-items: start;
+  min-width: 0;
 }
 .section-header {
   display: flex;
@@ -3467,7 +3473,8 @@ body[data-workbench-macos-vibrancy="true"] #root {
 
 .settings-modal-body .settings-page {
   width: 100%;
-  padding: 18px 20px 20px;
+  min-width: 0;
+  padding: 14px 16px 16px;
   background: transparent;
 }
 
@@ -3483,6 +3490,11 @@ body[data-workbench-macos-vibrancy="true"] #root {
 
 .settings-modal-body .settings-tabbar {
   padding: 0;
+}
+
+.settings-modal-body,
+.settings-modal-card {
+  overflow-x: hidden;
 }
 
 .settings-modal-body .settings-section {
@@ -11220,11 +11232,18 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   gap: 14px;
 }
 
+.settings-onlyoffice-panel {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 12px;
+}
+
 .settings-onlyoffice-status-summary {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
 }
 
 .settings-onlyoffice-status-copy {
@@ -11232,7 +11251,7 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   min-width: 0;
   flex: 1;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 
 .settings-onlyoffice-status-title {
@@ -11245,7 +11264,62 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   margin: 0;
   color: var(--text-secondary);
   font-size: 12px;
-  line-height: 1.6;
+  line-height: 1.5;
+}
+
+.settings-onlyoffice-instance-card {
+  min-width: 0;
+  width: min(480px, 100%);
+}
+
+.settings-onlyoffice-form-section {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid color-mix(in srgb, var(--border-primary) 72%, transparent);
+}
+
+.settings-onlyoffice-field {
+  min-width: 0;
+  gap: 4px;
+}
+
+.settings-onlyoffice-field small {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.settings-onlyoffice-switch-row {
+  align-items: flex-start;
+}
+
+.settings-onlyoffice-switch-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-onlyoffice-switch-copy small {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.settings-onlyoffice-summary-row {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--border-primary) 76%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--bg-surface) 96%, rgba(255, 255, 255, 0.04));
+}
+
+.settings-onlyoffice-actions {
+  padding-top: 2px;
 }
 
 .settings-onlyoffice-check-list {
@@ -11271,20 +11345,21 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
 .settings-onlyoffice-metrics {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 10px;
+  min-width: 0;
+  gap: 8px;
 }
 
 .settings-onlyoffice-metric-card {
   position: relative;
   display: flex;
   min-width: 0;
-  min-height: 92px;
+  min-height: 68px;
   flex-direction: column;
   justify-content: space-between;
-  gap: 10px;
-  padding: 12px;
+  gap: 6px;
+  padding: 10px 12px;
   border: 1px solid color-mix(in srgb, var(--border-primary) 86%, transparent);
-  border-radius: 16px;
+  border-radius: 14px;
   background: color-mix(in srgb, var(--bg-hover) 72%, transparent);
   transition:
     border-color var(--transition-fast),
@@ -11314,15 +11389,15 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
 
 .settings-onlyoffice-metric-label {
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
-  line-height: 1.45;
+  line-height: 1.35;
 }
 
 .settings-onlyoffice-metric-value {
   color: var(--text-primary);
-  font-size: 20px;
-  line-height: 1.15;
+  font-size: 14px;
+  line-height: 1.2;
   word-break: break-word;
 }
 
@@ -11357,12 +11432,25 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
 }
 
 @media (max-width: 960px) {
+  .settings-onlyoffice-status-summary {
+    flex-direction: column;
+  }
+
+  .settings-onlyoffice-instance-card {
+    min-width: 0;
+    width: 100%;
+  }
+
   .settings-onlyoffice-metrics {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 640px) {
+  .settings-tabbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .settings-onlyoffice-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

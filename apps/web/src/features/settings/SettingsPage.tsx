@@ -6,7 +6,8 @@ import type {
   LibraryBinding,
   LibraryConfig,
   OnlyOfficeSettings,
-  OnlyOfficeStatus
+  OnlyOfficeStatus,
+  OnlyOfficeStatusState
 } from "@x-file/shared";
 
 import {
@@ -68,6 +69,14 @@ interface PublicBaseUrlOptions {
   currentValue: string | null;
   existingValue: string;
   serverState: HttpServerState | null;
+}
+
+interface OnlyOfficeStatusCard {
+  key: string;
+  label: string;
+  value: string;
+  detail: string;
+  tone: "default" | "success" | "warning" | "danger";
 }
 
 type SettingsTabId = "appearance" | "library" | "integration" | "network" | "updates";
@@ -544,48 +553,138 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
     ),
     integration: (
       <form className="settings-section" onSubmit={(event) => void submitOnlyOffice(event)}>
-          <h2>{t("settingsOnlyOfficeTitle")}</h2>
-          <div className="settings-instance-card">
-            <span>{t("settingsOnlyOfficeInstance")}</span>
-            <strong>{onlyOfficeForm.serverUrl || t("commonNotSet")}</strong>
+        <div className="settings-onlyoffice-panel">
+          <div className="settings-onlyoffice-status-summary">
+            <div className="settings-onlyoffice-status-copy">
+              <h2>{t("settingsOnlyOfficeTitle")}</h2>
+              <p className="settings-onlyoffice-status-description">{t("settingsOnlyOfficeDescription")}</p>
+            </div>
+            <div className="settings-instance-card settings-onlyoffice-instance-card">
+              <span>{t("settingsOnlyOfficeInstance")}</span>
+              <strong>{onlyOfficeForm.serverUrl || t("commonNotSet")}</strong>
+            </div>
           </div>
-          <label className="switch-row">
-            <span>{t("settingsOnlyOfficeEnabled")}</span>
-            <MacSwitch
-              checked={onlyOfficeForm.enabled}
-              label={t("settingsOnlyOfficeEnabled")}
-              onChange={(checked) => setOnlyOfficeForm((current) => ({ ...current, enabled: checked }))}
-            />
-          </label>
-          <TextInput label={t("settingsOnlyOfficeServerUrl")} value={onlyOfficeForm.serverUrl} onChange={(value) => setOnlyOfficeForm((current) => ({ ...current, serverUrl: value }))} />
-          <TextInput label={t("settingsOnlyOfficePublicBaseUrl")} value={onlyOfficeForm.publicBaseUrl} onChange={(value) => setOnlyOfficeForm((current) => ({ ...current, publicBaseUrl: value }))} />
-          <TextInput label={t("settingsOnlyOfficeCallbackBaseUrl")} value={onlyOfficeForm.callbackBaseUrl} onChange={(value) => setOnlyOfficeForm((current) => ({ ...current, callbackBaseUrl: value }))} />
-          <TextInput label={t("settingsOnlyOfficeUserName")} value={onlyOfficeForm.userDisplayName} onChange={(value) => setOnlyOfficeForm((current) => ({ ...current, userDisplayName: value }))} />
-          <TextInput label={t("settingsOnlyOfficeAvatar")} value={onlyOfficeForm.userAvatarUrl} onChange={(value) => setOnlyOfficeForm((current) => ({ ...current, userAvatarUrl: value }))} />
-          <TextInput label={t("settingsOnlyOfficeJwtSecret")} value={onlyOfficeForm.jwtSecret} placeholder={t("settingsOnlyOfficeJwtPlaceholder")} onChange={(value) => setOnlyOfficeForm((current) => ({ ...current, jwtSecret: value }))} />
-          <label className="switch-row">
-            <span>{t("settingsOnlyOfficeClearJwt")}</span>
-            <MacSwitch
-              checked={onlyOfficeForm.clearJwtSecret}
-              label={t("settingsOnlyOfficeClearJwt")}
-              onChange={(checked) => setOnlyOfficeForm((current) => ({ ...current, clearJwtSecret: checked }))}
-            />
-          </label>
-          <div className="settings-current">
-            <span>{t("settingsOnlyOfficeStatus")}</span>
-            <strong>{onlyOfficeStatus?.summary ?? t("commonUnknown")}</strong>
+
+          <div className="settings-onlyoffice-metrics" role="list" aria-label={t("settingsOnlyOfficeStatusPanelTitle")}>
+            {buildOnlyOfficeStatusCards(onlyOfficeStatus).map((card) => (
+              <div
+                key={card.key}
+                className="settings-onlyoffice-metric-card"
+                data-tone={card.tone}
+                role="listitem"
+                tabIndex={0}
+              >
+                <span className="settings-onlyoffice-metric-label">{card.label}</span>
+                <strong className="settings-onlyoffice-metric-value">{card.value}</strong>
+                <div className="settings-onlyoffice-metric-tooltip" role="note">
+                  {card.detail}
+                </div>
+              </div>
+            ))}
           </div>
-          <div className="settings-current">
+
+          <section className="settings-onlyoffice-form-section">
+            <label className="switch-row settings-onlyoffice-switch-row">
+              <div className="settings-onlyoffice-switch-copy">
+                <span>{t("settingsOnlyOfficeEnabled")}</span>
+                <small>{onlyOfficeForm.enabled ? t("settingsOnlyOfficeEnabledDescriptionOn") : t("settingsOnlyOfficeEnabledDescriptionOff")}</small>
+              </div>
+              <MacSwitch
+                checked={onlyOfficeForm.enabled}
+                label={t("settingsOnlyOfficeEnabled")}
+                onChange={(checked) => setOnlyOfficeForm((current) => ({ ...current, enabled: checked }))}
+              />
+            </label>
+
+            <TextInput
+              label={t("settingsOnlyOfficeServerUrl")}
+              description={t("settingsOnlyOfficeServerUrlDescription")}
+              value={onlyOfficeForm.serverUrl}
+              placeholder={t("settingsOnlyOfficeServerUrlPlaceholder")}
+              onChange={(value) => setOnlyOfficeForm((current) => ({ ...current, serverUrl: value }))}
+            />
+            <TextInput
+              label={t("settingsOnlyOfficePublicBaseUrl")}
+              description={t("settingsOnlyOfficePublicBaseUrlDescription")}
+              value={onlyOfficeForm.publicBaseUrl}
+              placeholder={t("settingsOnlyOfficePublicBaseUrlPlaceholder")}
+              onChange={(value) => setOnlyOfficeForm((current) => ({ ...current, publicBaseUrl: value }))}
+            />
+            <TextInput
+              label={t("settingsOnlyOfficeCallbackBaseUrl")}
+              description={t("settingsOnlyOfficeCallbackBaseUrlDescription")}
+              value={onlyOfficeForm.callbackBaseUrl}
+              placeholder={t("settingsOnlyOfficeCallbackBaseUrlPlaceholder")}
+              onChange={(value) => setOnlyOfficeForm((current) => ({ ...current, callbackBaseUrl: value }))}
+            />
+          </section>
+
+          <section className="settings-onlyoffice-form-section">
+            <div className="settings-section-title">
+              <strong>{t("settingsOnlyOfficeIdentitySection")}</strong>
+              <span className="settings-row-description">{t("settingsOnlyOfficeIdentitySectionDescription")}</span>
+            </div>
+
+            <TextInput
+              label={t("settingsOnlyOfficeUserName")}
+              description={t("settingsOnlyOfficeUserNameDescription")}
+              value={onlyOfficeForm.userDisplayName}
+              placeholder={t("settingsOnlyOfficeUserNamePlaceholder")}
+              onChange={(value) => setOnlyOfficeForm((current) => ({ ...current, userDisplayName: value }))}
+            />
+            <TextInput
+              label={t("settingsOnlyOfficeAvatar")}
+              description={t("settingsOnlyOfficeAvatarDescription")}
+              value={onlyOfficeForm.userAvatarUrl}
+              placeholder={t("settingsOnlyOfficeAvatarPlaceholder")}
+              onChange={(value) => setOnlyOfficeForm((current) => ({ ...current, userAvatarUrl: value }))}
+            />
+          </section>
+
+          <section className="settings-onlyoffice-form-section">
+            <div className="settings-section-title">
+              <strong>{t("settingsOnlyOfficeSecuritySection")}</strong>
+              <span className="settings-row-description">{t("settingsOnlyOfficeSecuritySectionDescription")}</span>
+            </div>
+
+            <TextInput
+              label={t("settingsOnlyOfficeJwtSecret")}
+              description={t("settingsOnlyOfficeJwtSecretDescription")}
+              value={onlyOfficeForm.jwtSecret}
+              placeholder={onlyOffice?.jwtSecretConfigured
+                ? t("settingsOnlyOfficeJwtKeepPlaceholder")
+                : t("settingsOnlyOfficeJwtPlaceholder")}
+              onChange={(value) => setOnlyOfficeForm((current) => ({ ...current, jwtSecret: value, clearJwtSecret: false }))}
+            />
+            <label className="switch-row settings-onlyoffice-switch-row">
+              <div className="settings-onlyoffice-switch-copy">
+                <span>{t("settingsOnlyOfficeClearJwt")}</span>
+                <small>{t("settingsOnlyOfficeClearJwtDescription")}</small>
+              </div>
+              <MacSwitch
+                checked={onlyOfficeForm.clearJwtSecret}
+                label={t("settingsOnlyOfficeClearJwt")}
+                onChange={(checked) => setOnlyOfficeForm((current) => ({ ...current, clearJwtSecret: checked }))}
+              />
+            </label>
+          </section>
+
+          <div className="settings-current settings-onlyoffice-summary-row">
             <span>{t("settingsOnlyOfficeJwtSecret")}</span>
             <strong>{onlyOffice?.jwtSecretConfigured ? t("settingsOnlyOfficeJwtConfigured") : t("settingsOnlyOfficeJwtNotConfigured")}</strong>
           </div>
-          <div className="button-row">
-            <button type="submit" className="primary-button">{t("settingsOnlyOfficeSave")}</button>
+
+          <div className="button-row settings-onlyoffice-actions">
+            <button type="button" className="secondary-button" onClick={() => void loadSettings()}>
+              {t("actionCancel")}
+            </button>
             <button type="button" className="secondary-button" onClick={() => void getOnlyOfficeStatus().then(setOnlyOfficeStatus).catch((err) => setError(toApiErrorMessage(err)))}>
               {t("settingsOnlyOfficeRefreshStatus")}
             </button>
+            <button type="submit" className="primary-button">{t("settingsOnlyOfficeSave")}</button>
           </div>
-        </form>
+        </div>
+      </form>
     ),
     network: (
       <form className="settings-section" onSubmit={(event) => void submitServer(event)}>
@@ -769,18 +868,21 @@ function looksLikeDevWebAddress(value: string): boolean {
 
 function TextInput({
   label,
+  description,
   value,
   placeholder,
   onChange
 }: {
   label: string;
+  description?: string;
   value: string;
   placeholder?: string;
   onChange: (value: string) => void;
 }) {
   return (
-    <label>
+    <label className="settings-onlyoffice-field">
       <span>{label}</span>
+      {description ? <small>{description}</small> : null}
       <input value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} />
     </label>
   );
@@ -977,6 +1079,94 @@ function ServerStatus({ state }: { state: HttpServerState | null }) {
 
 function normalizeOptionalUrl(value: string): string | null {
   return normalizeOptionalText(value);
+}
+
+function resolveOnlyOfficeStatusLabel(state: OnlyOfficeStatusState | undefined): string {
+  switch (state) {
+    case "ready":
+      return t("settingsOnlyOfficeStatusReady");
+    case "warning":
+      return t("settingsOnlyOfficeStatusWarning");
+    case "error":
+      return t("settingsOnlyOfficeStatusError");
+    case "misconfigured":
+      return t("settingsOnlyOfficeStatusMisconfigured");
+    case "disabled":
+      return t("settingsOnlyOfficeStatusDisabled");
+    default:
+      return t("settingsOnlyOfficeStatusUnknown");
+  }
+}
+
+function resolveOnlyOfficeStatusTone(
+  state: OnlyOfficeStatusState | undefined
+): "default" | "success" | "warning" | "danger" {
+  switch (state) {
+    case "ready":
+      return "success";
+    case "warning":
+    case "misconfigured":
+      return "warning";
+    case "error":
+      return "danger";
+    case "disabled":
+    default:
+      return "default";
+  }
+}
+
+function resolveOnlyOfficeCheckStatusLabel(status: "pass" | "warn" | "fail" | "skip"): string {
+  switch (status) {
+    case "pass":
+      return t("settingsOnlyOfficeCheckPass");
+    case "warn":
+      return t("settingsOnlyOfficeCheckWarn");
+    case "fail":
+      return t("settingsOnlyOfficeCheckFail");
+    case "skip":
+    default:
+      return t("settingsOnlyOfficeCheckSkip");
+  }
+}
+
+function resolveOnlyOfficeCheckTone(
+  status: "pass" | "warn" | "fail" | "skip"
+): "default" | "success" | "warning" | "danger" {
+  switch (status) {
+    case "pass":
+      return "success";
+    case "warn":
+      return "warning";
+    case "fail":
+      return "danger";
+    case "skip":
+    default:
+      return "default";
+  }
+}
+
+function buildOnlyOfficeStatusCards(status: OnlyOfficeStatus | null): OnlyOfficeStatusCard[] {
+  const cards: OnlyOfficeStatusCard[] = [
+    {
+      key: "summary",
+      label: t("settingsOnlyOfficeStatusLabel"),
+      value: resolveOnlyOfficeStatusLabel(status?.state),
+      detail: status?.summary ?? t("settingsOnlyOfficeStatusUnknown"),
+      tone: resolveOnlyOfficeStatusTone(status?.state)
+    }
+  ];
+
+  for (const check of status?.checks ?? []) {
+    cards.push({
+      key: check.key,
+      label: check.label,
+      value: resolveOnlyOfficeCheckStatusLabel(check.status),
+      detail: check.detail,
+      tone: resolveOnlyOfficeCheckTone(check.status)
+    });
+  }
+
+  return cards;
 }
 
 function normalizeOptionalText(value: string): string | null {

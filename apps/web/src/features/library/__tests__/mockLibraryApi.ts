@@ -7,6 +7,8 @@ import type {
   LibraryFileNode,
   LibraryIndexStatus,
   LibrarySnapshot,
+  OnlyOfficeSettings,
+  OnlyOfficeStatus,
   LibraryTagDetailWithRules,
   LibraryTagNode,
 } from "@x-file/shared";
@@ -63,26 +65,8 @@ export function resetLibraryApiMock(): void {
     lastStoppedAt: null,
     errorSummary: null,
   });
-  libraryApiMock.getOnlyOfficeSettings.mockResolvedValue({
-    enabled: false,
-    serverUrl: null,
-    publicBaseUrl: null,
-    callbackBaseUrl: null,
-    userDisplayName: null,
-    userAvatarUrl: null,
-    jwtConfigured: false,
-  });
-  libraryApiMock.getOnlyOfficeStatus.mockResolvedValue({
-    enabled: false,
-    configured: false,
-    healthy: false,
-    serverUrl: null,
-    publicBaseUrl: null,
-    callbackBaseUrl: null,
-    jwtConfigured: false,
-    checkedAt: null,
-    errorSummary: null,
-  });
+  libraryApiMock.getOnlyOfficeSettings.mockResolvedValue(createOnlyOfficeSettings());
+  libraryApiMock.getOnlyOfficeStatus.mockResolvedValue(createOnlyOfficeStatus());
   libraryApiMock.listLibraryTags.mockResolvedValue([]);
   libraryApiMock.listLibraryDocuments.mockResolvedValue(createDocumentList());
   libraryApiMock.listLibraryFiles.mockResolvedValue(createFileList());
@@ -179,6 +163,34 @@ export function createLibrarySnapshot(
     folders: [],
     documentCount: 0,
     lastError: null,
+    ...overrides,
+  };
+}
+
+export function createOnlyOfficeSettings(
+  overrides: Partial<OnlyOfficeSettings> = {},
+): OnlyOfficeSettings {
+  return {
+    enabled: false,
+    serverUrl: null,
+    publicBaseUrl: null,
+    callbackBaseUrl: null,
+    userDisplayName: null,
+    userAvatarUrl: null,
+    jwtSecretConfigured: false,
+    updatedAt: "2026-06-09T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+export function createOnlyOfficeStatus(
+  overrides: Partial<OnlyOfficeStatus> = {},
+): OnlyOfficeStatus {
+  return {
+    state: "disabled",
+    summary: "OnlyOffice 未启用。",
+    checkedAt: "2026-06-09T00:00:00.000Z",
+    checks: [],
     ...overrides,
   };
 }
