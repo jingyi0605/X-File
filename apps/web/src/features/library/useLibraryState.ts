@@ -56,6 +56,8 @@ export interface LibraryState {
   visibleEntryTotal: number;
   hasMore: boolean;
   selectedDocument: LibraryEntry & { kind: "document" } | null;
+  selectedDocuments: Array<LibraryEntry & { kind: "document" }>;
+  selectedFolderEntries: Array<Extract<LibraryEntry, { kind: "folder" | "tag-directory" }>>;
   setViewState: (updater: LibraryViewState | ((current: LibraryViewState) => LibraryViewState)) => void;
   bindLibrary: (rootDir: string) => Promise<LibraryBinding>;
   reload: () => Promise<void>;
@@ -64,9 +66,11 @@ export interface LibraryState {
   refresh: () => Promise<void>;
   selectFolder: (path: string | null, selectedEntryPath?: string | null) => void;
   selectFolderEntry: (path: string | null) => void;
+  toggleFolderEntrySelection: (path: string, additive?: boolean) => void;
   selectTag: (path: string | null) => void;
   selectFavorite: (favorite: LibraryFavoriteRecord) => void;
   selectDocument: (documentId: string) => void;
+  toggleDocumentSelection: (documentId: string, additive?: boolean) => void;
   openPreview: (path: string) => Promise<void>;
   downloadSelected: (path: string) => Promise<void>;
   toggleFavorite: (favorite: LibraryFavoriteRecord) => Promise<void>;
@@ -107,6 +111,20 @@ export function useLibraryState(): LibraryState {
       return entry.kind === "document" && entry.documentId === viewState.selectedDocumentId;
     }) ?? null,
     [entries, viewState.selectedDocumentId]
+  );
+  const selectedDocuments = useMemo(
+    () =>
+      entries.filter((entry): entry is LibraryEntry & { kind: "document" } => {
+        return entry.kind === "document" && viewState.selectedDocumentIds.includes(entry.documentId);
+      }),
+    [entries, viewState.selectedDocumentIds]
+  );
+  const selectedFolderEntries = useMemo(
+    () =>
+      entries.filter((entry): entry is Extract<LibraryEntry, { kind: "folder" | "tag-directory" }> => {
+        return entry.kind !== "document" && viewState.selectedFolderEntryPaths.includes(entry.path);
+      }),
+    [entries, viewState.selectedFolderEntryPaths]
   );
 
   const requiresInitialization = snapshot?.requiresInitialization === true;
@@ -240,10 +258,12 @@ export function useLibraryState(): LibraryState {
       browseMode: "folder",
       selectedFolderPath: path,
       selectedFolderEntryPath: selectedEntryPath,
+      selectedFolderEntryPaths: selectedEntryPath ? [selectedEntryPath] : [],
       selectedTagPath: null,
       selectedTagPaths: [],
       selectedFavoriteId: null,
-      selectedDocumentId: null
+      selectedDocumentId: null,
+      selectedDocumentIds: []
     }));
   }
 
@@ -253,8 +273,31 @@ export function useLibraryState(): LibraryState {
     setViewState((current) => ({
       ...current,
       selectedFolderEntryPath: path,
-      selectedDocumentId: null
+      selectedFolderEntryPaths: path ? [path] : [],
+      selectedDocumentId: null,
+      selectedDocumentIds: []
     }));
+  }
+
+  function toggleFolderEntrySelection(path: string, additive = false): void {
+    setPreview(null);
+    setPreviewError(null);
+    setViewState((current) => {
+      const currentPaths = current.selectedFolderEntryPaths;
+      const exists = currentPaths.includes(path);
+      const nextPaths = additive
+        ? exists
+          ? currentPaths.filter((item) => item !== path)
+          : [...currentPaths, path]
+        : [path];
+      return {
+        ...current,
+        selectedFolderEntryPath: nextPaths[0] ?? null,
+        selectedFolderEntryPaths: nextPaths,
+        selectedDocumentId: null,
+        selectedDocumentIds: []
+      };
+    });
   }
 
   function selectTag(path: string | null): void {
@@ -268,7 +311,10 @@ export function useLibraryState(): LibraryState {
         selectedTagPath: nextSelectedTagPaths[nextSelectedTagPaths.length - 1] ?? null,
         selectedTagPaths: nextSelectedTagPaths,
         selectedFavoriteId: null,
-        selectedDocumentId: null
+        selectedDocumentId: null,
+        selectedDocumentIds: [],
+        selectedFolderEntryPath: null,
+        selectedFolderEntryPaths: []
       };
     });
   }
@@ -289,7 +335,10 @@ export function useLibraryState(): LibraryState {
       selectedTagPath: favoriteTagPaths[favoriteTagPaths.length - 1] ?? null,
       selectedTagPaths: favoriteTagPaths,
       selectedFavoriteId: favorite.path,
-      selectedDocumentId: null
+      selectedDocumentId: null,
+      selectedDocumentIds: [],
+      selectedFolderEntryPath: null,
+      selectedFolderEntryPaths: []
     }));
   }
 
@@ -297,8 +346,29 @@ export function useLibraryState(): LibraryState {
     setViewState((current) => ({
       ...current,
       selectedDocumentId: documentId,
-      selectedFolderEntryPath: null
+      selectedDocumentIds: [documentId],
+      selectedFolderEntryPath: null,
+      selectedFolderEntryPaths: []
     }));
+  }
+
+  function toggleDocumentSelection(documentId: string, additive = false): void {
+    setViewState((current) => {
+      const currentIds = current.selectedDocumentIds;
+      const exists = currentIds.includes(documentId);
+      const nextIds = additive
+        ? exists
+          ? currentIds.filter((item) => item !== documentId)
+          : [...currentIds, documentId]
+        : [documentId];
+      return {
+        ...current,
+        selectedDocumentId: nextIds[0] ?? null,
+        selectedDocumentIds: nextIds,
+        selectedFolderEntryPath: null,
+        selectedFolderEntryPaths: []
+      };
+    });
   }
 
   async function openPreview(path: string): Promise<void> {
@@ -415,6 +485,8 @@ export function useLibraryState(): LibraryState {
     visibleEntryTotal,
     hasMore,
     selectedDocument,
+    selectedDocuments,
+    selectedFolderEntries,
     setViewState,
     bindLibrary,
     reload,
@@ -423,9 +495,11 @@ export function useLibraryState(): LibraryState {
     refresh,
     selectFolder,
     selectFolderEntry,
+    toggleFolderEntrySelection,
     selectTag,
     selectFavorite,
     selectDocument,
+    toggleDocumentSelection,
     openPreview,
     downloadSelected,
     toggleFavorite,

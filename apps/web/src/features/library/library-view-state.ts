@@ -36,9 +36,11 @@ export interface LibraryViewState {
   viewMode: LibraryViewMode;
   selectedFolderPath: string | null;
   selectedFolderEntryPath: string | null;
+  selectedFolderEntryPaths: string[];
   selectedTagPath: string | null;
   selectedTagPaths: string[];
   selectedDocumentId: string | null;
+  selectedDocumentIds: string[];
   selectedFavoriteId: string | null;
   keyword: string;
   librarySort: LibrarySortState;
@@ -78,9 +80,11 @@ const DEFAULT_STATE: Omit<LibraryViewState, "libraryId"> = {
   viewMode: "grid",
   selectedFolderPath: null,
   selectedFolderEntryPath: null,
+  selectedFolderEntryPaths: [],
   selectedTagPath: null,
   selectedTagPaths: [],
   selectedDocumentId: null,
+  selectedDocumentIds: [],
   selectedFavoriteId: null,
   keyword: "",
   librarySort: DEFAULT_SORT,
@@ -143,11 +147,19 @@ function normalizeLibraryViewState(libraryId: string, value: Partial<LibraryView
     viewMode: value.viewMode === "list" ? "list" : "grid",
     selectedFolderPath: normalizeNullable(value.selectedFolderPath),
     selectedFolderEntryPath: normalizeNullable(value.selectedFolderEntryPath),
+    selectedFolderEntryPaths: normalizeSelectionList(
+      value.selectedFolderEntryPaths,
+      normalizeNullable(value.selectedFolderEntryPath)
+    ),
     selectedTagPath: normalizeNullable(value.selectedTagPath),
     selectedTagPaths: Array.isArray(value.selectedTagPaths)
       ? value.selectedTagPaths.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
       : [],
     selectedDocumentId: normalizeNullable(value.selectedDocumentId),
+    selectedDocumentIds: normalizeSelectionList(
+      value.selectedDocumentIds,
+      normalizeNullable(value.selectedDocumentId)
+    ),
     selectedFavoriteId: normalizeNullable(value.selectedFavoriteId),
     keyword: value.keyword?.trim() ?? "",
     librarySort: normalizeLibrarySortState(value.librarySort),
@@ -179,6 +191,19 @@ function normalizeFinderColumnWidth(column: FinderColumnKey, value: number | nul
 function normalizeNullable(value: string | null | undefined): string | null {
   const normalized = value?.trim();
   return normalized ? normalized : null;
+}
+
+function normalizeSelectionList(value: unknown, fallback: string | null): string[] {
+  const list = Array.isArray(value)
+    ? value
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim())
+        .filter(Boolean)
+    : [];
+  if (list.length > 0) {
+    return Array.from(new Set(list));
+  }
+  return fallback ? [fallback] : [];
 }
 
 function compareEntryValue(left: LibraryEntry, right: LibraryEntry, mode: LibrarySortMode): number {
