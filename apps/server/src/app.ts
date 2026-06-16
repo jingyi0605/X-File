@@ -21,6 +21,9 @@ import { registerLibraryRoutes } from "./routes/library-routes.js";
 import { registerOfficeRoutes } from "./routes/office-routes.js";
 import { registerServerStateRoutes } from "./routes/server-state-routes.js";
 import { registerTagRoutes } from "./routes/tag-routes.js";
+import { registerAssistantRoutes } from "./routes/assistant-routes.js";
+import { AssistantController } from "./assistant/assistant-controller.js";
+import { AssistantRuntimeService } from "./assistant/assistant-runtime-service.js";
 import { LibraryBindingStore } from "./storage/library-binding-store.js";
 import { LibraryConfigStore } from "./storage/library-config-store.js";
 import { IndexRuntimeStore } from "./storage/index-runtime-store.js";
@@ -131,6 +134,10 @@ export function createServer(options: CreateServerOptions = {}) {
   );
   void registerTagRoutes(server, new TagController(tagService));
   void registerIntegrationRoutes(server, libraryService, httpServerManager);
+  void registerAssistantRoutes(
+    server,
+    new AssistantController(new AssistantRuntimeService(libraryBindingStore))
+  );
 
   return server;
 }

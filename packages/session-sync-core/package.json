@@ -1,0 +1,35 @@
+{
+  "name": "@codingns/session-sync-core",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./runtime/claude-runtime": {
+      "types": "./dist/runtime/claude-runtime.d.ts",
+      "import": "./dist/runtime/claude-runtime.js"
+    },
+    "./runtime/types": {
+      "types": "./dist/runtime/types.d.ts",
+      "import": "./dist/runtime/types.js"
+    }
+  },
+  "scripts": {
+    "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@openai/codex-sdk": "0.130.0",
+    "better-sqlite3": "^12.8.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.5.2",
+    "typescript": "^5.9.3"
+  }
+}

@@ -11,6 +11,7 @@
     "start": "node dist/main.js"
   },
   "dependencies": {
+    "@codingns/session-sync-core": "workspace:*",
     "@x-file/indexer": "workspace:*",
     "@x-file/shared": "workspace:*",
     "fastify": "^5.2.1"
