@@ -9,9 +9,26 @@
 - [x] B. `ParserSkipRepository` 从默认 index-only 主写链彻底独立
   - 已完成：默认主写链已改走独立 `parser-skip-store.ts`，`text-index-catalog-store.ts` 不再直接 `new ParserSkipRepository`。
 - [ ] C. `DocumentParser` / parser-router 从默认执行体里抽成宿主无关接口，桌面主链优先 native
-- [ ] D. 默认 SQLite 宿主不再依赖 Node runtime
-- [ ] E. 桌面 Rust 宿主去掉 Node worker fallback 默认依赖
-- [ ] F. `apps/server` Node sidecar 从正式包必须宿主继续剥离，并同步更新资源边界/验包
+- [x] D. 默认 SQLite 宿主不再依赖 Node runtime
+  - 已完成：`open-database.ts` 默认解析已改成宿主注册 driver 优先，`openDatabase()`/migration/repository/parser-skip 这些继续直连默认入口的薄层不再天然要求 `node:sqlite`；未注册宿主时仅退回库内兼容 driver。
+- [x] E. 桌面 Rust 宿主去掉 Node worker fallback 默认依赖
+- [x] F. `apps/server` Node sidecar 从正式包必须宿主继续剥离，并同步更新资源边界/验包
+  - 状态：DONE
+  - 本轮落地：
+    - `apps/desktop/src-tauri/src/lib.rs` 已移除“缺少 bundled Node 时默认偷偷回退系统 Node / 自动改走 Rust fallback”的宿主行为。
+    - `index-only` 现在只会在两种情况下进入 Rust：一是命中 `should_prefer_native_index()` 的原生能力集合；二不是。若明确需要 Node worker 但正式包缺少 `x-file-runtime`，宿主现在直接 fail-fast。
+    - host Node fallback 只保留为显式调试开关：`X_FILE_ENABLE_HOST_NODE_WORKER_FALLBACK=1`。
+    - `apps/server/src/library/library-engine-feature.ts` 已新增默认 `sidecar-only` profile；正式包默认不再由 Node sidecar 承载 `/api/library/*`、`/api/host/directories`、tag 相关核心数据面路由。
+    - sidecar-only 模式下，这些核心路由会返回 503 并指向桌面 native bridge；`/api/integration/status` 也改为反映 sidecar-only 真相，不再谎报 library HTTP 主路径仍可用。
+    - `x-file-resource-boundary.json`、`prepare-bundled-server.mjs`、`verify-desktop.mjs` 已同步新增桌面宿主策略字段：
+      - `desktopHost.nodeWorkerFallback.allowHostNodeFallbackByDefault=false`
+      - `desktopHost.nodeWorkerFallback.explicitOptInEnv=X_FILE_ENABLE_HOST_NODE_WORKER_FALLBACK`
+      - `desktopHost.nodeSidecar.profileInMainBundle=sidecar-only`
+      - `desktopHost.nodeSidecar.libraryCoreHttpRoutesServedByDefault=false`
+  - 当前效果：
+    1. 正式包默认不再隐式依赖 host Node
+    2. Node sidecar 默认不再持有 library 数据面主 HTTP 路径
+    3. `x-file-runtime` 是否保留、为何保留、何时允许调试回退，已经变成代码和验包都能校验的显式状态
 
 ## 阶段 1：先把数据面真实边界盘死
 
@@ -252,6 +269,12 @@
     3. `.markdown` 的派生标签归到 `类型/文本/Markdown`
   - 怎么验证：
     - `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml`
+    - `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml default_desktop_extensions_can_stay_on_native_route`
+    - `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml legacy_binary_office_extensions_are_skip_only_not_summary`
+  - 本轮真实结果：
+    - `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml`：通过；仅有既存 `dead_code` warning（`native_export.rs.generated_at*`、`native_index.rs.size`）。
+    - `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml default_desktop_extensions_can_stay_on_native_route`：通过。
+    - `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml legacy_binary_office_extensions_are_skip_only_not_summary`：通过。
   - 本轮落地记录：
     - 已把 `.markdown` 补进 Rust native 轻量扩展白名单与通用扫描扩展集合，避免默认扩展里允许、native 轻量索引却跳过。
     - 已把 `.markdown` 接到现有 `read_text_summary` 轻量文本摘要链路，继续复用当前 snapshot/export 契约。

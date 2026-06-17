@@ -2,7 +2,11 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import type { RuntimeConfig } from "../types/runtime-config.js";
 import { CATALOG_SCHEMA_SQL } from "./catalog-schema.js";
-import { openDatabase } from "./open-database.js";
+import {
+  openDatabase,
+  type LibraryIndexerDatabase,
+  type LibraryIndexerDatabaseDriver,
+} from "./open-database.js";
 
 export interface CatalogMigration {
   version: number;
@@ -20,6 +24,10 @@ export interface MigrationRunResult {
   schemaVersion: number;
   appliedMigrations: string[];
   executedAt: string;
+}
+
+export interface CatalogMigrationRunnerOptions {
+  dbDriver?: LibraryIndexerDatabaseDriver;
 }
 
 const CATALOG_MIGRATIONS: CatalogMigration[] = [
@@ -366,17 +374,17 @@ CREATE INDEX IF NOT EXISTS idx_manual_file_tag_bindings_tag ON manual_file_tag_b
   },
 ];
 
-function hasTable(db: ReturnType<typeof openDatabase>, tableName: string): boolean {
+function hasTable(db: LibraryIndexerDatabase, tableName: string): boolean {
   const row = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`).get(tableName) as { name?: string } | undefined;
   return row?.name === tableName;
 }
 
-function hasColumn(db: ReturnType<typeof openDatabase>, tableName: string, columnName: string): boolean {
+function hasColumn(db: LibraryIndexerDatabase, tableName: string, columnName: string): boolean {
   const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name?: string }>;
   return rows.some((row) => row.name === columnName);
 }
 
-function ensureMigrationColumns(db: ReturnType<typeof openDatabase>, migration: CatalogMigration): void {
+function ensureMigrationColumns(db: LibraryIndexerDatabase, migration: CatalogMigration): void {
   for (const column of migration.columns ?? []) {
     if (hasColumn(db, column.table, column.name)) {
       continue;
@@ -385,7 +393,7 @@ function ensureMigrationColumns(db: ReturnType<typeof openDatabase>, migration: 
   }
 }
 
-function readCurrentSchemaVersion(db: ReturnType<typeof openDatabase>): number {
+function readCurrentSchemaVersion(db: LibraryIndexerDatabase): number {
   if (!hasTable(db, "schema_meta")) {
     return 0;
   }
@@ -401,11 +409,16 @@ function readCurrentSchemaVersion(db: ReturnType<typeof openDatabase>): number {
  * 最小迁移执行器。
  * 先把版本与历史机制收整齐，避免后续 schema 演进继续失控。
  */
-export function runCatalogMigrations(config: RuntimeConfig): MigrationRunResult {
+export function runCatalogMigrations(
+  config: RuntimeConfig,
+  options: CatalogMigrationRunnerOptions = {},
+): MigrationRunResult {
   fs.mkdirSync(config.indexDir, { recursive: true });
   fs.mkdirSync(config.exportDir, { recursive: true });
 
-  const db = openDatabase(config.dbPath);
+  const db = options.dbDriver
+    ? options.dbDriver.open(config.dbPath)
+    : openDatabase(config.dbPath);
   const now = new Date().toISOString();
   const appliedMigrations: string[] = [];
 

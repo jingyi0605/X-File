@@ -1,5 +1,10 @@
 import crypto from "node:crypto";
-import { openDatabase, type LibraryIndexerDatabase, type LibraryIndexerStatement } from "../sqlite/open-database.js";
+import {
+  openDatabase,
+  type LibraryIndexerDatabase,
+  type LibraryIndexerDatabaseDriver,
+  type LibraryIndexerStatement,
+} from "../sqlite/open-database.js";
 
 export interface ParserSkipRecordInput {
   adapter: string;
@@ -56,13 +61,22 @@ export class ParserSkipRepository {
   private selectStatement: LibraryIndexerStatement | null = null;
   private upsertStatement: LibraryIndexerStatement | null = null;
 
-  constructor(private readonly dbPath: string) {}
+  constructor(
+    private readonly dbPath: string,
+    private readonly dbDriver: LibraryIndexerDatabaseDriver | null = null,
+  ) {}
+
+  private openConnection(): LibraryIndexerDatabase {
+    return this.dbDriver
+      ? this.dbDriver.open(this.dbPath)
+      : openDatabase(this.dbPath);
+  }
 
   beginSession(): void {
     if (this.activeDb) {
       return;
     }
-    this.activeDb = openDatabase(this.dbPath);
+    this.activeDb = this.openConnection();
     this.selectStatement = this.activeDb.prepare(`
       SELECT sample_paths_json, sample_count, total_count, first_seen_at
       FROM parser_skip_catalog
@@ -102,7 +116,7 @@ export class ParserSkipRepository {
       return handler(this.activeDb, this.selectStatement, this.upsertStatement);
     }
 
-    const db = openDatabase(this.dbPath);
+    const db = this.openConnection();
     const selectStatement = db.prepare(`
       SELECT sample_paths_json, sample_count, total_count, first_seen_at
       FROM parser_skip_catalog
@@ -190,7 +204,7 @@ export class ParserSkipRepository {
   }
 
   listRecent(limit = 100): ParserSkipCatalogRecord[] {
-    const db = openDatabase(this.dbPath);
+    const db = this.openConnection();
     try {
       const rows = db.prepare(`
         SELECT skip_key, adapter, reason_code, extension, sample_paths_json, sample_count, total_count, last_message, first_seen_at, last_seen_at, last_run_at
@@ -228,7 +242,7 @@ export class ParserSkipRepository {
       lastSeenAt: string;
     }>;
   } {
-    const db = openDatabase(this.dbPath);
+    const db = this.openConnection();
     try {
       const summary = db.prepare(`
         SELECT COUNT(*) AS total_kinds, COALESCE(SUM(total_count), 0) AS total_skipped

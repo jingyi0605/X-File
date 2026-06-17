@@ -1,5 +1,8 @@
 import type { RuntimeConfig } from "../types/runtime-config.js";
-import { runCatalogMigrations } from "./migration-runner.js";
+import {
+  runCatalogMigrations,
+  type CatalogMigrationRunnerOptions,
+} from "./migration-runner.js";
 
 export interface InitCatalogResult {
   dbPath: string;
@@ -13,8 +16,11 @@ export interface InitCatalogResult {
  * 初始化最小 catalog schema。
  * 第二阶段改为通过 migration runner 执行，避免后续 schema 升级继续硬编码在 init 里。
  */
-export function initCatalog(config: RuntimeConfig): InitCatalogResult {
-  const result = runCatalogMigrations(config);
+export function initCatalog(
+  config: RuntimeConfig,
+  options: CatalogMigrationRunnerOptions = {},
+): InitCatalogResult {
+  const result = runCatalogMigrations(config, options);
   return {
     dbPath: result.dbPath,
     indexDir: config.indexDir,
