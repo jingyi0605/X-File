@@ -4,41 +4,20 @@ import {
   HttpServerManager,
   type HttpServerRuntimeState,
 } from "./http-server-manager.js";
-import { PersistentBackendManager } from "./lifecycle/persistent-backend-manager.js";
-import { HostDirectoryBrowserService } from "./library/host-directory-browser-service.js";
-import { LibraryIndexService } from "./library/index-service.js";
-import { LibraryController } from "./library/library-controller.js";
-import { LibraryConfigService } from "./library/library-config-service.js";
-import { LibraryService } from "./library/library-service.js";
-import { LibraryPreviewLinkService } from "./library/preview-link-service.js";
-import { TagController } from "./library/tag-controller.js";
-import { TagService } from "./library/tag-service.js";
-import { OnlyOfficeController } from "./office/onlyoffice-controller.js";
-import { OnlyOfficeService } from "./office/onlyoffice-service.js";
-import { registerHostDirectoryRoutes } from "./routes/host-directory-routes.js";
-import { registerIntegrationRoutes } from "./routes/integration-routes.js";
-import { registerLibraryRoutes } from "./routes/library-routes.js";
-import { registerOfficeRoutes } from "./routes/office-routes.js";
-import { registerServerStateRoutes } from "./routes/server-state-routes.js";
-import { registerTagRoutes } from "./routes/tag-routes.js";
-import { registerAssistantRoutes } from "./routes/assistant-routes.js";
 import { AssistantController } from "./assistant/assistant-controller.js";
-import { AssistantRuntimeService } from "./assistant/assistant-runtime-service.js";
+import { registerLibraryEngineFeature } from "./library/library-engine-feature.js";
+import { registerAssistantRoutes } from "./routes/assistant-routes.js";
 import { LibraryBindingStore } from "./storage/library-binding-store.js";
-import { LibraryConfigStore } from "./storage/library-config-store.js";
-import { IndexRuntimeStore } from "./storage/index-runtime-store.js";
-import { OnlyOfficeSettingsStore } from "./storage/onlyoffice-settings-store.js";
-import { TagStore } from "./storage/tag-store.js";
-import { TaskManager } from "./tasks/task-manager.js";
 
 const APP_VERSION = "0.1.0";
-const DEFAULT_SIGNING_SECRET = "x-file-local-preview-development-secret";
 const ROUTER_MAX_PARAM_LENGTH = 4096;
 
 export interface CreateServerOptions {
   httpServerRuntimeState?: HttpServerRuntimeState;
   httpServerManager?: HttpServerManager;
   manageHttpServerLifecycle?: boolean;
+  includeAssistant?: boolean;
+  sidecarProfile?: "full" | "sidecar-only";
 }
 
 export function createServer(options: CreateServerOptions = {}) {
@@ -75,71 +54,51 @@ export function createServer(options: CreateServerOptions = {}) {
     version: APP_VERSION,
   }));
 
-  const libraryBindingStore = new LibraryBindingStore();
-  const taskManager = new TaskManager();
-  const hostDirectoryBrowserService = new HostDirectoryBrowserService();
-  const libraryService = new LibraryService(
-    libraryBindingStore,
-    undefined,
-    new LibraryIndexService(taskManager, new IndexRuntimeStore()),
-  );
-  const libraryConfigService = new LibraryConfigService(
-    libraryBindingStore,
-    new LibraryConfigStore(),
-  );
-  const tagService = new TagService(
-    libraryBindingStore,
-    new TagStore(),
-    taskManager,
-  );
-  tagService.registerTasks();
-  const httpServerManager =
-    options.httpServerManager ??
-    new HttpServerManager(undefined, options.httpServerRuntimeState);
-  const persistentBackendManager = new PersistentBackendManager();
-  const signingSecret =
-    process.env.X_FILE_SIGNING_SECRET?.trim() || DEFAULT_SIGNING_SECRET;
-  const previewLinkService = new LibraryPreviewLinkService(
-    libraryService,
-    signingSecret,
-  );
-  const onlyOfficeService = new OnlyOfficeService(
-    new OnlyOfficeSettingsStore(),
-    previewLinkService,
-    libraryService,
-    signingSecret,
-  );
-
-  void registerLibraryRoutes(
-    server,
-    new LibraryController(
-      libraryService,
-      previewLinkService,
-      onlyOfficeService,
-      libraryConfigService,
-    ),
-  );
-  void registerHostDirectoryRoutes(server, hostDirectoryBrowserService);
-  void registerOfficeRoutes(
-    server,
-    new OnlyOfficeController(onlyOfficeService),
-  );
-  void registerServerStateRoutes(
-    server,
-    httpServerManager,
-    persistentBackendManager,
-    {
-      manageLifecycle: options.manageHttpServerLifecycle === true,
-    },
-  );
-  void registerTagRoutes(server, new TagController(tagService));
-  void registerIntegrationRoutes(server, libraryService, httpServerManager);
-  void registerAssistantRoutes(
-    server,
-    new AssistantController(new AssistantRuntimeService(libraryBindingStore))
-  );
+  // Node 入口现在只负责装配仍需 HTTP sidecar 的服务；
+  // 文档库主读链与 refresh 宿主已经优先走桌面 native 路径。
+  const feature = registerLibraryEngineFeature(server, {
+    ...options,
+    sidecarProfile: options.sidecarProfile ?? "full",
+  });
+  if (options.includeAssistant !== false) {
+    void registerAssistantRoutes(
+      server,
+      createLazyAssistantController(feature.libraryBindingStore, feature.pluginService),
+    );
+  }
 
   return server;
+}
+
+function createLazyAssistantController(
+  libraryBindingStore: LibraryBindingStore,
+  pluginService: ReturnType<typeof registerLibraryEngineFeature>["pluginService"]
+): AssistantController {
+  let controllerPromise: Promise<AssistantController> | null = null;
+
+  const resolveController = async (): Promise<AssistantController> => {
+    if (!controllerPromise) {
+      controllerPromise = import("./assistant/assistant-runtime-service.js").then(
+        ({ AssistantRuntimeService }) =>
+          new AssistantController(new AssistantRuntimeService(libraryBindingStore, pluginService)),
+      );
+    }
+    return controllerPromise;
+  };
+
+  return {
+    listProviders: async (request, reply) => (await resolveController()).listProviders(request, reply),
+    listSessions: async (request, reply) => (await resolveController()).listSessions(request, reply),
+    getSession: async (request, reply) => (await resolveController()).getSession(request, reply),
+    deleteSession: async (request, reply) => (await resolveController()).deleteSession(request, reply),
+    startSession: async (request, reply) => (await resolveController()).startSession(request, reply),
+    getMessages: async (request, reply) => (await resolveController()).getMessages(request, reply),
+    sendMessage: async (request, reply) => (await resolveController()).sendMessage(request, reply),
+    interrupt: async (request, reply) => (await resolveController()).interrupt(request, reply),
+    listPermissionRequests: async (request, reply) => (await resolveController()).listPermissionRequests(request, reply),
+    replyPermissionRequest: async (request, reply) => (await resolveController()).replyPermissionRequest(request, reply),
+    getAttachment: async (request, reply) => (await resolveController()).getAttachment(request, reply),
+  } as AssistantController;
 }
 
 function isAllowedLocalOrigin(origin: string): boolean {

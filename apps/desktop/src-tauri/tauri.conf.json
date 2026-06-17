@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "pnpm --filter @x-file/web dev",
     "devUrl": "http://127.0.0.1:17320",
-    "beforeBuildCommand": "pnpm --filter @x-file/shared build && pnpm --filter @x-file/indexer build && pnpm --filter @x-file/web build && pnpm --filter @x-file/server build && node ../../scripts/prepare-bundled-server.mjs",
+    "beforeBuildCommand": "pnpm --filter @x-file/shared build && pnpm --filter @x-file/indexer build && pnpm --filter @x-file/server build && pnpm --filter @x-file/library-engine build && pnpm --filter @x-file/web build && node ../../scripts/archive/20260616/prepare-bundled-server.mjs",
     "frontendDist": "../../web/dist"
   },
   "app": {
@@ -53,8 +53,9 @@
     "longDescription": "X-File 是从 CodingNS 拆出的本机文档库应用。签名和自动更新配置已预留，发布前必须替换真实 secrets 并在实机 runner 验证。",
     "createUpdaterArtifacts": true,
     "resources": {
-      "resources/x-file-server": "x-file-server",
-      "resources/x-file-runtime": "x-file-runtime"
+      "resources/x-file-library-engine": "x-file-library-engine",
+      "resources/x-file-runtime": "x-file-runtime",
+      "resources/x-file-plugins": "x-file-plugins"
     }
   },
   "plugins": {
