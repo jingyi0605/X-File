@@ -8,7 +8,7 @@ X-File 是从 CodingNS 拆出的文档库独立应用。当前仓库已经建立
 - `apps/server`：Fastify + TypeScript 后端，提供健康检查、文档库 API、HTTP 服务状态和集成入口。
 - `apps/desktop`：Tauri 2 桌面壳骨架，包含窗口配置、Rust 入口、系统托盘菜单、常驻策略和后端子进程托管入口。
 - `docs`：验收说明和 CodingNS 接入说明。
-- `scripts`：版本同步、macOS 签名公证、Windows 打包和发布前置校验脚本。
+- `scripts`：前后端调试脚本，以及桌面客户端统一验证、统一打包脚本。
 
 ## 脚本
 
@@ -16,25 +16,23 @@ X-File 是从 CodingNS 拆出的文档库独立应用。当前仓库已经建立
 pnpm install
 pnpm build
 pnpm typecheck
-pnpm dev
 pnpm dev:server
 pnpm dev:web
-pnpm dev:all
 pnpm dev:desktop
-pnpm build:macos
-pnpm build:windows
+pnpm verify:desktop
+pnpm package:desktop:macos
+pnpm package:desktop:windows
 ```
 
-调试脚本分前后端独立入口：
+调试脚本只保留前后端独立入口：
 
 - `pnpm dev:server`：只启动后端调试服务，默认 `http://0.0.0.0:17321`。
 - `pnpm dev:web`：只启动前端调试服务，默认 `http://0.0.0.0:17320`。
-- `pnpm dev` / `pnpm dev:all`：同时编排启动前端和后端。
 - 前端 `/api/*` 会代理到本机后端 `http://127.0.0.1:17321`。
 
 可通过环境变量覆盖：`X_FILE_WEB_HOST`、`X_FILE_WEB_PORT`、`X_FILE_SERVER_HOST`、`X_FILE_SERVER_PORT`。后端调试脚本会显式设置 `X_FILE_ALLOW_PUBLIC_HOST=1`，并把 HTTP 状态写到仓库内 `.x-file-dev/http-server-state.json`，避免污染正式用户配置。
 
-`pnpm dev:desktop` 会启动后端开发进程，并输出前端开发地址。正式桌面骨架校验使用 `pnpm --filter @x-file/desktop build`，它会跑 TypeScript 编译和 Tauri Rust `cargo check`。
+`pnpm dev:desktop` 现在直接走 `pnpm --filter @x-file/desktop tauri:dev`，会按 Tauri dev 流程自动拉起前端开发服务并启动桌面调试窗口。正式桌面骨架校验使用 `pnpm --filter @x-file/desktop build`，它会跑 TypeScript 编译和 Tauri Rust `cargo check`。
 
 ## 健康检查
 
@@ -108,10 +106,11 @@ X-File 用 Tauri 2 打包为 macOS（universal `.app` / `.dmg`）和 Windows（N
 - `apps/desktop/src-tauri/tauri.conf.json`：bundle 目标、updater 公钥与 endpoint。
 - `apps/desktop/src-tauri/src/updater.rs`：检查 / 下载 / 安装更新，按通道（stable / dev）选择 endpoint。
 - `apps/desktop/src-tauri/src/lib.rs`：注册 updater 命令（`check_for_update` / `download_update` / `install_update` / `get_release_channel` / `set_release_channel` / `open_external_url`）。
+- `scripts/verify-desktop.mjs`：默认执行完整桌面打包验证；也支持单独跑前置检查或产物检查。
+- `scripts/package-desktop.sh`：统一做 macOS / Windows 桌面打包。
 - `scripts/sync-version.mjs`：以根 `VERSION` 为唯一真源同步全仓版本号。
-- `scripts/build-macos.sh`：universal 构建 + 自动接 `release-macos.sh` 签名公证。
-- `scripts/release-macos.sh`：Developer ID 签名 + DMG 重建 + Apple 公证 + stapling + Gatekeeper 校验。
-- `scripts/build-windows.sh`：Windows 打包（按版本通道切 NSIS / MSI）。
+- `scripts/archive/20260616/`：归档的历史脚本和临时工具脚本。
+  - 包含原 `build-macos.sh`、`build-windows.sh`、`release-macos.sh`、`check-desktop-release-secrets.mjs`、`prepare-bundled-server.mjs` 以及临时工具脚本。
 - `.github/workflows/desktop-release.yml`：tag 触发的跨平台打包发布 CI。
 - `.github/workflows/ci.yml`：PR 类型检查 + 测试 + 构建。
 
@@ -153,7 +152,7 @@ Windows 代码签名默认不做（沿用父项目现状），仅保留 Tauri up
 发布前置检查（本地）：
 
 ```bash
-node scripts/check-desktop-release-secrets.mjs --platform macos --require-real-secrets
+pnpm verify:desktop -- --platform=macos --mode=preflight --require-real-secrets
 ```
 
 Windows self-hosted 实机构建入口（手动，保留用于实机调试）：
@@ -167,5 +166,5 @@ Windows self-hosted 实机构建入口（手动，保留用于实机调试）：
 - 已建立 dev/stable 双更新通道（GitHub Releases + Tauri updater）和 tag 触发的跨平台发布 CI；macOS 签名公证复用 Apple Developer ID 证书，Windows 不做 authenticode 签名（首次运行有 SmartScreen 警告）。
 - 不主动启动长期 dev server。
 - 已实现基础系统托盘菜单；不实现开机自启和 deep link 注册。
-- 桌面壳能托管后端子进程并优先寻找打包资源里的 `x-file-server/main.js`；发布包仍需要携带 Node runtime 或改为真正 sidecar，不能假设用户机器一定有 Node。
+- 桌面壳能托管后端子进程并优先寻找打包资源里的 `x-file-library-engine/dist/main.js`；`x-file-server/*` 仅保留历史兼容路径。发布包仍需要携带 Node runtime 或改为真正 sidecar，不能假设用户机器一定有 Node。
 - 不引入 CodingNS 的工作区、事务模式、Teable、Butler 或代码工作台能力。

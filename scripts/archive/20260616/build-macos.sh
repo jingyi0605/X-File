@@ -22,7 +22,7 @@ else
   echo "跳过强制 secrets 检查；本地构建会使用当前环境里已有的签名配置。"
 fi
 
-TAURI_ARGS=(build --ci --bundles "${X_FILE_MACOS_BUNDLES:-app,dmg}" --target "$MACOS_TARGET")
+TAURI_ARGS=(build --bundles "${X_FILE_MACOS_BUNDLES:-app,dmg}" --target "$MACOS_TARGET")
 if [[ -n "${APPLE_SIGN_IDENTITY:-}" ]]; then
   TAURI_ARGS+=(--config "{\"bundle\":{\"macOS\":{\"signingIdentity\":\"${APPLE_SIGN_IDENTITY}\"}}}")
 fi

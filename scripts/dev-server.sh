@@ -8,8 +8,10 @@ export X_FILE_SERVER_HOST="${X_FILE_SERVER_HOST:-0.0.0.0}"
 export X_FILE_SERVER_PORT="${X_FILE_SERVER_PORT:-17321}"
 export X_FILE_ALLOW_PUBLIC_HOST="${X_FILE_ALLOW_PUBLIC_HOST:-1}"
 export X_FILE_SERVER_STATE_PATH="${X_FILE_SERVER_STATE_PATH:-${ROOT_DIR}/.x-file-dev/http-server-state.json}"
+export X_FILE_NODE_SIDECAR_PROFILE="${X_FILE_NODE_SIDECAR_PROFILE:-full}"
 
 echo "启动 X-File 后端：http://${X_FILE_SERVER_HOST}:${X_FILE_SERVER_PORT}"
 echo "后端状态文件：${X_FILE_SERVER_STATE_PATH}"
+echo "Node sidecar profile：${X_FILE_NODE_SIDECAR_PROFILE}"
 
 exec pnpm --filter @x-file/server dev

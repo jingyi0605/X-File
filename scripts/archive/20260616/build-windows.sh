@@ -34,7 +34,7 @@ if is_windows_env; then
   fi
 
   # tauri build 的 beforeBuildCommand 会构建 shared/indexer/server/web + 打包后端。
-  pnpm --dir apps/desktop exec tauri build --ci --bundles "$BUNDLE_TARGETS" --target x86_64-pc-windows-msvc
+  pnpm --dir apps/desktop exec tauri build --bundles "$BUNDLE_TARGETS" --target x86_64-pc-windows-msvc
 
   echo "Windows 构建完成。产物在："
   echo "  apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe"

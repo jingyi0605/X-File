@@ -7,29 +7,36 @@ import type {
   LibraryConfig,
   OnlyOfficeSettings,
   OnlyOfficeStatus,
-  OnlyOfficeStatusState
+  OnlyOfficeStatusState,
+  PluginListItem,
+  PluginListResult
 } from "@x-file/shared";
 
 import {
   browseHostDirectories,
+  disablePlugin,
+  enablePlugin,
   getHttpServerState,
   getLibraryBinding,
   getLibraryConfig,
   getLibrarySnapshot,
   getOnlyOfficeSettings,
   getOnlyOfficeStatus,
+  listPlugins,
   saveHttpServerState,
   saveLibraryBinding,
   saveLibraryConfig,
-  saveOnlyOfficeSettings
+  saveOnlyOfficeSettings,
 } from "../../api/library";
 import { toApiErrorMessage } from "../../api/http";
 import { t } from "../../i18n";
+import { normalizeBaseUrl } from "../../runtime/runtime-config";
 import { LanguageSwitcher } from "../../shared/i18n/LanguageSwitcher";
 import { ThemeSwitcher } from "../../shared/theme/ThemeSwitcher";
 import { formatDateTime } from "../../shared/format";
 import { DesktopModal, ModalActions } from "../../shared/modal";
 import { UpdatePanel } from "./UpdatePanel";
+import { getRuntimeConfigSnapshot, updateRuntimeConfig } from "../../runtime/runtime-config-store";
 
 interface SettingsPageProps {
   onSaved?: () => void;
@@ -38,6 +45,12 @@ interface SettingsPageProps {
 
 interface BindingFormState {
   rootDir: string;
+}
+
+interface RuntimeFormState {
+  mode: "local" | "mirror";
+  remoteApiBaseUrl: string;
+  localRootDir: string;
 }
 
 interface ConfigFormState {
@@ -63,6 +76,11 @@ interface ServerFormState {
   enabled: boolean;
   persistent: boolean;
   port: string;
+}
+
+interface OnlyOfficeModalState {
+  open: boolean;
+  refreshing: boolean;
 }
 
 interface PublicBaseUrlOptions {
@@ -140,7 +158,16 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
   const [libraryIndexStatus, setLibraryIndexStatus] = useState<LibraryIndexStatus | null>(null);
   const [onlyOffice, setOnlyOffice] = useState<OnlyOfficeSettings | null>(null);
   const [onlyOfficeStatus, setOnlyOfficeStatus] = useState<OnlyOfficeStatus | null>(null);
+  const [pluginList, setPluginList] = useState<PluginListResult | null>(null);
   const [serverState, setServerState] = useState<HttpServerState | null>(null);
+  const [runtimeForm, setRuntimeForm] = useState<RuntimeFormState>(() => {
+    const config = getRuntimeConfigSnapshot().config;
+    return {
+      mode: config.mode,
+      remoteApiBaseUrl: config.remoteApiBaseUrl,
+      localRootDir: config.localRootDir
+    };
+  });
   const [bindingForm, setBindingForm] = useState<BindingFormState>({ rootDir: "" });
   const [configForm, setConfigForm] = useState<ConfigFormState>({
     enabled: true,
@@ -164,6 +191,10 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
     persistent: false,
     port: "17321"
   });
+  const [onlyOfficeModal, setOnlyOfficeModal] = useState<OnlyOfficeModalState>({
+    open: false,
+    refreshing: false
+  });
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -177,6 +208,8 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
   const [directoryBrowserParentPath, setDirectoryBrowserParentPath] = useState<string | null>(null);
   const [directoryBrowserRoots, setDirectoryBrowserRoots] = useState<HostDirectoryOption[]>([]);
   const [directoryBrowserItems, setDirectoryBrowserItems] = useState<HostDirectoryOption[]>([]);
+  const isMirrorMode = runtimeForm.mode === "mirror";
+  const runtimeModeLabel = isMirrorMode ? t("runtimeModeMirror") : t("runtimeModeLocal");
 
   async function loadSettings(): Promise<void> {
     setLoading(true);
@@ -191,6 +224,13 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
     } catch (err) {
       setError(toApiErrorMessage(err));
     }
+
+    const runtimeConfig = getRuntimeConfigSnapshot().config;
+    setRuntimeForm({
+      mode: runtimeConfig.mode,
+      remoteApiBaseUrl: runtimeConfig.remoteApiBaseUrl,
+      localRootDir: runtimeConfig.localRootDir
+    });
 
     try {
       const config = await getLibraryConfig();
@@ -215,6 +255,12 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
     }
 
     try {
+      setPluginList(await listPlugins());
+    } catch (err) {
+      setError((current) => current ?? toApiErrorMessage(err));
+    }
+
+    try {
       const state = await getHttpServerState();
       applyServerState(state);
     } catch (err) {
@@ -226,18 +272,40 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
 
   async function submitBinding(event: FormEvent): Promise<void> {
     event.preventDefault();
-    const rootDir = bindingForm.rootDir.trim();
-    if (!rootDir) {
-      setError(t("settingsRequiredRootDir"));
-      return;
-    }
-
     try {
       setError(null);
-      const saved = await saveLibraryBinding({ rootDir });
-      setBinding(saved);
-      const snapshot = await getLibrarySnapshot();
-      setLibraryIndexStatus(snapshot.status);
+      if (isMirrorMode) {
+        const normalizedRemoteApiBaseUrl = normalizeBaseUrl(runtimeForm.remoteApiBaseUrl);
+        if (!normalizedRemoteApiBaseUrl) {
+          setError(t("runtimeMirrorApiRequired"));
+          return;
+        }
+        const nextConfig = await updateRuntimeConfig({
+          mode: "mirror",
+          remoteApiBaseUrl: normalizedRemoteApiBaseUrl,
+          localRootDir: runtimeForm.localRootDir
+        });
+        setRuntimeForm({
+          mode: nextConfig.mode,
+          remoteApiBaseUrl: nextConfig.remoteApiBaseUrl,
+          localRootDir: nextConfig.localRootDir
+        });
+      } else {
+        await updateRuntimeConfig({
+          mode: "local",
+          remoteApiBaseUrl: runtimeForm.remoteApiBaseUrl,
+          localRootDir: runtimeForm.localRootDir
+        });
+        const rootDir = bindingForm.rootDir.trim();
+        if (!rootDir) {
+          setError(t("settingsRequiredRootDir"));
+          return;
+        }
+        const saved = await saveLibraryBinding({ rootDir });
+        setBinding(saved);
+        const snapshot = await getLibrarySnapshot();
+        setLibraryIndexStatus(snapshot.status);
+      }
       setMessage(t("settingsSaveSuccess"));
       onSaved?.();
     } catch (err) {
@@ -250,7 +318,7 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
     try {
       setError(null);
       const saved = await saveLibraryConfig({
-        enabled: configForm.enabled,
+        enabled: true,
         allowedExtensions: shouldPersistImplicitAllowedExtensions(
           libraryConfig?.allowedExtensions ?? [],
           configForm.allowedExtensions
@@ -291,6 +359,18 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
     }
   }
 
+  async function refreshOnlyOfficeStatus(): Promise<void> {
+    try {
+      setOnlyOfficeModal((current) => ({ ...current, refreshing: true }));
+      setError(null);
+      setOnlyOfficeStatus(await getOnlyOfficeStatus());
+    } catch (err) {
+      setError(toApiErrorMessage(err));
+    } finally {
+      setOnlyOfficeModal((current) => ({ ...current, refreshing: false }));
+    }
+  }
+
   async function submitServer(event: FormEvent): Promise<void> {
     event.preventDefault();
     try {
@@ -302,6 +382,22 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
       });
       applyServerState(saved);
       setMessage(t("settingsSaveSuccess"));
+    } catch (err) {
+      setError(toApiErrorMessage(err));
+    }
+  }
+
+  async function handlePluginToggle(plugin: PluginListItem): Promise<void> {
+    try {
+      setError(null);
+      const result = plugin.registry.enabled
+        ? await disablePlugin(plugin.registry.pluginId)
+        : await enablePlugin(plugin.registry.pluginId);
+      setPluginList((current) => ({
+        pluginRootDir: result.pluginRootDir,
+        plugins: mergePluginItem(current?.plugins ?? [], result.plugin),
+      }));
+      setMessage(plugin.registry.enabled ? t("settingsPluginDisableSuccess") : t("settingsPluginEnableSuccess"));
     } catch (err) {
       setError(toApiErrorMessage(err));
     }
@@ -376,7 +472,11 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
 
   function openDirectoryBrowser(): void {
     setDirectoryBrowserOpen(true);
-    void loadHostDirectory(bindingForm.rootDir.trim() || undefined);
+    void loadHostDirectory(
+      runtimeForm.mode === "mirror"
+        ? runtimeForm.localRootDir.trim() || undefined
+        : bindingForm.rootDir.trim() || undefined
+    );
   }
 
   function closeDirectoryBrowser(): void {
@@ -393,7 +493,11 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
       return;
     }
 
-    setBindingForm({ rootDir: directoryBrowserCurrentPath });
+    if (runtimeForm.mode === "mirror") {
+      setRuntimeForm((current) => ({ ...current, localRootDir: directoryBrowserCurrentPath }));
+    } else {
+      setBindingForm({ rootDir: directoryBrowserCurrentPath });
+    }
     setDirectoryBrowserOpen(false);
     setDirectoryBrowserError(null);
   }
@@ -456,52 +560,84 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
       <section className="settings-grid">
         <form className="settings-section" onSubmit={(event) => void submitBinding(event)}>
           <h2>{t("settingsBindingTitle")}</h2>
-          <label>
-            <span>{t("settingsRootDir")}</span>
-            <div className="library-init-path-row">
-              <input
-                value={bindingForm.rootDir || t("settingsRootDirNotSelected")}
-                readOnly
-                aria-readonly="true"
-              />
-              <button type="button" className="secondary-button" onClick={openDirectoryBrowser}>
-                {t("hostDirectoryBrowseAction")}
-              </button>
-            </div>
-          </label>
-          <LibraryIndexStatusCard binding={binding} status={libraryIndexStatus} />
+          <p className="settings-helper-text">
+            {isMirrorMode ? t("settingsMirrorBindingDescription") : t("settingsLocalBindingDescription")}
+          </p>
+          <div className="settings-runtime-mode-switcher">
+            <button type="button" className={runtimeForm.mode === "local" ? "primary-button" : "secondary-button"} onClick={() => setRuntimeForm((current) => ({ ...current, mode: "local" }))}>
+              {t("runtimeModeLocal")}
+            </button>
+            <button type="button" className={runtimeForm.mode === "mirror" ? "primary-button" : "secondary-button"} onClick={() => setRuntimeForm((current) => ({ ...current, mode: "mirror" }))}>
+              {t("runtimeModeMirror")}
+            </button>
+          </div>
+          {isMirrorMode ? (
+            <>
+              <label>
+                <span>{t("runtimeRemoteApiBaseUrl")}</span>
+                <input value={runtimeForm.remoteApiBaseUrl} placeholder={t("runtimeRemoteApiBaseUrlPlaceholder")} onChange={(event) => setRuntimeForm((current) => ({ ...current, remoteApiBaseUrl: event.target.value }))} />
+                <small>{t("settingsMirrorSourceApiDescription")}</small>
+              </label>
+              <label>
+                <span>{t("runtimeMirrorRootDir")}</span>
+                <div className="library-init-path-row">
+                  <input value={runtimeForm.localRootDir} placeholder={t("runtimeMirrorRootDirPlaceholder")} onChange={(event) => setRuntimeForm((current) => ({ ...current, localRootDir: event.target.value }))} />
+                  <button type="button" className="secondary-button" onClick={openDirectoryBrowser}>
+                    {t("hostDirectoryBrowseAction")}
+                  </button>
+                </div>
+                <small>{t("settingsMirrorLocalDirDescription")}</small>
+              </label>
+            </>
+          ) : (
+            <>
+              <label>
+                <span>{t("settingsRootDir")}</span>
+                <div className="library-init-path-row">
+                  <input value={bindingForm.rootDir} onChange={(event) => setBindingForm({ rootDir: event.target.value })} placeholder={t("settingsRootDirPlaceholder")} />
+                  <button type="button" className="secondary-button" onClick={openDirectoryBrowser}>
+                    {t("hostDirectoryBrowseAction")}
+                  </button>
+                </div>
+              </label>
+              <LibraryIndexStatusCard binding={binding} status={libraryIndexStatus} />
+            </>
+          )}
           <button type="submit" className="primary-button">{t("settingsSaveBinding")}</button>
         </form>
 
         <form className="settings-section" onSubmit={(event) => void submitConfig(event)}>
           <h2>{t("settingsConfigTitle")}</h2>
+          {isMirrorMode ? (
+            <div className="settings-remote-owner-note" data-tone="danger">
+              <strong>{t("settingsRemoteOwnerTitle")}</strong>
+              <span>{t("settingsMirrorConfigRemoteNotice")}</span>
+            </div>
+          ) : null}
           {configUnavailable ? <div className="inline-note">{t("settingsConfigUnavailable")} {configUnavailable}</div> : null}
           <div className="affairs-library-settings-form">
             <section className="affairs-library-config-section">
-              <div className="affairs-library-behavior-switch-row">
-                <span className="affairs-library-behavior-switch-title">{t("settingsLibraryEnabled")}</span>
-                <MacSwitch
-                  checked={configForm.enabled}
-                  label={t("settingsLibraryEnabled")}
-                  onChange={(checked) => setConfigForm((current) => ({ ...current, enabled: checked }))}
-                />
-              </div>
-              <span className="settings-helper-text">
-                {configForm.enabled ? t("settingsLibraryEnabledHint") : t("settingsLibraryDisabledHint")}
-              </span>
-            </section>
-            <section className="affairs-library-config-section">
-              <div className="affairs-library-behavior-switch-row">
+              <div className="affairs-library-behavior-switch-header">
                 <span className="affairs-library-behavior-switch-title">{t("settingsFolderOpenBehavior")}</span>
-                <MacSwitch
-                  checked={configForm.folderOpenBehavior === "single_click"}
-                  label={t("settingsFolderOpenBehavior")}
-                  onChange={(checked) => setConfigForm((current) => ({ ...current, folderOpenBehavior: checked ? "single_click" : "double_click" }))}
-                />
+                <div className="affairs-library-behavior-segmented" role="group" aria-label={t("settingsFolderOpenBehavior")}>
+                  <button
+                    type="button"
+                    className={configForm.folderOpenBehavior === "single_click" ? "active" : ""}
+                    aria-pressed={configForm.folderOpenBehavior === "single_click"}
+                    onClick={() => setConfigForm((current) => ({ ...current, folderOpenBehavior: "single_click" }))}
+                  >
+                    {t("settingsSingleClick")}
+                  </button>
+                  <button
+                    type="button"
+                    className={configForm.folderOpenBehavior === "double_click" ? "active" : ""}
+                    aria-pressed={configForm.folderOpenBehavior === "double_click"}
+                    onClick={() => setConfigForm((current) => ({ ...current, folderOpenBehavior: "double_click" }))}
+                  >
+                    {t("settingsDoubleClick")}
+                  </button>
+                </div>
               </div>
-              <span className="settings-helper-text">
-                {configForm.folderOpenBehavior === "single_click" ? t("settingsSingleClick") : t("settingsDoubleClick")}
-              </span>
             </section>
             <label>
               <span>{t("settingsIncludedHiddenPaths")}</span>
@@ -552,180 +688,161 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
       </section>
     ),
     integration: (
-      <form className="settings-section" onSubmit={(event) => void submitOnlyOffice(event)}>
-        <div className="settings-onlyoffice-panel">
-          <div className="settings-onlyoffice-status-summary">
-            <div className="settings-onlyoffice-status-copy">
-              <h2>{t("settingsOnlyOfficeTitle")}</h2>
-              <p className="settings-onlyoffice-status-description">{t("settingsOnlyOfficeDescription")}</p>
+      <section className="settings-section settings-integration-section">
+        <div className="settings-integration-header">
+          <div>
+            <h2>{t("settingsIntegrationHubTitle")}</h2>
+          </div>
+          {isMirrorMode ? (
+            <div className="settings-remote-owner-note" data-tone="danger">
+              <strong>{t("settingsRemoteOwnerTitle")}</strong>
+              <span>{t("settingsMirrorOnlyOfficeRemoteNotice")}</span>
             </div>
-            <div className="settings-instance-card settings-onlyoffice-instance-card">
+          ) : null}
+        </div>
+
+        <div className="settings-integration-cards" role="list" aria-label={t("settingsIntegrationHubTitle")}>
+          <article className="settings-section settings-plugin-card settings-plugin-card-featured" role="listitem">
+            <div className="settings-heading-row">
+              <div>
+                <h3>{t("settingsPluginsTitle")}</h3>
+                <p className="settings-helper-text">{t("settingsPluginsDescription")}</p>
+              </div>
+            </div>
+            <div className="settings-current">
+              <span>{t("settingsBundledPluginListLabel")}</span>
+              <strong>{pluginList?.plugins.length ?? 0}</strong>
+            </div>
+            <p className="settings-helper-text">{t("settingsBundledPluginDescription")}</p>
+          </article>
+
+          <article className="settings-section settings-plugin-card settings-onlyoffice-card" role="listitem" data-health={onlyOfficeStatus?.state ?? "unknown"}>
+            <div className="settings-heading-row">
+              <div>
+                <h3>{t("settingsOnlyOfficeTitle")}</h3>
+              </div>
+            </div>
+            <div className="settings-current">
+              <span>{t("settingsOnlyOfficeEnabled")}</span>
+              <strong>{onlyOfficeForm.enabled ? t("settingsPluginEnabled") : t("settingsPluginDisabled")}</strong>
+            </div>
+            <div className="settings-current">
               <span>{t("settingsOnlyOfficeInstance")}</span>
               <strong>{onlyOfficeForm.serverUrl || t("commonNotSet")}</strong>
             </div>
-          </div>
-
-          <div className="settings-onlyoffice-metrics" role="list" aria-label={t("settingsOnlyOfficeStatusPanelTitle")}>
-            {buildOnlyOfficeStatusCards(onlyOfficeStatus).map((card) => (
-              <div
-                key={card.key}
-                className="settings-onlyoffice-metric-card"
-                data-tone={card.tone}
-                role="listitem"
-                tabIndex={0}
+            <p className="settings-helper-text">{onlyOfficeStatus?.summary ?? t("settingsOnlyOfficeStatusUnknown")}</p>
+            <div className="settings-onlyoffice-metrics settings-onlyoffice-metrics-compact" role="list" aria-label={t("settingsOnlyOfficeStatusPanelTitle")}>
+              {buildOnlyOfficeStatusCards(onlyOfficeStatus).slice(0, 4).map((card) => (
+                <div
+                  key={card.key}
+                  className="settings-onlyoffice-metric-card"
+                  data-tone={card.tone}
+                  role="listitem"
+                  tabIndex={0}
+                >
+                  <span className="settings-onlyoffice-metric-label">{card.label}</span>
+                  <strong className="settings-onlyoffice-metric-value">{card.value}</strong>
+                  <div className="settings-onlyoffice-metric-tooltip" role="note">
+                    {card.detail}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="button-row">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => setOnlyOfficeModal({ open: true, refreshing: false })}
               >
-                <span className="settings-onlyoffice-metric-label">{card.label}</span>
-                <strong className="settings-onlyoffice-metric-value">{card.value}</strong>
-                <div className="settings-onlyoffice-metric-tooltip" role="note">
-                  {card.detail}
+                {t("settingsOnlyOfficeConfigureAction")}
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => void refreshOnlyOfficeStatus()}
+              >
+                {onlyOfficeModal.refreshing ? t("healthChecking") : t("settingsOnlyOfficeRefreshStatus")}
+              </button>
+            </div>
+          </article>
+
+          {pluginList && pluginList.plugins.length > 0 ? pluginList.plugins.map((plugin) => (
+            <article
+              key={plugin.registry.pluginId}
+              className="settings-section settings-plugin-card settings-plugin-list-item"
+              role="listitem"
+              data-health={plugin.health.status}
+            >
+              <div className="settings-plugin-list-main">
+                <div className="settings-plugin-list-title">
+                  <h3>{plugin.manifest.name}</h3>
+                </div>
+                <div className="settings-plugin-list-meta" aria-label={plugin.manifest.name}>
+                  <span className="settings-runtime-badge">{renderPluginHealthLabel(plugin)}</span>
+                  <span className="settings-plugin-version">{plugin.registry.version}</span>
                 </div>
               </div>
-            ))}
-          </div>
-
-          <section className="settings-onlyoffice-form-section">
-            <label className="switch-row settings-onlyoffice-switch-row">
-              <div className="settings-onlyoffice-switch-copy">
-                <span>{t("settingsOnlyOfficeEnabled")}</span>
-                <small>{onlyOfficeForm.enabled ? t("settingsOnlyOfficeEnabledDescriptionOn") : t("settingsOnlyOfficeEnabledDescriptionOff")}</small>
+              <div className="settings-plugin-list-toggle">
+                <span className="settings-plugin-toggle-state">
+                  {plugin.registry.enabled ? t("settingsPluginEnabled") : t("settingsPluginDisabled")}
+                </span>
+                <MacSwitch
+                  checked={plugin.registry.enabled}
+                  label={plugin.manifest.name}
+                  onChange={() => void handlePluginToggle(plugin)}
+                />
               </div>
-              <MacSwitch
-                checked={onlyOfficeForm.enabled}
-                label={t("settingsOnlyOfficeEnabled")}
-                onChange={(checked) => setOnlyOfficeForm((current) => ({ ...current, enabled: checked }))}
-              />
-            </label>
-
-            <TextInput
-              label={t("settingsOnlyOfficeServerUrl")}
-              description={t("settingsOnlyOfficeServerUrlDescription")}
-              value={onlyOfficeForm.serverUrl}
-              placeholder={t("settingsOnlyOfficeServerUrlPlaceholder")}
-              onChange={(value) => setOnlyOfficeForm((current) => ({ ...current, serverUrl: value }))}
-            />
-            <TextInput
-              label={t("settingsOnlyOfficePublicBaseUrl")}
-              description={t("settingsOnlyOfficePublicBaseUrlDescription")}
-              value={onlyOfficeForm.publicBaseUrl}
-              placeholder={t("settingsOnlyOfficePublicBaseUrlPlaceholder")}
-              onChange={(value) => setOnlyOfficeForm((current) => ({ ...current, publicBaseUrl: value }))}
-            />
-            <TextInput
-              label={t("settingsOnlyOfficeCallbackBaseUrl")}
-              description={t("settingsOnlyOfficeCallbackBaseUrlDescription")}
-              value={onlyOfficeForm.callbackBaseUrl}
-              placeholder={t("settingsOnlyOfficeCallbackBaseUrlPlaceholder")}
-              onChange={(value) => setOnlyOfficeForm((current) => ({ ...current, callbackBaseUrl: value }))}
-            />
-          </section>
-
-          <section className="settings-onlyoffice-form-section">
-            <div className="settings-section-title">
-              <strong>{t("settingsOnlyOfficeIdentitySection")}</strong>
-              <span className="settings-row-description">{t("settingsOnlyOfficeIdentitySectionDescription")}</span>
-            </div>
-
-            <TextInput
-              label={t("settingsOnlyOfficeUserName")}
-              description={t("settingsOnlyOfficeUserNameDescription")}
-              value={onlyOfficeForm.userDisplayName}
-              placeholder={t("settingsOnlyOfficeUserNamePlaceholder")}
-              onChange={(value) => setOnlyOfficeForm((current) => ({ ...current, userDisplayName: value }))}
-            />
-            <TextInput
-              label={t("settingsOnlyOfficeAvatar")}
-              description={t("settingsOnlyOfficeAvatarDescription")}
-              value={onlyOfficeForm.userAvatarUrl}
-              placeholder={t("settingsOnlyOfficeAvatarPlaceholder")}
-              onChange={(value) => setOnlyOfficeForm((current) => ({ ...current, userAvatarUrl: value }))}
-            />
-          </section>
-
-          <section className="settings-onlyoffice-form-section">
-            <div className="settings-section-title">
-              <strong>{t("settingsOnlyOfficeSecuritySection")}</strong>
-              <span className="settings-row-description">{t("settingsOnlyOfficeSecuritySectionDescription")}</span>
-            </div>
-
-            <TextInput
-              label={t("settingsOnlyOfficeJwtSecret")}
-              description={t("settingsOnlyOfficeJwtSecretDescription")}
-              value={onlyOfficeForm.jwtSecret}
-              placeholder={onlyOffice?.jwtSecretConfigured
-                ? t("settingsOnlyOfficeJwtKeepPlaceholder")
-                : t("settingsOnlyOfficeJwtPlaceholder")}
-              onChange={(value) => setOnlyOfficeForm((current) => ({ ...current, jwtSecret: value, clearJwtSecret: false }))}
-            />
-            <label className="switch-row settings-onlyoffice-switch-row">
-              <div className="settings-onlyoffice-switch-copy">
-                <span>{t("settingsOnlyOfficeClearJwt")}</span>
-                <small>{t("settingsOnlyOfficeClearJwtDescription")}</small>
-              </div>
-              <MacSwitch
-                checked={onlyOfficeForm.clearJwtSecret}
-                label={t("settingsOnlyOfficeClearJwt")}
-                onChange={(checked) => setOnlyOfficeForm((current) => ({ ...current, clearJwtSecret: checked }))}
-              />
-            </label>
-          </section>
-
-          <div className="settings-current settings-onlyoffice-summary-row">
-            <span>{t("settingsOnlyOfficeJwtSecret")}</span>
-            <strong>{onlyOffice?.jwtSecretConfigured ? t("settingsOnlyOfficeJwtConfigured") : t("settingsOnlyOfficeJwtNotConfigured")}</strong>
-          </div>
-
-          <div className="button-row settings-onlyoffice-actions">
-            <button type="button" className="secondary-button" onClick={() => void loadSettings()}>
-              {t("actionCancel")}
-            </button>
-            <button type="button" className="secondary-button" onClick={() => void getOnlyOfficeStatus().then(setOnlyOfficeStatus).catch((err) => setError(toApiErrorMessage(err)))}>
-              {t("settingsOnlyOfficeRefreshStatus")}
-            </button>
-            <button type="submit" className="primary-button">{t("settingsOnlyOfficeSave")}</button>
-          </div>
+            </article>
+          )) : null}
         </div>
-      </form>
+      </section>
     ),
     network: (
       <form className="settings-section" onSubmit={(event) => void submitServer(event)}>
-          <h2>{t("settingsServerTitle")}</h2>
-          {serverUnavailable ? <div className="inline-note">{t("settingsServerUnavailable")} {serverUnavailable}</div> : null}
-          <label className="switch-row">
-            <span>{t("settingsServerEnabled")}</span>
-            <MacSwitch
-              checked={serverForm.enabled}
-              label={t("settingsServerEnabled")}
-              onChange={(checked) => setServerForm((current) => ({ ...current, enabled: checked }))}
-            />
-          </label>
-          <label className="switch-row">
-            <span>{t("settingsServerPersistent")}</span>
-            <MacSwitch
-              checked={serverForm.persistent}
-              label={t("settingsServerPersistent")}
-              onChange={(checked) => setServerForm((current) => ({ ...current, persistent: checked }))}
-            />
-          </label>
-          <label>
-            <span>{t("settingsServerPort")}</span>
-            <input
-              type="number"
-              min="1"
-              max="65535"
-              value={serverForm.port}
-              onChange={(event) => setServerForm((current) => ({ ...current, port: event.target.value }))}
-            />
-          </label>
-          <ServerStatus state={serverState} />
-          <div className="button-row">
-            <button type="submit" className="primary-button" disabled={Boolean(serverUnavailable)}>
-              {t("settingsServerSave")}
-            </button>
-            <button type="button" className="secondary-button" onClick={() => void getHttpServerState().then(applyServerState).catch((err) => setServerUnavailable(toApiErrorMessage(err)))}>
-              {t("settingsServerRefresh")}
-            </button>
+        <h2>{t("settingsServerTitle")}</h2>
+        {isMirrorMode ? (
+          <div className="settings-remote-owner-note" data-tone="danger">
+            <strong>{t("settingsRemoteOwnerTitle")}</strong>
+            <span>{t("settingsMirrorServerRemoteNotice")}</span>
           </div>
-        </form>
+        ) : null}
+        {serverUnavailable ? <div className="inline-note">{t("settingsServerUnavailable")} {serverUnavailable}</div> : null}
+        <label className="switch-row">
+          <span>{t("settingsServerEnabled")}</span>
+          <MacSwitch
+            checked={serverForm.enabled}
+            label={t("settingsServerEnabled")}
+            onChange={(checked) => setServerForm((current) => ({ ...current, enabled: checked }))}
+          />
+        </label>
+        <label className="switch-row">
+          <span>{t("settingsServerPersistent")}</span>
+          <MacSwitch
+            checked={serverForm.persistent}
+            label={t("settingsServerPersistent")}
+            onChange={(checked) => setServerForm((current) => ({ ...current, persistent: checked }))}
+          />
+        </label>
+        <label>
+          <span>{t("settingsServerPort")}</span>
+          <input
+            type="number"
+            min="1"
+            max="65535"
+            value={serverForm.port}
+            onChange={(event) => setServerForm((current) => ({ ...current, port: event.target.value }))}
+          />
+        </label>
+        <ServerStatus state={serverState} />
+        <div className="button-row">
+          <button type="submit" className="primary-button" disabled={Boolean(serverUnavailable)}>
+            {t("settingsServerSave")}
+          </button>
+          <button type="button" className="secondary-button" onClick={() => void getHttpServerState().then(applyServerState).catch((err) => setServerUnavailable(toApiErrorMessage(err)))}>
+            {t("settingsServerRefresh")}
+          </button>
+        </div>
+      </form>
     ),
     updates: <UpdatePanel />
   };
@@ -735,7 +852,12 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
       <section className="page-heading">
         <div>
           <p className="eyebrow">{t("navSettings")}</p>
-          <h1>{t("settingsTitle")}</h1>
+          <div className="settings-heading-row">
+            <h1>{t("settingsTitle")}</h1>
+            <span className="settings-runtime-badge" data-mode={runtimeForm.mode}>
+              {runtimeModeLabel}
+            </span>
+          </div>
         </div>
         <button type="button" className="secondary-button" onClick={() => void loadSettings()}>
           {loading ? t("healthChecking") : t("libraryReload")}
@@ -778,6 +900,18 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
     return (
       <>
         {content}
+        <OnlyOfficeSettingsModal
+          open={onlyOfficeModal.open}
+          isMirrorMode={isMirrorMode}
+          refreshing={onlyOfficeModal.refreshing}
+          onlyOffice={onlyOffice}
+          onlyOfficeForm={onlyOfficeForm}
+          onlyOfficeStatus={onlyOfficeStatus}
+          onClose={() => setOnlyOfficeModal({ open: false, refreshing: false })}
+          onRefresh={() => void refreshOnlyOfficeStatus()}
+          onSubmit={submitOnlyOffice}
+          onChange={(updater) => setOnlyOfficeForm((current) => updater(current))}
+        />
         <DirectoryBrowserModal
           open={directoryBrowserOpen}
           loading={directoryBrowserLoading}
@@ -801,6 +935,11 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
       <DesktopModal
         open
         title={t("settingsTitle")}
+        headerActions={(
+          <span className="settings-runtime-badge settings-runtime-badge-modal" data-mode={runtimeForm.mode}>
+            {runtimeModeLabel}
+          </span>
+        )}
         size="xwide"
         layout="form"
         className="settings-modal-card"
@@ -809,6 +948,18 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
       >
         {content}
       </DesktopModal>
+      <OnlyOfficeSettingsModal
+        open={onlyOfficeModal.open}
+        isMirrorMode={isMirrorMode}
+        refreshing={onlyOfficeModal.refreshing}
+        onlyOffice={onlyOffice}
+        onlyOfficeForm={onlyOfficeForm}
+        onlyOfficeStatus={onlyOfficeStatus}
+        onClose={() => setOnlyOfficeModal({ open: false, refreshing: false })}
+        onRefresh={() => void refreshOnlyOfficeStatus()}
+        onSubmit={submitOnlyOffice}
+        onChange={(updater) => setOnlyOfficeForm((current) => updater(current))}
+      />
       <DirectoryBrowserModal
         open={directoryBrowserOpen}
         loading={directoryBrowserLoading}
@@ -824,6 +975,183 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
         onUseCurrent={applyDirectoryBrowserCurrentPath}
       />
     </>
+  );
+}
+
+function OnlyOfficeSettingsModal({
+  open,
+  isMirrorMode,
+  refreshing,
+  onlyOffice,
+  onlyOfficeForm,
+  onlyOfficeStatus,
+  onClose,
+  onRefresh,
+  onSubmit,
+  onChange,
+}: {
+  open: boolean;
+  isMirrorMode: boolean;
+  refreshing: boolean;
+  onlyOffice: OnlyOfficeSettings | null;
+  onlyOfficeForm: OnlyOfficeFormState;
+  onlyOfficeStatus: OnlyOfficeStatus | null;
+  onClose: () => void;
+  onRefresh: () => void;
+  onSubmit: (event: FormEvent) => Promise<void>;
+  onChange: (updater: (current: OnlyOfficeFormState) => OnlyOfficeFormState) => void;
+}) {
+  return (
+    <DesktopModal
+      open={open}
+      title={t("settingsOnlyOfficeTitle")}
+      description={t("settingsOnlyOfficeModalDescription")}
+      size="wide"
+      layout="form"
+      className="settings-onlyoffice-modal"
+      bodyClassName="settings-onlyoffice-modal-body"
+      onClose={onClose}
+    >
+      <form className="settings-onlyoffice-panel" onSubmit={(event) => void onSubmit(event)}>
+        <div className="settings-onlyoffice-status-summary">
+          <div className="settings-onlyoffice-status-copy">
+            <h2 className="settings-onlyoffice-status-title">{t("settingsOnlyOfficeStatus")}</h2>
+            <p className="settings-onlyoffice-status-description">{onlyOfficeStatus?.summary ?? t("settingsOnlyOfficeStatusUnknown")}</p>
+            {isMirrorMode ? (
+              <div className="settings-remote-owner-note" data-tone="danger">
+                <strong>{t("settingsRemoteOwnerTitle")}</strong>
+                <span>{t("settingsMirrorOnlyOfficeRemoteNotice")}</span>
+              </div>
+            ) : null}
+          </div>
+          <div className="settings-instance-card settings-onlyoffice-instance-card">
+            <span>{t("settingsOnlyOfficeInstance")}</span>
+            <strong>{onlyOfficeForm.serverUrl || t("commonNotSet")}</strong>
+          </div>
+        </div>
+
+        <div className="settings-onlyoffice-metrics" role="list" aria-label={t("settingsOnlyOfficeStatusPanelTitle")}>
+          {buildOnlyOfficeStatusCards(onlyOfficeStatus).map((card) => (
+            <div
+              key={card.key}
+              className="settings-onlyoffice-metric-card"
+              data-tone={card.tone}
+              role="listitem"
+              tabIndex={0}
+            >
+              <span className="settings-onlyoffice-metric-label">{card.label}</span>
+              <strong className="settings-onlyoffice-metric-value">{card.value}</strong>
+              <div className="settings-onlyoffice-metric-tooltip" role="note">
+                {card.detail}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <section className="settings-onlyoffice-form-section">
+          <label className="switch-row settings-onlyoffice-switch-row">
+            <div className="settings-onlyoffice-switch-copy">
+              <span>{t("settingsOnlyOfficeEnabled")}</span>
+              <small>{onlyOfficeForm.enabled ? t("settingsOnlyOfficeEnabledDescriptionOn") : t("settingsOnlyOfficeEnabledDescriptionOff")}</small>
+            </div>
+            <MacSwitch
+              checked={onlyOfficeForm.enabled}
+              label={t("settingsOnlyOfficeEnabled")}
+              onChange={(checked) => onChange((current) => ({ ...current, enabled: checked }))}
+            />
+          </label>
+
+          <TextInput
+            label={t("settingsOnlyOfficeServerUrl")}
+            description={t("settingsOnlyOfficeServerUrlDescription")}
+            value={onlyOfficeForm.serverUrl}
+            placeholder={t("settingsOnlyOfficeServerUrlPlaceholder")}
+            onChange={(value) => onChange((current) => ({ ...current, serverUrl: value }))}
+          />
+          <TextInput
+            label={t("settingsOnlyOfficePublicBaseUrl")}
+            description={t("settingsOnlyOfficePublicBaseUrlDescription")}
+            value={onlyOfficeForm.publicBaseUrl}
+            placeholder={t("settingsOnlyOfficePublicBaseUrlPlaceholder")}
+            onChange={(value) => onChange((current) => ({ ...current, publicBaseUrl: value }))}
+          />
+          <TextInput
+            label={t("settingsOnlyOfficeCallbackBaseUrl")}
+            description={t("settingsOnlyOfficeCallbackBaseUrlDescription")}
+            value={onlyOfficeForm.callbackBaseUrl}
+            placeholder={t("settingsOnlyOfficeCallbackBaseUrlPlaceholder")}
+            onChange={(value) => onChange((current) => ({ ...current, callbackBaseUrl: value }))}
+          />
+        </section>
+
+        <section className="settings-onlyoffice-form-section">
+          <div className="settings-section-title">
+            <strong>{t("settingsOnlyOfficeIdentitySection")}</strong>
+            <span className="settings-row-description">{t("settingsOnlyOfficeIdentitySectionDescription")}</span>
+          </div>
+
+          <TextInput
+            label={t("settingsOnlyOfficeUserName")}
+            description={t("settingsOnlyOfficeUserNameDescription")}
+            value={onlyOfficeForm.userDisplayName}
+            placeholder={t("settingsOnlyOfficeUserNamePlaceholder")}
+            onChange={(value) => onChange((current) => ({ ...current, userDisplayName: value }))}
+          />
+          <TextInput
+            label={t("settingsOnlyOfficeAvatar")}
+            description={t("settingsOnlyOfficeAvatarDescription")}
+            value={onlyOfficeForm.userAvatarUrl}
+            placeholder={t("settingsOnlyOfficeAvatarPlaceholder")}
+            onChange={(value) => onChange((current) => ({ ...current, userAvatarUrl: value }))}
+          />
+        </section>
+
+        <section className="settings-onlyoffice-form-section">
+          <div className="settings-section-title">
+            <strong>{t("settingsOnlyOfficeSecuritySection")}</strong>
+            <span className="settings-row-description">{t("settingsOnlyOfficeSecuritySectionDescription")}</span>
+          </div>
+
+          <TextInput
+            label={t("settingsOnlyOfficeJwtSecret")}
+            description={t("settingsOnlyOfficeJwtSecretDescription")}
+            value={onlyOfficeForm.jwtSecret}
+            placeholder={onlyOffice?.jwtSecretConfigured
+              ? t("settingsOnlyOfficeJwtKeepPlaceholder")
+              : t("settingsOnlyOfficeJwtPlaceholder")}
+            onChange={(value) => onChange((current) => ({ ...current, jwtSecret: value, clearJwtSecret: false }))}
+          />
+          <label className="switch-row settings-onlyoffice-switch-row">
+            <div className="settings-onlyoffice-switch-copy">
+              <span>{t("settingsOnlyOfficeClearJwt")}</span>
+              <small>{t("settingsOnlyOfficeClearJwtDescription")}</small>
+            </div>
+            <MacSwitch
+              checked={onlyOfficeForm.clearJwtSecret}
+              label={t("settingsOnlyOfficeClearJwt")}
+              onChange={(checked) => onChange((current) => ({ ...current, clearJwtSecret: checked }))}
+            />
+          </label>
+        </section>
+
+        <div className="settings-current settings-onlyoffice-summary-row">
+          <span>{t("settingsOnlyOfficeJwtSecret")}</span>
+          <strong>{onlyOffice?.jwtSecretConfigured ? t("settingsOnlyOfficeJwtConfigured") : t("settingsOnlyOfficeJwtNotConfigured")}</strong>
+        </div>
+
+        <ModalActions align="between" className="settings-onlyoffice-modal-actions">
+          <button type="button" className="secondary-button" onClick={onClose}>
+            {t("actionCancel")}
+          </button>
+          <div className="settings-onlyoffice-modal-actions-group">
+            <button type="button" className="secondary-button" onClick={onRefresh}>
+              {refreshing ? t("healthChecking") : t("settingsOnlyOfficeRefreshStatus")}
+            </button>
+            <button type="submit" className="primary-button">{t("settingsOnlyOfficeSave")}</button>
+          </div>
+        </ModalActions>
+      </form>
+    </DesktopModal>
   );
 }
 
@@ -1167,6 +1495,26 @@ function buildOnlyOfficeStatusCards(status: OnlyOfficeStatus | null): OnlyOffice
   }
 
   return cards;
+}
+
+function renderPluginHealthLabel(plugin: PluginListItem): string {
+  switch (plugin.health.status) {
+    case "healthy":
+      return t("settingsPluginHealthHealthy");
+    case "degraded":
+      return t("settingsPluginHealthDegraded");
+    case "failed":
+      return t("settingsPluginHealthFailed");
+    default:
+      return t("settingsPluginHealthUnknown");
+  }
+}
+
+function mergePluginItem(items: PluginListItem[], nextItem: PluginListItem): PluginListItem[] {
+  const nextItems = items.filter((item) => item.registry.pluginId !== nextItem.registry.pluginId);
+  nextItems.push(nextItem);
+  nextItems.sort((left, right) => left.manifest.name.localeCompare(right.manifest.name, "en"));
+  return nextItems;
 }
 
 function normalizeOptionalText(value: string): string | null {

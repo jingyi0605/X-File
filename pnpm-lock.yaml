@@ -30,9 +30,6 @@ importers:
 
   apps/server:
     dependencies:
-      '@codingns/session-sync-core':
-        specifier: workspace:*
-        version: link:../../packages/session-sync-core
       '@x-file/indexer':
         specifier: workspace:*
         version: link:../../packages/indexer
@@ -43,6 +40,9 @@ importers:
         specifier: ^5.2.1
         version: 5.8.5
     devDependencies:
+      '@codingns/session-sync-core':
+        specifier: workspace:*
+        version: link:../../packages/session-sync-core
       tsx:
         specifier: ^4.19.2
         version: 4.22.4
@@ -105,6 +105,28 @@ importers:
       '@types/better-sqlite3':
         specifier: ^7.6.13
         version: 7.6.13
+      '@types/node':
+        specifier: ^22.15.30
+        version: 22.19.20
+      typescript:
+        specifier: ^5.8.3
+        version: 5.9.3
+
+  packages/library-engine:
+    dependencies:
+      '@x-file/indexer':
+        specifier: workspace:*
+        version: link:../indexer
+      '@x-file/server':
+        specifier: workspace:*
+        version: link:../../apps/server
+      '@x-file/shared':
+        specifier: workspace:*
+        version: link:../shared
+      fastify:
+        specifier: ^5.2.1
+        version: 5.8.5
+    devDependencies:
       '@types/node':
         specifier: ^22.15.30
         version: 22.19.20

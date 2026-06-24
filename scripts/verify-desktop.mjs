@@ -105,8 +105,6 @@ function checkBundledResourceMapping(config) {
   }
 
   const requiredMappings = {
-    "resources/x-file-library-engine": "x-file-library-engine",
-    "resources/x-file-runtime": "x-file-runtime",
     "resources/x-file-plugins": "x-file-plugins",
   };
 
@@ -114,10 +112,6 @@ function checkBundledResourceMapping(config) {
     if (resources[source] !== target) {
       failures.push(`bundle.resources 缺少或错误映射：${source} -> ${target}`);
     }
-  }
-
-  if ("resources/x-file-server" in resources) {
-    failures.push("正式包 bundle.resources 不应再声明 resources/x-file-server。");
   }
 
   const boundaryManifestPath = path.join(
@@ -132,11 +126,20 @@ function checkBundledResourceMapping(config) {
   try {
     const boundaryManifest = JSON.parse(readFileSync(boundaryManifestPath, "utf8"));
     const resourcesConfig = boundaryManifest.resources;
-    if (!resourcesConfig?.["x-file-library-engine"]?.requiredInMainBundle) {
-      failures.push("x-file-resource-boundary.json 缺少 x-file-library-engine 主包声明。");
-    }
     if (!resourcesConfig?.["x-file-plugins"]?.requiredInMainBundle) {
       failures.push("x-file-resource-boundary.json 缺少 x-file-plugins 主包声明。");
+    }
+    if (resourcesConfig?.["x-file-server"] || resourcesConfig?.["x-file-runtime"]) {
+      failures.push("x-file-resource-boundary.json 不应再把 x-file-server 或 x-file-runtime 作为正式包资源声明。");
+    }
+    if (boundaryManifest.sidecarPolicy?.bundledByDefault !== false) {
+      failures.push("x-file-resource-boundary.json 必须显式声明正式包默认不内置 Node sidecar。");
+    }
+    if (
+      boundaryManifest.sidecarPolicy?.message !==
+      "正式包默认不再内置 Node sidecar；如需外部 sidecar，必须由调用方显式提供。"
+    ) {
+      failures.push("x-file-resource-boundary.json 必须保留正式包不内置 Node sidecar 的中文说明。");
     }
     const hostConfig = boundaryManifest.desktopHost;
     if (hostConfig?.nodeWorkerFallback?.allowHostNodeFallbackByDefault !== false) {
@@ -145,11 +148,14 @@ function checkBundledResourceMapping(config) {
     if (hostConfig?.nodeWorkerFallback?.explicitOptInEnv !== "X_FILE_ENABLE_HOST_NODE_WORKER_FALLBACK") {
       failures.push("x-file-resource-boundary.json 的 host Node worker fallback 显式开关必须是 X_FILE_ENABLE_HOST_NODE_WORKER_FALLBACK。");
     }
-    if (hostConfig?.nodeSidecar?.profileInMainBundle !== "sidecar-only") {
-      failures.push("x-file-resource-boundary.json 必须显式声明正式包 Node sidecar profile=sidecar-only。");
+    if (hostConfig?.nodeSidecar?.profileInMainBundle !== "none") {
+      failures.push("x-file-resource-boundary.json 必须显式声明正式包默认不内置 Node sidecar。");
     }
     if (hostConfig?.nodeSidecar?.libraryCoreHttpRoutesServedByDefault !== false) {
       failures.push("x-file-resource-boundary.json 必须显式声明正式包 Node sidecar 默认不承载 library 核心 HTTP 路由。");
+    }
+    if (hostConfig?.nodeSidecar?.explicitOptInEnv !== "X_FILE_EXTERNAL_NODE_SIDECAR") {
+      failures.push("x-file-resource-boundary.json 的外部 sidecar 显式开关必须是 X_FILE_EXTERNAL_NODE_SIDECAR。");
     }
     checkBundledResourceContents(resourcesConfig);
   } catch (error) {
@@ -160,41 +166,38 @@ function checkBundledResourceMapping(config) {
 
 function checkBundledResourceContents(resourcesConfig = undefined) {
   const resourcesRoot = path.join(rootDir, "apps/desktop/src-tauri/resources");
-  const runtimeRequired = resourcesConfig?.["x-file-runtime"]?.requiredInMainBundle ?? true;
-  const runtimeNodeBin = path.join(resourcesRoot, "x-file-runtime", "node", "bin", process.platform === "win32" ? "node.exe" : "node");
-  if (runtimeRequired && !existsSync(runtimeNodeBin)) {
-    failures.push(`x-file-runtime 缺少随包 Node 入口：${runtimeNodeBin}`);
+  if (existsSync(path.join(resourcesRoot, "x-file-runtime"))) {
+    warnings.push("正式包默认不再内置 x-file-runtime，但资源目录仍然存在。");
   }
-  if (!runtimeRequired && existsSync(path.join(resourcesRoot, "x-file-runtime"))) {
-    warnings.push("x-file-resource-boundary.json 已声明 x-file-runtime 可省略，但资源目录仍然存在。");
+  if (existsSync(path.join(resourcesRoot, "x-file-server"))) {
+    warnings.push("正式包默认不再内置 x-file-server，但资源目录仍然存在。");
+  }
+  checkBundledPluginDescriptorOnlyBoundaries(path.join(resourcesRoot, "x-file-plugins"));
+}
+
+function checkBundledPluginDescriptorOnlyBoundaries(pluginRootDir) {
+  if (!existsSync(pluginRootDir)) {
+    failures.push(`缺少 bundled plugin 资源目录：${pluginRootDir}`);
+    return;
   }
 
-  const legacyServerResourceDir = path.join(resourcesRoot, "x-file-server");
-  if (existsSync(legacyServerResourceDir)) {
-    failures.push("正式包资源目录不应再出现 x-file-server。");
-  }
+  const pluginDirs = readdirSync(pluginRootDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => path.join(pluginRootDir, entry.name));
 
-  const engineRoot = path.join(resourcesRoot, "x-file-library-engine");
-  const leakedSourceDirs = [
-    path.join(engineRoot, "node_modules", "@x-file", "indexer", "contracts", "src"),
-  ].filter(existsSync).map((item) => path.relative(rootDir, item));
-  if (leakedSourceDirs.length > 0) {
-    failures.push(`x-file-library-engine 不应携带源码残留目录：${leakedSourceDirs.join(", ")}`);
-  }
-
-  const leakedTsconfigFiles = [
-    path.join(engineRoot, "node_modules", "@x-file", "server", "tsconfig.json"),
-    path.join(engineRoot, "node_modules", "@x-file", "shared", "tsconfig.json"),
-    path.join(engineRoot, "node_modules", "@x-file", "indexer", "tsconfig.json"),
-  ].filter(existsSync).map((item) => path.relative(rootDir, item));
-  if (leakedTsconfigFiles.length > 0) {
-    failures.push(`x-file-library-engine 不应携带 workspace tsconfig：${leakedTsconfigFiles.join(", ")}`);
-  }
-
-  const serverLibraryDistDir = path.join(engineRoot, "node_modules", "@x-file", "server", "dist", "library");
-  const leakedTests = collectMatchingFiles(serverLibraryDistDir, /\.test\.(d\.ts|js|js\.map|d\.ts\.map)$/);
-  if (leakedTests.length > 0) {
-    failures.push(`x-file-library-engine 不应携带 library test 产物：${leakedTests.slice(0, 5).join(", ")}`);
+  for (const pluginDir of pluginDirs) {
+    const manifestPath = path.join(pluginDir, "manifest.json");
+    if (!existsSync(manifestPath)) {
+      continue;
+    }
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const backendEntry = manifest?.entry?.backend;
+    const hasDescriptor = Boolean(manifest?.assistant?.descriptor);
+    const backendDir = path.join(pluginDir, "backend");
+    const backendEntries = existsSync(backendDir) ? readdirSync(backendDir) : [];
+    if (hasDescriptor && !backendEntry && backendEntries.length > 0) {
+      failures.push(`descriptor-only bundled plugin 不应继续携带 backend 目录：${path.relative(rootDir, backendDir)}`);
+    }
   }
 }
 
