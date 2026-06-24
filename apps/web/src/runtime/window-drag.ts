@@ -1,6 +1,4 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-
-const MACOS_TITLEBAR_DRAG_THRESHOLD_PX = 6;
 const WINDOW_DRAG_BLOCK_SELECTOR = [
   "button",
   "a",
@@ -34,6 +32,10 @@ export function canStartDesktopWindowDragFromTarget(target: EventTarget | null):
     return true;
   }
 
+  if (target.closest("[data-window-drag='ignore']")) {
+    return false;
+  }
+
   if (target.closest("[data-window-drag-handle]")) {
     return true;
   }
@@ -42,7 +44,11 @@ export function canStartDesktopWindowDragFromTarget(target: EventTarget | null):
 }
 
 export function isDesktopWindowDragHandleTarget(target: EventTarget | null): boolean {
-  return target instanceof HTMLElement && Boolean(target.closest("[data-window-drag-handle]"));
+  return (
+    target instanceof HTMLElement &&
+    !target.closest("[data-window-drag='ignore']") &&
+    Boolean(target.closest("[data-window-drag-handle]"))
+  );
 }
 
 export function canHandleMacOsTitlebarPointerGesture(
@@ -69,49 +75,7 @@ export function beginMacOsTitlebarDragGesture(input: {
   if (!canHandleMacOsTitlebarPointerGesture(input.platform, input.button, input.target)) {
     return;
   }
-
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  const startClientX = input.clientX;
-  const startClientY = input.clientY;
-  let active = true;
-
-  const cleanup = () => {
-    if (!active) {
-      return;
-    }
-
-    active = false;
-    window.removeEventListener("mousemove", handleMouseMove);
-    window.removeEventListener("mouseup", handleMouseUp);
-    window.removeEventListener("blur", handleWindowBlur);
-  };
-
-  const handleMouseMove = (event: MouseEvent) => {
-    if (
-      Math.abs(event.clientX - startClientX) < MACOS_TITLEBAR_DRAG_THRESHOLD_PX &&
-      Math.abs(event.clientY - startClientY) < MACOS_TITLEBAR_DRAG_THRESHOLD_PX
-    ) {
-      return;
-    }
-
-    cleanup();
-    void startDesktopWindowDrag();
-  };
-
-  const handleMouseUp = () => {
-    cleanup();
-  };
-
-  const handleWindowBlur = () => {
-    cleanup();
-  };
-
-  window.addEventListener("mousemove", handleMouseMove);
-  window.addEventListener("mouseup", handleMouseUp);
-  window.addEventListener("blur", handleWindowBlur);
+  void startDesktopWindowDrag();
 }
 
 export async function startDesktopWindowDrag(): Promise<void> {

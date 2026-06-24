@@ -313,7 +313,7 @@ function useWorkbenchPlatformData(): WorkbenchPlatformData {
         const macosTitlebar = runtimeInfo?.windowChrome?.macosTitlebar ?? null;
         nextPlatformData = {
           ...basePlatformData,
-          overlayTitlebar: Boolean(macosTitlebar?.overlay),
+          overlayTitlebar: macosTitlebar?.overlay ?? true,
         };
         applyMacOsTitlebarVariables(macosTitlebar);
       } else {
@@ -405,6 +405,9 @@ function resolveWorkbenchPlatformData(): WorkbenchPlatformData {
   return {
     runtimePlatform: typeof window !== "undefined" && "__TAURI_INTERNALS__" in window ? "desktop" : "web",
     osFamily: isMacOS ? "macos" : isWindows ? "windows" : "web",
-    overlayTitlebar: false
+    overlayTitlebar:
+      typeof window !== "undefined" &&
+      "__TAURI_INTERNALS__" in window &&
+      isMacOS
   };
 }

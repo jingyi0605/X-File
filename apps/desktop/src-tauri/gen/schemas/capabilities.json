@@ -1,1 +1,1 @@
-{}
+{"main-capability":{"identifier":"main-capability","description":"授予主窗口使用核心 Tauri API 与自定义标题栏拖拽能力。","local":true,"windows":["main"],"permissions":["core:default","core:window:allow-start-dragging","core:window:allow-toggle-maximize"]}}
