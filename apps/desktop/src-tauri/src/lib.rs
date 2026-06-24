@@ -508,7 +508,10 @@ impl DesktopState {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+const MAIN_WINDOW_GEOMETRY_FILE_NAME: &str = "main-window-geometry.json";
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct MainWindowGeometry {
     position_x: i32,
     position_y: i32,
@@ -2221,6 +2224,40 @@ fn epoch_millis() -> u64 {
         .unwrap_or(0)
 }
 
+fn resolve_main_window_geometry_path() -> PathBuf {
+    x_file_data_dir().join(MAIN_WINDOW_GEOMETRY_FILE_NAME)
+}
+
+fn read_persisted_main_window_geometry() -> Option<MainWindowGeometry> {
+    read_optional_json_file::<MainWindowGeometry>(&resolve_main_window_geometry_path())
+        .ok()
+        .flatten()
+}
+
+fn persist_main_window_geometry(geometry: MainWindowGeometry) -> Result<(), String> {
+    write_json_file(&resolve_main_window_geometry_path(), &geometry)
+}
+
+fn update_main_window_geometry_state(app: &AppHandle, geometry: MainWindowGeometry) {
+    let Some(desktop_state) = app.try_state::<Mutex<DesktopState>>() else {
+        return;
+    };
+    let Some(mut state) = desktop_state.try_lock().ok() else {
+        return;
+    };
+    state.main_window_geometry = Some(geometry);
+}
+
+fn apply_main_window_geometry(window: &WebviewWindow, geometry: MainWindowGeometry) {
+    let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize::new(
+        geometry.width,
+        geometry.height,
+    )));
+    let _ = window.set_position(tauri::Position::Physical(
+        tauri::PhysicalPosition::new(geometry.position_x, geometry.position_y),
+    ));
+}
+
 fn capture_main_window_geometry_from_window(window: &Window) -> Option<MainWindowGeometry> {
     let position = window.outer_position().ok()?;
     let size = window.outer_size().ok()?;
@@ -2271,6 +2308,16 @@ fn remember_main_window_geometry_from_webview(window: &WebviewWindow) {
     state.main_window_geometry = Some(geometry);
 }
 
+fn persist_main_window_geometry_from_window(window: &Window) {
+    let Some(geometry) = capture_main_window_geometry_from_window(window) else {
+        return;
+    };
+    remember_main_window_geometry(window);
+    if let Err(error) = persist_main_window_geometry(geometry) {
+        eprintln!("持久化主窗口尺寸失败: {error}");
+    }
+}
+
 fn show_main_window(app: &AppHandle) {
     let _ = app.show();
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
@@ -2283,13 +2330,7 @@ fn show_main_window(app: &AppHandle) {
                     .and_then(|state| state.main_window_geometry)
             });
         if let Some(geometry) = saved_geometry {
-            let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize::new(
-                geometry.width,
-                geometry.height,
-            )));
-            let _ = window.set_position(tauri::Position::Physical(
-                tauri::PhysicalPosition::new(geometry.position_x, geometry.position_y),
-            ));
+            apply_main_window_geometry(&window, geometry);
         }
         let _ = window.unminimize();
         let _ = window.show();
@@ -2304,6 +2345,15 @@ fn hide_main_window(app: &AppHandle) {
 }
 
 fn quit_application(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        if let Some(geometry) = capture_main_window_geometry_from_webview(&window) {
+            update_main_window_geometry_state(app, geometry);
+            if let Err(error) = persist_main_window_geometry(geometry) {
+                eprintln!("退出前持久化主窗口尺寸失败: {error}");
+            }
+        }
+    }
+
     if let Some(state) = app.try_state::<Mutex<DesktopState>>() {
         let mut state = state.lock().expect("桌面状态锁已损坏");
         state.is_quitting = true;
@@ -5540,12 +5590,19 @@ pub fn run() {
         .setup(|app| {
             setup_tray(app)?;
             configure_backend_process(app);
+            if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+                if let Some(geometry) = read_persisted_main_window_geometry() {
+                    apply_main_window_geometry(&window, geometry);
+                    update_main_window_geometry_state(app.handle(), geometry);
+                } else {
+                    remember_main_window_geometry_from_webview(&window);
+                }
+            }
             #[cfg(target_os = "macos")]
             {
                 configure_macos_window_chrome(app)?;
                 configure_macos_native_glass_sidebars(app)?;
                 if let Some(window) = app.get_webview_window("main") {
-                    remember_main_window_geometry_from_webview(&window);
                     let native_sidebar_state = app.state::<MacosNativeSidebarState>().inner().clone();
                     attach_macos_native_sidebar_handlers(window, native_sidebar_state);
                 }
@@ -5610,10 +5667,10 @@ pub fn run() {
             if window.label() == MAIN_WINDOW_LABEL {
                 match event {
                     WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
-                        remember_main_window_geometry(window);
+                        persist_main_window_geometry_from_window(window);
                     }
                     WindowEvent::CloseRequested { .. } => {
-                        remember_main_window_geometry(window);
+                        persist_main_window_geometry_from_window(window);
                     }
                     _ => {}
                 }
