@@ -174,7 +174,7 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
     allowedExtensions: [...LIBRARY_PRESET_EXTENSIONS],
     includedHiddenPaths: "",
     folderOpenBehavior: "double_click",
-    manualExtension: ""
+    manualExtension: "",
   });
   const [onlyOfficeForm, setOnlyOfficeForm] = useState<OnlyOfficeFormState>({
     enabled: false,
@@ -410,7 +410,7 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
       allowedExtensions: resolveEditableAllowedExtensions(config.allowedExtensions),
       includedHiddenPaths: sortIncludedHiddenPaths(config.includedHiddenPaths).join("\n"),
       folderOpenBehavior: config.folderOpenBehavior,
-      manualExtension: ""
+      manualExtension: "",
     });
   }
 
@@ -1178,7 +1178,8 @@ function buildRuntimePublicBaseUrl(serverState: HttpServerState | null): string 
     return window.location.origin;
   }
 
-  return `http://127.0.0.1:${serverState.port}`;
+  const port = serverState.actualPort ?? serverState.port;
+  return `http://127.0.0.1:${port}`;
 }
 
 function looksLikeDevWebAddress(value: string): boolean {
@@ -1395,9 +1396,11 @@ function DirectoryBrowserModal({
 function ServerStatus({ state }: { state: HttpServerState | null }) {
   return (
     <div className="server-status">
-      <div><span>{t("settingsServerHost")}</span><strong>{state?.host ?? t("commonUnknown")}</strong></div>
-      <div><span>{t("settingsServerPort")}</span><strong>{state?.port ?? t("commonUnknown")}</strong></div>
+      <div><span>{t("settingsServerConfiguredHost")}</span><strong>{state?.host ?? t("commonUnknown")}</strong></div>
+      <div><span>{t("settingsServerConfiguredPort")}</span><strong>{state?.port ?? t("commonUnknown")}</strong></div>
       <div><span>{t("settingsServerRunning")}</span><strong>{state?.running ? t("settingsServerRunning") : t("settingsServerStopped")}</strong></div>
+      <div><span>{t("settingsServerActualHost")}</span><strong>{state?.actualHost ?? t("commonUnknown")}</strong></div>
+      <div><span>{t("settingsServerActualPort")}</span><strong>{state?.actualPort ?? t("commonUnknown")}</strong></div>
       <div><span>{t("settingsServerLifecycle")}</span><strong>{state?.lifecycleState ?? t("commonUnknown")}</strong></div>
       <div><span>{t("settingsServerStartedAt")}</span><strong>{formatDateTime(state?.startedAt)}</strong></div>
       <div><span>{t("settingsServerLastError")}</span><strong>{state?.lastError ?? t("commonNone")}</strong></div>

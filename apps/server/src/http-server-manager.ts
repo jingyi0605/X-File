@@ -16,6 +16,8 @@ export interface HttpServerState {
   port: number;
   persistent: boolean;
   running: boolean;
+  actualHost: string | null;
+  actualPort: number | null;
   lifecycleState: HttpServerLifecycleState;
   startedAt: string | null;
   lastError: string | null;
@@ -52,6 +54,8 @@ const DEFAULT_STATE: HttpServerState = {
   port: DEFAULT_PORT,
   persistent: false,
   running: false,
+  actualHost: null,
+  actualPort: null,
   lifecycleState: "disabled",
   startedAt: null,
   lastError: null
@@ -71,6 +75,8 @@ export class HttpServerManager {
       ...DEFAULT_STATE,
       ...savedState,
       running: runtimeState.running ?? false,
+      actualHost: runtimeState.running ? savedState?.host ?? DEFAULT_STATE.host : null,
+      actualPort: runtimeState.running ? savedState?.port ?? DEFAULT_STATE.port : null,
       lifecycleState: deriveLifecycleState({
         enabled: savedState?.enabled ?? DEFAULT_STATE.enabled,
         running: runtimeState.running ?? false,
@@ -100,6 +106,8 @@ export class HttpServerManager {
       host: normalizeHost(input.host ?? this.state.host),
       port: normalizePort(input.port ?? this.state.port),
       persistent: input.persistent ?? this.state.persistent,
+      actualHost: this.state.running ? this.state.actualHost : null,
+      actualPort: this.state.running ? this.state.actualPort : null,
       lifecycleState: deriveLifecycleState({
         enabled: input.enabled ?? this.state.enabled,
         running: this.state.running,
@@ -133,6 +141,8 @@ export class HttpServerManager {
           this.state = {
             ...this.state,
             running: false,
+            actualHost: null,
+            actualPort: null,
             lifecycleState: "stopping",
             startedAt: null
           };
@@ -168,6 +178,8 @@ export class HttpServerManager {
     this.state = {
       ...this.state,
       lifecycleState: "starting",
+      actualHost: null,
+      actualPort: null,
       lastError: null
     };
     this.persist();
@@ -211,6 +223,8 @@ export class HttpServerManager {
       host: normalizeHost(input.host ?? this.state.host),
       port: normalizePort(input.port ?? this.state.port),
       running: true,
+      actualHost: normalizeHost(input.host ?? this.state.host),
+      actualPort: normalizePort(input.port ?? this.state.port),
       lifecycleState: "running",
       startedAt: input.startedAt ?? new Date().toISOString(),
       lastError: null
@@ -223,6 +237,8 @@ export class HttpServerManager {
     this.state = {
       ...this.state,
       running: false,
+      actualHost: null,
+      actualPort: null,
       lifecycleState: "disabled",
       startedAt: null
     };
@@ -234,6 +250,8 @@ export class HttpServerManager {
     this.state = {
       ...this.state,
       running: false,
+      actualHost: null,
+      actualPort: null,
       lifecycleState: "failed",
       lastError: error instanceof Error ? error.message : String(error)
     };
@@ -283,7 +301,7 @@ function readSavedState(stateFilePath: string): Partial<HttpServerState> | null 
   }
 }
 
-function toSavedState(state: HttpServerState): Omit<HttpServerState, "running" | "startedAt"> {
+function toSavedState(state: HttpServerState): Omit<HttpServerState, "running" | "startedAt" | "actualHost" | "actualPort"> {
   return {
     enabled: state.enabled,
     host: state.host,

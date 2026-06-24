@@ -118,6 +118,35 @@ describe("SettingsPage 文档库索引配置迁移行为", () => {
     ).toBeInTheDocument();
   });
 
+  it("HTTP 服务状态会区分已保存配置和实际运行态", async () => {
+    libraryApiMock.getHttpServerState.mockResolvedValue({
+      enabled: true,
+      host: "127.0.0.1",
+      port: 17322,
+      running: false,
+      persistent: true,
+      actualHost: null,
+      actualPort: null,
+      lifecycleState: "failed",
+      startedAt: null,
+      lastError: "listen EADDRINUSE: address already in use 127.0.0.1:17321",
+    });
+
+    const { SettingsPage } = await import("../SettingsPage");
+    render(<SettingsPage />);
+
+    await userEvent.click(await screen.findByRole("tab", { name: /网络服务/ }));
+
+    expect(screen.getByText("已保存监听地址")).toBeInTheDocument();
+    expect(screen.getByText("已保存端口")).toBeInTheDocument();
+    expect(screen.getByText("实际监听地址")).toBeInTheDocument();
+    expect(screen.getByText("实际监听端口")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("17322")).toBeInTheDocument();
+    expect(screen.getByText("17322")).toBeInTheDocument();
+    expect(screen.getAllByText("未知").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText("listen EADDRINUSE: address already in use 127.0.0.1:17321")).toBeInTheDocument();
+  });
+
   it("集成页会展示插件注册表信息", async () => {
     libraryApiMock.listPlugins.mockResolvedValue(
       createPluginListResult({

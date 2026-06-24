@@ -406,6 +406,8 @@ export interface HttpServerState {
   port: number;
   running: boolean;
   persistent: boolean;
+  actualHost: string | null;
+  actualPort: number | null;
   lifecycleState?: LibraryServerLifecycleState;
   startedAt: string | null;
   lastError: string | null;

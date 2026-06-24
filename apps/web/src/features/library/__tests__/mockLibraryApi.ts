@@ -69,10 +69,11 @@ export function resetLibraryApiMock(): void {
     port: 17321,
     running: false,
     persistent: false,
+    actualHost: null,
+    actualPort: null,
     lifecycleState: "disabled",
-    lastStartedAt: null,
-    lastStoppedAt: null,
-    errorSummary: null,
+    startedAt: null,
+    lastError: null,
   });
   libraryApiMock.getOnlyOfficeSettings.mockResolvedValue(createOnlyOfficeSettings());
   libraryApiMock.getOnlyOfficeStatus.mockResolvedValue(createOnlyOfficeStatus());

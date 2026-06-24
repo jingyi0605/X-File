@@ -23,6 +23,8 @@ test("server state 默认和保存后都只监听 127.0.0.1", async () => {
   const initial = await app.inject({ method: "GET", url: "/api/server/state" });
   assert.equal(initial.statusCode, 200);
   assert.equal(initial.json().host, "127.0.0.1");
+  assert.equal(initial.json().actualHost, null);
+  assert.equal(initial.json().actualPort, null);
 
   const saved = await app.inject({
     method: "PUT",
@@ -36,6 +38,8 @@ test("server state 默认和保存后都只监听 127.0.0.1", async () => {
   assert.equal(saved.statusCode, 200);
   assert.equal(saved.json().host, "127.0.0.1");
   assert.equal(saved.json().port, 33221);
+  assert.equal(saved.json().actualHost, null);
+  assert.equal(saved.json().actualPort, null);
   assert.equal(saved.json().persistent, true);
   assert.equal(saved.json().persistentPolicy.implementedByDesktopShell, true);
   assert.equal(saved.json().persistentPolicy.keepBackendOnWindowClose, true);
@@ -74,6 +78,8 @@ test("server state 生命周期模式可以真实启停本机 HTTP 服务", asyn
     manageLifecycle: true
   });
   assert.equal(started.running, true);
+  assert.equal(started.actualHost, "127.0.0.1");
+  assert.equal(started.actualPort, port);
   assert.equal(started.lifecycleState, "running");
   assert.equal(await canConnect(port), true);
 
@@ -83,6 +89,8 @@ test("server state 生命周期模式可以真实启停本机 HTTP 服务", asyn
     manageLifecycle: true
   });
   assert.equal(stopped.running, false);
+  assert.equal(stopped.actualHost, null);
+  assert.equal(stopped.actualPort, null);
   assert.equal(stopped.lifecycleState, "disabled");
   assert.equal(await canConnect(port), false);
 });
