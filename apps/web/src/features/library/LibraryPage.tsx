@@ -3776,10 +3776,6 @@ function LibraryDetail({
             <div className="affairs-detail-tag-editor">
               <div className="affairs-detail-tag-editor-header">
                 <strong>{t("libraryMetaTags")}</strong>
-                <LibraryTagRecommendationSummary
-                  documentId={selected.documentId}
-                  refreshKey={[...selected.tags, ...selected.derivedTags].join("|")}
-                />
               </div>
               <LibraryInlineDocumentTagEditor
                 library={library}
