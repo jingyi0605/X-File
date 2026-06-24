@@ -1,7 +1,7 @@
 // X-File 桌面更新模块。
 // 能力：检查 / 下载 / 安装更新，支持 stable 与 beta 双通道。
 // 参考 CodingNS apps/desktop/src-tauri/src/updater.rs：
-//   - 去掉窗口 chrome metrics（X-File 自有 macOS 侧栏实现，前端不依赖 updater 提供 chrome 信息）；
+//   - 保留窗口 chrome metrics，前端自定义标题栏与 macOS 三色球安全区直接复用这套数据；
 //   - 把 resolve_updater_endpoint 真正实现为双通道分叉（父项目此处 `let _ = channel;` 丢弃了通道参数）；
 //   - 新增 read/write_release_channel：通道偏好持久化到 app_data_dir/release-channel.json（父项目用 config 系统，X-File 无）；
 //   - pubkey 不显式注入，沿用 tauri.conf.json 的 plugins.updater.pubkey（X-File 已写入真实公钥）。
@@ -10,9 +10,16 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::Command;
+#[cfg(target_os = "macos")]
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
+#[cfg(target_os = "macos")]
+use std::time::Duration;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_updater::UpdaterExt;
+
+#[cfg(target_os = "macos")]
+use objc2_app_kit::{NSView, NSWindow, NSWindowButton};
 
 const GITHUB_RELEASES_OWNER: &str = "jingyi0605";
 const GITHUB_RELEASES_REPO: &str = "X-File";
@@ -41,6 +48,24 @@ pub struct ReleaseManifest {
 pub struct DesktopRuntimeInfo {
   pub version: String,
   pub app_data_dir: Option<String>,
+  pub window_chrome: Option<DesktopWindowChromeInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopWindowChromeInfo {
+  pub macos_titlebar: Option<MacOsTitlebarMetrics>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MacOsTitlebarMetrics {
+  pub overlay: bool,
+  pub traffic_light_center_y: f64,
+  pub traffic_light_leading_inset: f64,
+  pub traffic_light_safe_zone_width: f64,
+  pub traffic_light_button_diameter: f64,
+  pub titlebar_height: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,7 +157,86 @@ pub fn get_runtime_info(app: &AppHandle) -> DesktopRuntimeInfo {
       .app_data_dir()
       .ok()
       .map(|path| path.to_string_lossy().to_string()),
+    window_chrome: collect_window_chrome_info(app),
   }
+}
+
+#[cfg(target_os = "macos")]
+fn collect_window_chrome_info(app: &AppHandle) -> Option<DesktopWindowChromeInfo> {
+  let window = app.get_webview_window("main")?;
+  let main_thread_window = window.clone();
+  let (sender, receiver) = mpsc::sync_channel(1);
+
+  if window
+    .run_on_main_thread(move || {
+      let metrics = unsafe { read_macos_titlebar_metrics(&main_thread_window) };
+      let _ = sender.send(metrics);
+    })
+    .is_err()
+  {
+    return None;
+  }
+
+  receiver
+    .recv_timeout(Duration::from_millis(500))
+    .ok()
+    .flatten()
+    .map(|macos_titlebar| DesktopWindowChromeInfo {
+      macos_titlebar: Some(macos_titlebar),
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn collect_window_chrome_info(_app: &AppHandle) -> Option<DesktopWindowChromeInfo> {
+  None
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn read_macos_titlebar_metrics(
+  window: &tauri::WebviewWindow,
+) -> Option<MacOsTitlebarMetrics> {
+  let ns_window_ptr = window.ns_window().ok()?;
+  let ns_window: &NSWindow = &*ns_window_ptr.cast();
+  let close = ns_window.standardWindowButton(NSWindowButton::CloseButton)?;
+  let miniaturize = ns_window.standardWindowButton(NSWindowButton::MiniaturizeButton)?;
+  let close_parent = close.superview()?;
+  let trailing_button = ns_window
+    .standardWindowButton(NSWindowButton::ZoomButton)
+    .unwrap_or(miniaturize.clone());
+  let trailing_parent = trailing_button.superview()?;
+  let title_bar_container_view = close_parent.superview()?;
+  let title_bar_rect = NSView::frame(&title_bar_container_view);
+  let close_rect =
+    close_parent.convertRect_toView(NSView::frame(&close), Some(&title_bar_container_view));
+  let trailing_rect = trailing_parent.convertRect_toView(
+    NSView::frame(&trailing_button),
+    Some(&title_bar_container_view),
+  );
+
+  if close_rect.size.height <= 0.0 || title_bar_rect.size.height <= 0.0 {
+    return None;
+  }
+
+  let button_center_y_from_bottom = close_rect.origin.y + (close_rect.size.height / 2.0);
+  let button_center_y = if title_bar_container_view.isFlipped() {
+    button_center_y_from_bottom
+  } else {
+    title_bar_rect.size.height - button_center_y_from_bottom
+  };
+  let trailing_edge = trailing_rect.origin.x + trailing_rect.size.width;
+
+  Some(MacOsTitlebarMetrics {
+    overlay: true,
+    traffic_light_center_y: round_layout_value(button_center_y),
+    traffic_light_leading_inset: round_layout_value(trailing_edge + 8.0),
+    traffic_light_safe_zone_width: round_layout_value(trailing_edge + 16.0),
+    traffic_light_button_diameter: round_layout_value(close_rect.size.height),
+    titlebar_height: round_layout_value(title_bar_rect.size.height),
+  })
+}
+
+fn round_layout_value(value: f64) -> f64 {
+  (value * 100.0).round() / 100.0
 }
 
 pub async fn check_for_update(

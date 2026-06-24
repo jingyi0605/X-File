@@ -1,41 +1,6 @@
 {
-  "generatedAt": "2026-06-16T14:38:07.997Z",
+  "generatedAt": "2026-06-18T09:51:59Z",
   "resources": {
-    "x-file-library-engine": {
-      "requiredInMainBundle": true,
-      "purpose": [
-        "桌面壳默认后端入口 dist/main.js",
-        "Node worker 入口所在包，承载 @x-file/server dist/library/*",
-        "保留 OnlyOffice、插件宿主、server-state 等剩余 Node HTTP 服务"
-      ],
-      "entry": "x-file-library-engine/dist/main.js",
-      "mustKeepBecause": [
-        "native index-only worker 仍从这里解析 @x-file/server/dist/library/*.js",
-        "剩余 Node sidecar 服务仍通过 library-engine 部署进资源目录"
-      ],
-      "removableAfter": [
-        "文档库主链不再依赖 library-engine 里的 Node worker 入口",
-        "剩余 Node HTTP sidecar 另有更小载体，或也已 native 化"
-      ]
-    },
-    "x-file-runtime": {
-      "requiredInMainBundle": true,
-      "purpose": [
-        "提供随包 Node 二进制",
-        "拉起 x-file-library-engine 主入口",
-        "拉起默认 index-only 临时 Node worker"
-      ],
-      "entry": "x-file-runtime/node/bin/node",
-      "nodeVersion": "v22.16.0",
-      "mustKeepBecause": [
-        "默认正式主链的 TextIndexer / parser / SQLite 执行面仍运行在 Node",
-        "桌面 Rust 宿主已经不再默认回退系统 Node；只要正式包还保留 Node worker 主路径，就必须显式携带这份 runtime"
-      ],
-      "removableAfter": [
-        "正式主链不再需要 Node worker 执行 index-only",
-        "或改成更小 sidecar/独立 helper，而不是完整 Node runtime"
-      ]
-    },
     "x-file-plugins": {
       "requiredInMainBundle": true,
       "purpose": [
@@ -50,24 +15,17 @@
       ]
     }
   },
+  "sidecarPolicy": {
+    "bundledByDefault": false,
+    "message": "正式包默认不再内置 Node sidecar；如需外部 sidecar，必须由调用方显式提供。"
+  },
   "hostLookup": {
     "backendEntryPriority": [
-      "x-file-library-engine/dist/main.js",
-      "x-file-server/dist/main.js",
       "server/dist/main.js",
-      "x-file-server/main.js",
       "server/main.js"
     ],
     "workerEntryPriority": [
-      "x-file-library-engine/node_modules/@x-file/server/dist/library/*.js",
-      "x-file-library-engine/node_modules/@x-file/server/dist/src/library/*.js",
       "apps/server/dist/library/*.js (dev fallback)"
-    ],
-    "bundledNodePriority": [
-      "x-file-runtime/node/bin/node",
-      "x-file-runtime/node_modules/node/bin/node",
-      "x-file-runtime/package/node_modules/node/bin/node",
-      "x-file-runtime/package/bin/node"
     ]
   },
   "desktopHost": {
@@ -76,9 +34,9 @@
       "explicitOptInEnv": "X_FILE_ENABLE_HOST_NODE_WORKER_FALLBACK"
     },
     "nodeSidecar": {
-      "profileInMainBundle": "sidecar-only",
+      "profileInMainBundle": "none",
       "libraryCoreHttpRoutesServedByDefault": false,
-      "explicitOptInEnv": "X_FILE_NODE_SIDECAR_PROFILE"
+      "explicitOptInEnv": "X_FILE_EXTERNAL_NODE_SIDECAR"
     }
   }
 }

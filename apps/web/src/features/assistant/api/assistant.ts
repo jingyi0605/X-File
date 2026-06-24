@@ -12,6 +12,7 @@ import type {
 } from "@x-file/shared";
 
 import { apiRequest, postJson, resolveApiUrl } from "../../../api/http";
+import { getRuntimeConfigSnapshot } from "../../../runtime/runtime-config-store";
 
 export type {
   AssistantMessage,
@@ -47,17 +48,26 @@ interface MessagesResult {
   messages: AssistantMessage[];
 }
 
+function assertAssistantRuntimeAvailable(): void {
+  if (getRuntimeConfigSnapshot().config.mode === "local") {
+    throw new Error("主包本地模式已移除内建文档助手 Node sidecar，请改用外部 assistant runtime。");
+  }
+}
+
 export function listAssistantProviders(): Promise<AssistantProviderInfo[]> {
+  assertAssistantRuntimeAvailable();
   return apiRequest<ProvidersResult>("/api/assistant/providers").then((r) => r.providers);
 }
 
 export function startAssistantSession(
   input: StartSessionInput
 ): Promise<AssistantSessionSummary> {
+  assertAssistantRuntimeAvailable();
   return postJson<SessionResult>("/api/assistant/sessions", input).then((r) => r.session);
 }
 
 export function listAssistantSessions(): Promise<AssistantSessionSummary[]> {
+  assertAssistantRuntimeAvailable();
   return apiRequest<{ sessions: AssistantSessionSummary[] }>("/api/assistant/sessions").then(
     (r) => r.sessions
   );
@@ -69,24 +79,28 @@ export interface AssistantSessionDetail {
 }
 
 export function getAssistantSession(sessionId: string): Promise<AssistantSessionDetail> {
+  assertAssistantRuntimeAvailable();
   return apiRequest<AssistantSessionDetail>(
     `/api/assistant/sessions/${encodeURIComponent(sessionId)}`
   );
 }
 
 export function deleteAssistantSession(sessionId: string): Promise<void> {
+  assertAssistantRuntimeAvailable();
   return apiRequest<void>(`/api/assistant/sessions/${encodeURIComponent(sessionId)}`, {
     method: "DELETE"
   }).then(() => undefined);
 }
 
 export function getAssistantMessages(sessionId: string): Promise<AssistantMessage[]> {
+  assertAssistantRuntimeAvailable();
   return apiRequest<MessagesResult>(
     `/api/assistant/sessions/${encodeURIComponent(sessionId)}/messages`
   ).then((r) => r.messages);
 }
 
 export function interruptAssistantSession(sessionId: string): Promise<void> {
+  assertAssistantRuntimeAvailable();
   return postJson(`/api/assistant/sessions/${encodeURIComponent(sessionId)}/interrupt`, {}).then(
     () => undefined
   );
@@ -97,6 +111,7 @@ export function replyAssistantPermissionRequest(
   requestId: string,
   action: AssistantPermissionAction
 ): Promise<AssistantPermissionRequest | null> {
+  assertAssistantRuntimeAvailable();
   return postJson<{
     request: AssistantPermissionRequest | null;
   }>(
@@ -121,6 +136,7 @@ export function streamAssistantMessage(
   input: SendMessageInput,
   handlers: AssistantStreamHandlers
 ): AssistantStreamHandle {
+  assertAssistantRuntimeAvailable();
   const controller = new AbortController();
 
   void (async () => {

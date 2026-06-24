@@ -7,7 +7,8 @@ const server = spawn("pnpm", ["--filter", "@x-file/server", "dev"], {
 
 console.log("X-File 桌面壳占位已启动内置后端。");
 console.log("前端开发服务请另开终端运行：pnpm --filter @x-file/web dev");
-console.log("健康检查地址：http://127.0.0.1:17321/api/health");
+console.log("前端 H5 开发页：http://127.0.0.1:17320/");
+console.log("HTTP API 健康检查：http://127.0.0.1:17321/api/health");
 console.log("注意：第一版 dev shell 不实现系统托盘，也不托管真实常驻后台子进程。");
 
 function shutdown() {

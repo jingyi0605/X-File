@@ -21,7 +21,6 @@ import {
   streamAssistantMessage,
   type AssistantStreamHandle
 } from "./api/assistant";
-import { resolveApiUrl } from "../../api/http";
 import { t } from "../../i18n";
 
 export interface DocumentAssistantContext {
@@ -482,14 +481,6 @@ function buildDocumentAssistantPrefix(context: DocumentAssistantContext | null):
 }
 
 async function listPendingPermissionRequests(sessionId: string): Promise<AssistantPermissionRequest[]> {
-  try {
-    const response = await fetch(resolveApiUrl(`/api/assistant/sessions/${encodeURIComponent(sessionId)}/permission-requests`));
-    if (!response.ok) {
-      return [];
-    }
-    const payload = await response.json() as { requests?: AssistantPermissionRequest[] };
-    return (payload.requests ?? []).filter((item) => item.status === "pending");
-  } catch {
-    return [];
-  }
+  void sessionId;
+  return [];
 }

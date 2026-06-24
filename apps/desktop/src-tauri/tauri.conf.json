@@ -4,9 +4,9 @@
   "version": "0.1.0-beta.1",
   "identifier": "top.codingns.xfile",
   "build": {
-    "beforeDevCommand": "pnpm --filter @x-file/web dev",
+    "beforeDevCommand": "bash -lc 'for p in ./scripts/dev-desktop-stack.sh ../scripts/dev-desktop-stack.sh ../../scripts/dev-desktop-stack.sh ../../../scripts/dev-desktop-stack.sh; do if [ -f \"$p\" ]; then exec bash \"$p\"; fi; done; echo \"dev-desktop-stack.sh not found from $(pwd)\" >&2; exit 1'",
     "devUrl": "http://127.0.0.1:17320",
-    "beforeBuildCommand": "pnpm --filter @x-file/shared build && pnpm --filter @x-file/indexer build && pnpm --filter @x-file/server build && pnpm --filter @x-file/library-engine build && pnpm --filter @x-file/web build && node ../../scripts/archive/20260616/prepare-bundled-server.mjs",
+    "beforeBuildCommand": "bash -lc 'for d in . ./. ../.. ../../..; do if [ -f \"$d/pnpm-workspace.yaml\" ]; then pnpm --dir \"$d\" --filter @x-file/shared build && pnpm --dir \"$d\" --filter @x-file/indexer build && pnpm --dir \"$d\" --filter @x-file/web build && exec pnpm --dir \"$d\" run prepare:bundled-server; fi; done; echo \"pnpm workspace root not found from $(pwd)\" >&2; exit 1'",
     "frontendDist": "../../web/dist"
   },
   "app": {
@@ -25,7 +25,7 @@
         "titleBarStyle": "Overlay",
         "trafficLightPosition": {
           "x": 18,
-          "y": 15
+          "y": 23
         }
       }
     ],
@@ -53,8 +53,6 @@
     "longDescription": "X-File 是从 CodingNS 拆出的本机文档库应用。签名和自动更新配置已预留，发布前必须替换真实 secrets 并在实机 runner 验证。",
     "createUpdaterArtifacts": true,
     "resources": {
-      "resources/x-file-library-engine": "x-file-library-engine",
-      "resources/x-file-runtime": "x-file-runtime",
       "resources/x-file-plugins": "x-file-plugins"
     }
   },

@@ -27,7 +27,7 @@ export class AssistantController {
   constructor(private readonly runtime: AssistantRuntimeService) {}
 
   readonly listProviders = async (_request: FastifyRequest, reply: FastifyReply) => {
-    reply.send({ providers: this.runtime.listProviders() });
+    reply.send({ providers: await this.runtime.listProviders() });
   };
 
   readonly listSessions = async (_request: FastifyRequest, reply: FastifyReply) => {
@@ -61,7 +61,7 @@ export class AssistantController {
         `不支持的 provider: ${String(body.provider)}`
       );
     }
-    const summary = this.runtime.startSession({
+    const summary = await this.runtime.startSession({
       provider: body.provider,
       resumeProviderSessionId:
         typeof body.resumeProviderSessionId === "string" ? body.resumeProviderSessionId : null

@@ -6,6 +6,7 @@ export type {
   AssistantMessageRole,
   AssistantPermissionAction,
   AssistantPermissionKind,
+  AssistantPermissionMetadata,
   AssistantPermissionRequest,
   AssistantProviderId,
   AssistantProviderInfo,

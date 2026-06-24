@@ -8,6 +8,8 @@ export * from "./runtime/claude-runtime.js";
 export * from "./runtime/legna-runtime.js";
 export * from "./runtime/codex-runtime.js";
 export * from "./runtime/codex-permissions.js";
+export * from "./runtime/external-sidecar-runtime.js";
+export * from "./runtime/provider-runtime-sidecar.js";
 export * from "./runtime/gemini-runtime.js";
 export * from "./runtime/kimi-runtime.js";
 export * from "./runtime/opencode-runtime.js";

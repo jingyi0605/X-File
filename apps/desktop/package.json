@@ -6,8 +6,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && cargo check --manifest-path src-tauri/Cargo.toml",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "dev": "tsx src/dev-shell.ts",
-    "release:check": "node ../../scripts/check-desktop-release-secrets.mjs",
+    "dev": "tauri dev",
+    "release:check": "pnpm --dir ../.. run verify:desktop -- --mode preflight",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"
   },

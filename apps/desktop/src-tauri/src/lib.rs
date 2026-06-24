@@ -1,17 +1,29 @@
 mod native_export;
 mod native_index;
+mod native_core;
 mod updater;
 
-use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{Config as NotifyConfig, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use hmac::{Hmac, Mac};
 use jwt::SignWithKey;
 use mime_guess::from_path;
+use native_core::export_core::{run_native_library_export_core, NativeLibraryExportCoreRequest};
+use native_core::index_core::{run_native_library_index_core, NativeLibraryIndexCoreRequest};
+use native_core::search_core::{run_native_library_search_core, NativeLibrarySearchCoreRequest};
+use native_core::tag_core::{
+    count_local_tags, create_native_library_tag, delete_native_library_tag, get_native_document_tag_details,
+    get_native_folder_tag_details, get_native_library_tag_detail,
+    get_native_library_tag_recompute_task, list_native_library_tag_details,
+    request_native_library_tag_recompute, save_native_document_tags,
+    save_native_folder_tags, update_native_library_tag, expand_local_tag_ancestor_paths,
+    NativeFolderTagDetailsRequest, NativeLibraryTagIdRequest,
+    NativeSaveDocumentTagsRequest, NativeSaveFolderTagsRequest,
+    NativeSaveLibraryTagDefinitionRequest,
+};
 use native_export::{run_native_export_worker, run_native_search_worker, NativeExportRequest, NativeSearchRequest};
 use native_index::{
-    can_native_index_lightweight_set, is_native_lightweight_extension,
-    is_native_pdf_summary_extension, is_native_summary_extension,
-    is_native_openxml_target_extension, run_native_index_worker, NativeIndexRequest,
+    run_native_index_worker, run_native_parser, NativeIndexRequest, NativeParserRequest,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -19,7 +31,7 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -28,14 +40,15 @@ use tauri::menu::{
     Menu, MenuBuilder, MenuEvent, MenuItemBuilder, SubmenuBuilder,
 };
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow, WindowEvent};
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 
 #[cfg(target_os = "macos")]
 use {
     objc2::MainThreadMarker,
     objc2_app_kit::{
-        NSAppearance, NSAppearanceCustomization, NSAppearanceNameVibrantLight, NSAutoresizingMaskOptions,
+        NSAppearance, NSAppearanceCustomization, NSAppearanceNameVibrantDark, NSAppearanceNameVibrantLight, NSAutoresizingMaskOptions,
+        NSColor, NSView,
         NSViewLayerContentsRedrawPolicy, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
         NSVisualEffectState, NSVisualEffectView, NSWindow, NSWindowOrderingMode,
     },
@@ -65,12 +78,129 @@ const MACOS_NATIVE_LEFT_SIDEBAR_WIDTH: f64 = 272.0;
 const MACOS_NATIVE_RIGHT_SIDEBAR_WIDTH: f64 = 340.0;
 
 #[cfg(target_os = "macos")]
+const MACOS_NATIVE_SIDEBAR_MIN_VISIBLE_WIDTH: f64 = 1.0;
+
+#[cfg(target_os = "macos")]
+const MACOS_NATIVE_RIGHT_SIDEBAR_OVERSCAN_WIDTH: f64 = 240.0;
+
+#[cfg(target_os = "macos")]
 const MACOS_NATIVE_LEFT_SIDEBAR_AUTOREZING_MASK: NSAutoresizingMaskOptions =
     NSAutoresizingMaskOptions::ViewMaxXMargin.union(NSAutoresizingMaskOptions::ViewHeightSizable);
 
 #[cfg(target_os = "macos")]
 const MACOS_NATIVE_RIGHT_SIDEBAR_AUTOREZING_MASK: NSAutoresizingMaskOptions =
     NSAutoresizingMaskOptions::ViewMinXMargin.union(NSAutoresizingMaskOptions::ViewHeightSizable);
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeSidebarLayoutPayload {
+    left_width: f64,
+    right_width: f64,
+    left_collapsed: bool,
+    right_collapsed: bool,
+    prefers_dark_appearance: bool,
+    is_resizing: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct MacosNativeSidebarState {
+    #[cfg(target_os = "macos")]
+    windows: Arc<Mutex<HashMap<String, MacosNativeSidebarWindowState>>>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Default)]
+struct MacosNativeSidebarWindowState {
+    layout: MacosNativeSidebarLayoutState,
+    left_view_ptr: Option<usize>,
+    right_view_ptr: Option<usize>,
+    rendered_left_width: f64,
+    rendered_right_width: f64,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone)]
+struct MacosNativeSidebarLayoutState {
+    left_width: f64,
+    right_width: f64,
+    left_collapsed: bool,
+    right_collapsed: bool,
+    prefers_dark_appearance: bool,
+    is_resizing: bool,
+}
+
+#[cfg(target_os = "macos")]
+impl Default for MacosNativeSidebarLayoutState {
+    fn default() -> Self {
+        Self {
+            left_width: MACOS_NATIVE_LEFT_SIDEBAR_WIDTH,
+            right_width: MACOS_NATIVE_RIGHT_SIDEBAR_WIDTH,
+            left_collapsed: false,
+            right_collapsed: false,
+            prefers_dark_appearance: false,
+            is_resizing: false,
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl From<&NativeSidebarLayoutPayload> for MacosNativeSidebarLayoutState {
+    fn from(value: &NativeSidebarLayoutPayload) -> Self {
+        Self {
+            left_width: sanitize_native_sidebar_width(value.left_width),
+            right_width: sanitize_native_sidebar_width(value.right_width),
+            left_collapsed: value.left_collapsed,
+            right_collapsed: value.right_collapsed,
+            prefers_dark_appearance: value.prefers_dark_appearance,
+            is_resizing: value.is_resizing,
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl MacosNativeSidebarState {
+    fn upsert_layout(
+        &self,
+        window_label: &str,
+        payload: &NativeSidebarLayoutPayload,
+    ) -> MacosNativeSidebarWindowState {
+        let mut guard = self.windows.lock().expect("macOS 原生侧栏状态锁被污染");
+        let entry = guard.entry(window_label.to_string()).or_default();
+        let next_layout = MacosNativeSidebarLayoutState::from(payload);
+
+        entry.rendered_left_width = resolve_macos_native_sidebar_rendered_width(
+            entry.rendered_left_width,
+            next_layout.left_width,
+            next_layout.left_collapsed,
+            next_layout.is_resizing,
+        );
+        entry.rendered_right_width = resolve_macos_native_sidebar_rendered_width(
+            entry.rendered_right_width,
+            next_layout.right_width,
+            next_layout.right_collapsed,
+            next_layout.is_resizing,
+        );
+        entry.layout = next_layout;
+        entry.clone()
+    }
+
+    fn get_window_state(&self, window_label: &str) -> Option<MacosNativeSidebarWindowState> {
+        let guard = self.windows.lock().expect("macOS 原生侧栏状态锁被污染");
+        guard.get(window_label).cloned()
+    }
+
+    fn update_view_pointers(
+        &self,
+        window_label: &str,
+        left_view_ptr: Option<usize>,
+        right_view_ptr: Option<usize>,
+    ) {
+        let mut guard = self.windows.lock().expect("macOS 原生侧栏状态锁被污染");
+        let entry = guard.entry(window_label.to_string()).or_default();
+        entry.left_view_ptr = left_view_ptr;
+        entry.right_view_ptr = right_view_ptr;
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -105,13 +235,16 @@ struct BackendProcessManager {
     command: String,
     args: Vec<String>,
     cwd: PathBuf,
+    server_state_path: PathBuf,
+    command_overridden: bool,
     args_overridden: bool,
 }
 
 impl BackendProcessManager {
     fn from_env() -> Self {
-        let command =
-            env::var("X_FILE_BACKEND_COMMAND").unwrap_or_else(|_| default_backend_command());
+        let raw_command = env::var("X_FILE_BACKEND_COMMAND").ok();
+        let command_overridden = raw_command.is_some();
+        let command = raw_command.unwrap_or_else(default_backend_command);
         let raw_args = env::var("X_FILE_BACKEND_ARGS").ok();
         let args_overridden = raw_args.is_some();
         let args = raw_args.map(parse_command_args).unwrap_or_else(default_backend_args);
@@ -125,6 +258,8 @@ impl BackendProcessManager {
             command,
             args,
             cwd: default_backend_cwd(),
+            server_state_path: resolve_local_http_server_state_path(),
+            command_overridden,
             args_overridden,
         }
     }
@@ -143,6 +278,14 @@ impl BackendProcessManager {
             .find(|path| path.is_file())
         {
             self.command = node.to_string_lossy().to_string();
+        } else if resource_boundary
+            .and_then(|manifest| manifest.resources.as_ref())
+            .and_then(|resources| resources.get("x-file-runtime"))
+            .and_then(|resource| resource.required_in_main_bundle)
+            == Some(false)
+            && !self.command_overridden
+        {
+            self.command.clear();
         }
 
         let candidates = bundled_backend_entry_candidates(&resource_dir);
@@ -166,10 +309,19 @@ impl BackendProcessManager {
         self.state = BackendProcessState::Starting;
         self.last_error = None;
 
+        if self.command.trim().is_empty() {
+            self.child = None;
+            self.state = BackendProcessState::Failed;
+            self.last_error = Some(
+                "正式包默认不再内置 Node sidecar；如需显式启动后端，请通过 X_FILE_BACKEND_COMMAND 提供外部 Node/sidecar 入口。".to_string(),
+            );
+            return self.snapshot();
+        }
+
         match Command::new(&self.command)
             .args(&self.args)
             .current_dir(&self.cwd)
-            .envs(resolve_backend_extra_env(&self.cwd))
+            .envs(resolve_backend_extra_env(&self.cwd, &self.server_state_path))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -228,7 +380,7 @@ impl BackendProcessManager {
             args: self.args.clone(),
             cwd: self.cwd.to_string_lossy().to_string(),
             managed_by_desktop_shell: true,
-            note: "桌面壳已经具备生产托管入口；发布包会优先使用随包携带的 Node 运行时和生产后端资源，不依赖用户手工开 dev server。",
+            note: "桌面壳已经具备生产托管入口；正式包默认不再内置 Node sidecar，如需后端能力必须显式提供外部 sidecar 入口。",
         }
     }
 
@@ -260,7 +412,7 @@ impl BackendProcessManager {
 }
 
 fn bundled_node_candidates(
-    resource_dir: &std::path::Path,
+    _resource_dir: &std::path::Path,
     resource_boundary: Option<&ResourceBoundaryManifest>,
 ) -> Vec<PathBuf> {
     let runtime_required = resource_boundary
@@ -273,86 +425,60 @@ fn bundled_node_candidates(
         return Vec::new();
     }
 
-    vec![
-        resource_dir
-            .join("x-file-runtime")
-            .join("node")
-            .join("bin")
-            .join("node"),
-        resource_dir
-            .join("x-file-runtime")
-            .join("node_modules")
-            .join("node")
-            .join("bin")
-            .join("node"),
-        resource_dir
-            .join("x-file-runtime")
-            .join("package")
-            .join("node_modules")
-            .join("node")
-            .join("bin")
-            .join("node"),
-        resource_dir
-            .join("x-file-runtime")
-            .join("package")
-            .join("bin")
-            .join("node"),
-        resource_dir
-            .join("x-file-runtime")
-            .join("package")
-            .join("node_modules")
-            .join("node-darwin-arm64")
-            .join("bin")
-            .join("node"),
-        resource_dir
-            .join("x-file-runtime")
-            .join("package")
-            .join("node_modules")
-            .join("node-darwin-x64")
-            .join("bin")
-            .join("node"),
-        resource_dir
-            .join("x-file-runtime")
-            .join("package")
-            .join("node_modules")
-            .join("node-win-x64")
-            .join("bin")
-            .join("node.exe"),
-    ]
+    Vec::new()
 }
 
 fn bundled_backend_entry_candidates(resource_dir: &std::path::Path) -> Vec<PathBuf> {
-    vec![
-        resource_dir
-            .join("x-file-library-engine")
-            .join("dist")
-            .join("main.js"),
-        // 这些旧路径只保留给历史包和手工调试资源目录；正式包主路径已经固定为
-        // x-file-library-engine/dist/main.js，后续删除兼容时只需要收这里一处。
-        resource_dir
-            .join("x-file-server")
-            .join("dist")
-            .join("main.js"),
-        resource_dir.join("server").join("dist").join("main.js"),
-        resource_dir.join("x-file-server").join("main.js"),
-        resource_dir.join("server").join("main.js"),
-    ]
+    let _ = resource_dir;
+    Vec::new()
 }
 
-fn resolve_backend_extra_env(cwd: &std::path::Path) -> Vec<(String, String)> {
-    if env::var("X_FILE_BUNDLED_PLUGIN_DIR").is_ok() {
-        return Vec::new();
-    }
-
+fn resolve_backend_extra_env(
+    cwd: &std::path::Path,
+    server_state_path: &PathBuf,
+) -> Vec<(String, String)> {
     let bundled_plugin_dir = cwd
         .parent()
         .and_then(|dir| dir.parent().map(|parent| parent.join("x-file-plugins")))
         .unwrap_or_else(|| cwd.join("x-file-plugins"));
-
-    vec![(
-        "X_FILE_BUNDLED_PLUGIN_DIR".to_string(),
-        bundled_plugin_dir.to_string_lossy().to_string(),
-    )]
+    let mut envs = Vec::new();
+    envs.push((
+        "X_FILE_SERVER_STATE_PATH".to_string(),
+        server_state_path.to_string_lossy().to_string(),
+    ));
+    if let Ok(saved) = read_optional_json_file::<Value>(server_state_path) {
+        if let Some(port) = saved
+            .as_ref()
+            .and_then(|payload| payload.get("port"))
+            .and_then(Value::as_u64)
+        {
+            envs.push(("X_FILE_SERVER_PORT".to_string(), port.to_string()));
+        }
+        if let Some(host) = saved
+            .as_ref()
+            .and_then(|payload| payload.get("host"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            envs.push(("X_FILE_SERVER_HOST".to_string(), host.to_string()));
+        }
+    }
+    if env::var("X_FILE_BUNDLED_PLUGIN_DIR").is_err() {
+        envs.push((
+            "X_FILE_BUNDLED_PLUGIN_DIR".to_string(),
+            bundled_plugin_dir.to_string_lossy().to_string(),
+        ));
+    }
+    if env::var("X_FILE_DESKTOP_CLI_PATH").is_err() {
+        if let Ok(current_exe) = env::current_exe() {
+            envs.push((
+                "X_FILE_DESKTOP_CLI_PATH".to_string(),
+                current_exe.to_string_lossy().to_string(),
+            ));
+        }
+    }
+    envs
 }
 
 struct DesktopState {
@@ -367,8 +493,9 @@ struct DesktopState {
 
 impl DesktopState {
     fn new() -> Self {
+        let backend_persistent = load_initial_backend_persistence();
         Self {
-            backend_persistent: false,
+            backend_persistent,
             is_quitting: false,
             backend: BackendProcessManager::from_env(),
             resource_dir: None,
@@ -460,6 +587,7 @@ struct OnlyOfficeCallbackTokenPayload {
 #[serde(rename_all = "camelCase")]
 struct ResourceBoundaryManifest {
     resources: Option<HashMap<String, ResourceBoundaryResource>>,
+    #[allow(dead_code)]
     desktop_host: Option<ResourceBoundaryDesktopHost>,
 }
 
@@ -472,6 +600,7 @@ struct ResourceBoundaryResource {
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct ResourceBoundaryDesktopHost {
+    #[allow(dead_code)]
     node_worker_fallback: Option<ResourceBoundaryNodeWorkerFallback>,
     #[allow(dead_code)]
     node_sidecar: Option<ResourceBoundaryNodeSidecar>,
@@ -480,7 +609,9 @@ struct ResourceBoundaryDesktopHost {
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct ResourceBoundaryNodeWorkerFallback {
+    #[allow(dead_code)]
     allow_host_node_fallback_by_default: Option<bool>,
+    #[allow(dead_code)]
     explicit_opt_in_env: Option<String>,
 }
 
@@ -551,6 +682,19 @@ struct NativeLibraryRefreshRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct NativeLibraryWorkerCliPayload {
+    root_dir: String,
+    target_path: Option<String>,
+    allowed_extensions: Option<Vec<String>>,
+    included_hidden_paths: Option<Vec<String>>,
+    reason: Option<String>,
+    dirty_scope: Option<Value>,
+    file_path: Option<String>,
+    extension: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct NativeOnlyOfficeSettingsInput {
     enabled: Option<bool>,
     server_url: Option<String>,
@@ -591,6 +735,18 @@ struct NativeSaveLibraryConfigRequest {
     allowed_extensions: Option<Vec<String>>,
     included_hidden_paths: Option<Vec<String>>,
     folder_open_behavior: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeListLibraryTagDetailsRequest {
+    include_disabled: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeDocumentTagDetailsRequest {
+    document_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -865,6 +1021,212 @@ struct LocalLibraryFavoriteRecord {
     tag_paths: Option<Vec<String>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalStoredTagDefinition {
+    id: String,
+    path: String,
+    name: String,
+    root_type: String,
+    parent_id: Option<String>,
+    parent_path: Option<String>,
+    description: Option<String>,
+    status: String,
+    created_at: String,
+    updated_at: String,
+    disabled_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalStoredDocumentTagBinding {
+    document_id: String,
+    path: String,
+    title: String,
+    manual_tag_ids: Vec<String>,
+    updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalStoredFolderTagBinding {
+    folder_path: String,
+    binding_tag_ids: Vec<String>,
+    updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalStoredTagRule {
+    id: String,
+    tag_id: String,
+    relation: String,
+    rule_type: String,
+    matcher: Value,
+    enabled: bool,
+    priority: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalStoredLibraryTags {
+    library_id: String,
+    root_dir: String,
+    tags: Vec<LocalStoredTagDefinition>,
+    tag_rules: Vec<LocalStoredTagRule>,
+    document_tags: Vec<LocalStoredDocumentTagBinding>,
+    folder_tags: Vec<LocalStoredFolderTagBinding>,
+    updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalLibraryTagRuleView {
+    id: String,
+    relation: String,
+    rule_type: String,
+    matcher: Value,
+    enabled: bool,
+    priority: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalLibraryTagDetailWithRules {
+    id: String,
+    path: String,
+    name: String,
+    root_type: String,
+    parent_id: Option<String>,
+    parent_path: Option<String>,
+    description: Option<String>,
+    status: String,
+    document_count: usize,
+    created_at: String,
+    updated_at: String,
+    disabled_at: Option<String>,
+    smart_rules: Vec<LocalLibraryTagRuleView>,
+    smart_rule_enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalLibraryTagListSummary {
+    total_active_tags: usize,
+    total_disabled_tags: usize,
+    total_rule_enabled_tags: usize,
+    total_bound_documents: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalLibraryTagRecomputeStatus {
+    recompute_state: String,
+    last_recomputed_at: Option<String>,
+    last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalLibraryTagListResult {
+    items: Vec<LocalLibraryTagDetailWithRules>,
+    summary: LocalLibraryTagListSummary,
+    status: LocalLibraryTagRecomputeStatus,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalResolvedTagSource {
+    path: String,
+    source_type: String,
+    source_ref: Option<String>,
+    evidence: Option<String>,
+    confidence: f64,
+    priority: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalLibraryTagRecommendation {
+    tag_id: String,
+    path: String,
+    name: String,
+    score: f64,
+    reason: String,
+    evidence: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalLibraryDocumentTagDetails {
+    document_id: String,
+    path: String,
+    title: String,
+    manual_tag_ids: Vec<String>,
+    effective_folder_bindings: Vec<Value>,
+    resolved_tags: Vec<LocalResolvedTagSource>,
+    recommended_tags: Vec<LocalLibraryTagRecommendation>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalLibraryFolderTagDetails {
+    folder_path: String,
+    exists: bool,
+    binding_tag_ids: Vec<String>,
+    bindings: Vec<Value>,
+    recommended_tags: Vec<LocalLibraryTagRecommendation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalLibraryTagRecomputeTask {
+    task_id: String,
+    task_type: String,
+    key: String,
+    state: String,
+    source: String,
+    queued_at: String,
+    started_at: Option<String>,
+    completed_at: Option<String>,
+    failed_at: Option<String>,
+    error_summary: Option<String>,
+    running_stage: Option<String>,
+    deduped: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalRuntimeSnapshotTag {
+    path: String,
+    name: String,
+    root_type: String,
+    parent_path: Option<String>,
+    depth: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalRuntimeSnapshotDocument {
+    document_id: String,
+    path: String,
+    title: String,
+    summary: String,
+    tags: Vec<String>,
+    derived_tags: Vec<String>,
+    mtime: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalRuntimeExportCatalogSnapshot {
+    version: u32,
+    generated_at: Option<String>,
+    generated_at_legacy: Option<String>,
+    tags: Vec<LocalRuntimeSnapshotTag>,
+    documents: Vec<LocalRuntimeSnapshotDocument>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LocalLibrarySnapshot {
@@ -988,6 +1350,7 @@ struct NativeWatcherRuntime {
     last_refresh_requested_at: Option<String>,
     last_refresh_reason: Option<String>,
     last_error: Option<String>,
+    last_event_unix_ms: Option<i64>,
 }
 
 impl NativeWatcherRuntime {
@@ -997,6 +1360,7 @@ impl NativeWatcherRuntime {
             last_refresh_requested_at: None,
             last_refresh_reason: None,
             last_error: None,
+            last_event_unix_ms: None,
         }
     }
 }
@@ -1189,6 +1553,14 @@ fn start_native_library_watcher(
     }
 
     let root_dir_string = canonical_root.to_string_lossy().to_string();
+    {
+        let state = lock_desktop_state(&state);
+        if state.native_library.watcher_handle.is_some()
+            && state.native_library.watcher_root_dir.as_deref() == Some(root_dir_string.as_str())
+        {
+            return Ok(state.native_library.snapshot());
+        }
+    }
     println!(
         "[x-file native] watcher.start rootDir={} transport=native",
         root_dir_string
@@ -1199,10 +1571,24 @@ fn start_native_library_watcher(
     };
     let runtime = Arc::new(Mutex::new(NativeWatcherRuntime::new()));
     let runtime_for_callback = Arc::clone(&runtime);
+    let canonical_root_for_callback = canonical_root.clone();
     let mut watcher = RecommendedWatcher::new(
-        move |result: Result<notify::Event, notify::Error>| {
+        move |result: Result<Event, notify::Error>| {
             match result {
-                Ok(_) => {
+                Ok(event) => {
+                    if !should_handle_native_watcher_event(&canonical_root_for_callback, &event) {
+                        return;
+                    }
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+                    if let Ok(mut runtime) = runtime_for_callback.lock() {
+                        if runtime
+                            .last_event_unix_ms
+                            .is_some_and(|last_ms| now_ms.saturating_sub(last_ms) < 1200)
+                        {
+                            return;
+                        }
+                        runtime.last_event_unix_ms = Some(now_ms);
+                    }
                     println!(
                         "[x-file native] watcher.event reason=native_watcher_change transport=native"
                     );
@@ -1246,6 +1632,23 @@ fn start_native_library_watcher(
         runtime,
     });
     Ok(state.native_library.snapshot())
+}
+
+fn should_handle_native_watcher_event(root_dir: &Path, event: &Event) -> bool {
+    event.paths.iter().any(|path| !is_native_runtime_artifact_path(root_dir, path))
+}
+
+fn is_native_runtime_artifact_path(root_dir: &Path, path: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(root_dir) else {
+        return false;
+    };
+    let mut components = relative.components();
+    if let Some(component) = components.next() {
+        if let Some(name) = component.as_os_str().to_str() {
+            return name == ".ai-index" || name == ".x-file";
+        }
+    }
+    false
 }
 
 #[tauri::command]
@@ -1313,6 +1716,83 @@ fn native_get_library_snapshot(
     let snapshot = serde_json::to_value(read_local_library_snapshot(&watcher)?)
         .map_err(|error| format!("序列化本地 snapshot 失败：{error}"))?;
     Ok(NativeLibrarySnapshotResponse { watcher, snapshot })
+}
+
+#[tauri::command]
+fn native_list_library_tag_details(
+    request: NativeListLibraryTagDetailsRequest,
+) -> Result<Value, String> {
+    list_native_library_tag_details(request.include_disabled.unwrap_or(true))
+}
+
+#[tauri::command]
+fn native_get_library_tag_detail(
+    request: NativeLibraryTagIdRequest,
+) -> Result<Value, String> {
+    get_native_library_tag_detail(&request.tag_id)
+}
+
+#[tauri::command]
+fn native_create_library_tag(
+    request: NativeSaveLibraryTagDefinitionRequest,
+) -> Result<Value, String> {
+    create_native_library_tag(request)
+}
+
+#[tauri::command]
+fn native_update_library_tag(
+    request: NativeSaveLibraryTagDefinitionRequest,
+) -> Result<Value, String> {
+    let tag_id = request
+        .tag_id
+        .clone()
+        .ok_or_else(|| "tagId 不能为空".to_string())?;
+    update_native_library_tag(tag_id, request)
+}
+
+#[tauri::command]
+fn native_delete_library_tag(
+    request: NativeLibraryTagIdRequest,
+) -> Result<Value, String> {
+    delete_native_library_tag(&request.tag_id)
+}
+
+#[tauri::command]
+fn native_get_document_tag_details(
+    request: NativeDocumentTagDetailsRequest,
+) -> Result<Value, String> {
+    get_native_document_tag_details(&request.document_id)
+}
+
+#[tauri::command]
+fn native_save_document_tags(
+    request: NativeSaveDocumentTagsRequest,
+) -> Result<Value, String> {
+    save_native_document_tags(request)
+}
+
+#[tauri::command]
+fn native_get_folder_tag_details(
+    request: NativeFolderTagDetailsRequest,
+) -> Result<Value, String> {
+    get_native_folder_tag_details(&request.folder_path)
+}
+
+#[tauri::command]
+fn native_save_folder_tags(
+    request: NativeSaveFolderTagsRequest,
+) -> Result<Value, String> {
+    save_native_folder_tags(request)
+}
+
+#[tauri::command]
+fn native_request_library_tag_recompute() -> Result<Value, String> {
+    request_native_library_tag_recompute()
+}
+
+#[tauri::command]
+fn native_get_library_tag_recompute_task() -> Result<Value, String> {
+    get_native_library_tag_recompute_task()
 }
 
 #[tauri::command]
@@ -1460,7 +1940,7 @@ fn http_service_hint() -> BackendArchitecture {
         api_base_url: "http://127.0.0.1:17321",
         desktop_shell_owns_process: true,
         tray_implemented: true,
-        note: "桌面壳已实现托盘菜单、关闭窗口隐藏和后端子进程托管入口；发布包会优先使用随包携带的 Node 运行时和生产后端资源。",
+        note: "桌面壳已实现托盘菜单、关闭窗口隐藏和后端子进程托管入口；正式包默认不再内置 Node sidecar，如需后端能力必须显式提供外部 sidecar 入口。",
     }
 }
 
@@ -1669,7 +2149,7 @@ fn backend_policy(persistent: bool) -> BackendPolicy {
             quit_application_behavior: "stop_backend_and_quit_application",
             implemented_by_desktop_shell: true,
             requires_system_tray: true,
-            note: "关闭窗口时隐藏主窗口并保留后端；用户可以从托盘恢复窗口或退出应用。",
+            note: "关闭窗口时隐藏主窗口并保留后台服务；用户可以从顶部菜单栏图标恢复窗口或退出应用。",
         }
     } else {
         BackendPolicy {
@@ -1698,15 +2178,11 @@ fn lock_desktop_state<'a>(
 }
 
 fn default_backend_command() -> String {
-    env::var("NODE").unwrap_or_else(|_| "node".to_string())
+    env::var("X_FILE_BACKEND_COMMAND").unwrap_or_default()
 }
 
 fn default_backend_args() -> Vec<String> {
-    let dev_server_entry = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../server/dist/main.js")
-        .components()
-        .collect::<PathBuf>();
-    vec![dev_server_entry.to_string_lossy().to_string()]
+    Vec::new()
 }
 
 fn default_backend_cwd() -> PathBuf {
@@ -1736,7 +2212,9 @@ fn epoch_millis() -> u64 {
 }
 
 fn show_main_window(app: &AppHandle) {
+    let _ = app.show();
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
     }
@@ -1826,7 +2304,7 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
         .item(&quit)
         .build()?;
 
-    TrayIconBuilder::with_id("main-tray")
+    let mut tray_builder = TrayIconBuilder::with_id("main-tray")
         .tooltip("X-File 文档库")
         .menu(&menu)
         .show_menu_on_left_click(false)
@@ -1842,8 +2320,18 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
                 ..
             } => show_main_window(tray.app_handle()),
             _ => {}
-        })
-        .build(app)?;
+        });
+
+    if let Some(icon) = app.default_window_icon().cloned() {
+        tray_builder = tray_builder.icon(icon);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        tray_builder = tray_builder.icon_as_template(false);
+    }
+
+    tray_builder.build(app)?;
 
     Ok(())
 }
@@ -1953,85 +2441,25 @@ fn run_native_library_index_worker_once(
     dirty_scope: Option<Value>,
 ) -> Result<Value, String> {
     let native_library = &mut state.native_library;
-    let queued_at = iso_now();
     if mode == "export-only" {
         let payload = dirty_scope
             .ok_or_else(|| "export-only 缺少 dirtyScope，无法执行 Rust 原生导出".to_string())?;
         return run_native_library_export_once(binding, reason, target_path, payload);
     }
     if mode == "search-only" {
-        let payload = dirty_scope
-            .ok_or_else(|| "search-only 缺少 dirtyScope，无法执行 Rust 原生搜索导出".to_string())?;
-        return run_native_library_search_once(binding, reason, target_path, payload);
+        return run_native_library_search_once(binding, reason, target_path, dirty_scope);
     }
-    if mode == "index-only" && should_prefer_native_index(binding, target_path.as_deref()) {
+    if mode == "index-only" {
         println!(
-            "[x-file native] index-only prefer rust lightweight executor for extensions={} targetPath={}",
+            "[x-file native] index-only force rust core executor for extensions={} targetPath={}",
             binding.allowed_extensions.join(","),
             target_path.as_deref().unwrap_or("<root>")
         );
         return run_native_library_index_once(binding, reason, target_path);
     }
-    let payload = json!({
-        "mode": mode,
-        "rootDir": binding.root_dir,
-        "targetPath": target_path,
-        "allowedExtensions": binding.allowed_extensions,
-        "includedHiddenPaths": binding.included_hidden_paths,
-        "reason": reason,
-        "queuedAt": queued_at,
-        "taskId": Value::Null,
-        "dirtyScope": dirty_scope.unwrap_or(Value::Null),
-        "exportDataSourceMode": Value::Null
-    })
-    .to_string();
-    let worker_command = match resolve_native_index_worker_command(
-        state.resource_dir.clone(),
-        mode,
-        &payload,
-    ) {
-        Ok(command) => command,
-        Err(error) => {
-            native_library.last_error = Some(error.clone());
-            return Err(error);
-        }
-    };
-    let output = Command::new(&worker_command.command)
-        .args(&worker_command.args)
-        .current_dir(&worker_command.cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|error| format!("启动索引 worker 失败：{error}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let message = if stderr.is_empty() {
-            format!("索引 worker 执行失败：{}", output.status)
-        } else {
-            format!("索引 worker 执行失败：{} {}", output.status, stderr)
-        };
-        native_library.last_error = Some(message.clone());
-        return Err(message);
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let trimmed = stdout.trim();
-    if trimmed.is_empty() {
-        return Ok(json!({
-            "accepted": true,
-            "libraryId": binding.library_id,
-            "reason": reason,
-            "targetPath": target_path,
-            "worker": "native",
-            "mode": mode,
-            "exportDataSourceMode": if mode == "export-only" { Value::String("snapshot".to_string()) } else { Value::Null },
-        }));
-    }
-
-    serde_json::from_str::<Value>(trimmed)
-        .map_err(|error| format!("解析索引 worker 输出失败：{error}"))
+    let message = format!("未知的桌面原生 library 模式：{mode}");
+    native_library.last_error = Some(message.clone());
+    Err(message)
 }
 
 fn run_native_library_export_once(
@@ -2040,7 +2468,7 @@ fn run_native_library_export_once(
     target_path: Option<String>,
     dirty_scope: Value,
 ) -> Result<Value, String> {
-    run_native_export_worker(NativeExportRequest {
+    run_native_library_export_core(NativeLibraryExportCoreRequest {
         root_dir: binding.root_dir.clone(),
         reason: reason.to_string(),
         target_path,
@@ -2052,9 +2480,9 @@ fn run_native_library_search_once(
     binding: &LocalLibraryBinding,
     reason: &str,
     target_path: Option<String>,
-    dirty_scope: Value,
+    dirty_scope: Option<Value>,
 ) -> Result<Value, String> {
-    run_native_search_worker(NativeSearchRequest {
+    run_native_library_search_core(NativeLibrarySearchCoreRequest {
         root_dir: binding.root_dir.clone(),
         reason: reason.to_string(),
         target_path,
@@ -2067,7 +2495,7 @@ fn run_native_library_index_once(
     reason: &str,
     target_path: Option<String>,
 ) -> Result<Value, String> {
-    run_native_index_worker(NativeIndexRequest {
+    run_native_library_index_core(NativeLibraryIndexCoreRequest {
         root_dir: binding.root_dir.clone(),
         allowed_extensions: binding.allowed_extensions.clone(),
         included_hidden_paths: binding.included_hidden_paths.clone(),
@@ -2075,191 +2503,6 @@ fn run_native_library_index_once(
         reason: reason.to_string(),
         target_path,
     })
-}
-
-fn should_prefer_native_index(
-    binding: &LocalLibraryBinding,
-    target_path: Option<&str>,
-) -> bool {
-    if can_native_index_lightweight_set(&binding.allowed_extensions) {
-        return true;
-    }
-    should_prefer_native_lightweight_target(binding, target_path)
-        || should_prefer_native_pdf_target(binding, target_path)
-        || should_prefer_native_openxml_target(binding, target_path)
-        || should_prefer_native_summary_directory(binding, target_path)
-}
-
-fn should_prefer_native_lightweight_target(
-    binding: &LocalLibraryBinding,
-    target_path: Option<&str>,
-) -> bool {
-    let Some(target_path) = target_path.map(str::trim).filter(|value| !value.is_empty()) else {
-        return false;
-    };
-    let normalized = target_path.replace('\\', "/");
-    if normalized.ends_with('/') {
-        return false;
-    }
-    let extension = PathBuf::from(&normalized)
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| format!(".{}", value.to_lowercase()));
-    let Some(extension) = extension else {
-        return false;
-    };
-    if !is_native_lightweight_extension(&extension) {
-        return false;
-    }
-    binding.allowed_extensions.is_empty()
-        || binding.allowed_extensions.iter().any(|item| {
-            let normalized_item = item.trim().to_lowercase();
-            let normalized_item = if normalized_item.starts_with('.') {
-                normalized_item
-            } else {
-                format!(".{normalized_item}")
-            };
-            normalized_item == extension
-        })
-}
-
-fn should_prefer_native_summary_directory(
-    binding: &LocalLibraryBinding,
-    target_path: Option<&str>,
-) -> bool {
-    let Some(target_path) = target_path.map(str::trim).filter(|value| !value.is_empty()) else {
-        return false;
-    };
-    let normalized = target_path.replace('\\', "/").trim_end_matches('/').to_string();
-    if normalized.is_empty() || normalized == "." {
-        return false;
-    }
-    let root = match fs::canonicalize(&binding.root_dir) {
-        Ok(value) => value,
-        Err(_) => return false,
-    };
-    let absolute = root.join(&normalized);
-    let resolved = match fs::canonicalize(&absolute) {
-        Ok(value) => value,
-        Err(_) => return false,
-    };
-    if !resolved.starts_with(&root) || !resolved.is_dir() {
-        return false;
-    }
-
-    let mut stack = vec![resolved];
-    while let Some(current) = stack.pop() {
-        let entries = match fs::read_dir(&current) {
-            Ok(value) => value,
-            Err(_) => return false,
-        };
-        for entry in entries.filter_map(Result::ok) {
-            let path = entry.path();
-            let file_name = entry.file_name();
-            let name = file_name.to_string_lossy();
-            if path.is_dir() {
-                if name.starts_with('.') {
-                    continue;
-                }
-                stack.push(path);
-                continue;
-            }
-            if !path.is_file() {
-                continue;
-            }
-            let extension = path
-                .extension()
-                .and_then(|value| value.to_str())
-                .map(|value| format!(".{}", value.to_lowercase()));
-            let Some(extension) = extension else {
-                return false;
-            };
-            if !is_native_summary_extension(&extension) {
-                return false;
-            }
-            if !binding.allowed_extensions.is_empty()
-                && !binding.allowed_extensions.iter().any(|item| {
-                    let normalized_item = item.trim().to_lowercase();
-                    let normalized_item = if normalized_item.starts_with('.') {
-                        normalized_item
-                    } else {
-                        format!(".{normalized_item}")
-                    };
-                    normalized_item == extension
-                })
-            {
-                return false;
-            }
-        }
-    }
-
-    true
-}
-
-fn should_prefer_native_openxml_target(
-    binding: &LocalLibraryBinding,
-    target_path: Option<&str>,
-) -> bool {
-    let Some(target_path) = target_path.map(str::trim).filter(|value| !value.is_empty()) else {
-        return false;
-    };
-    let normalized = target_path.replace('\\', "/");
-    if normalized.ends_with('/') {
-        return false;
-    }
-    let extension = PathBuf::from(&normalized)
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| format!(".{}", value.to_lowercase()));
-    let Some(extension) = extension else {
-        return false;
-    };
-    if !is_native_openxml_target_extension(&extension) {
-        return false;
-    }
-    binding.allowed_extensions.is_empty()
-        || binding.allowed_extensions.iter().any(|item| {
-            let normalized_item = item.trim().to_lowercase();
-            let normalized_item = if normalized_item.starts_with('.') {
-                normalized_item
-            } else {
-                format!(".{normalized_item}")
-            };
-            normalized_item == extension
-        })
-}
-
-fn should_prefer_native_pdf_target(
-    binding: &LocalLibraryBinding,
-    target_path: Option<&str>,
-) -> bool {
-    let Some(target_path) = target_path.map(str::trim).filter(|value| !value.is_empty()) else {
-        return false;
-    };
-    let normalized = target_path.replace('\\', "/");
-    if normalized.ends_with('/') {
-        return false;
-    }
-    let extension = PathBuf::from(&normalized)
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| format!(".{}", value.to_lowercase()));
-    let Some(extension) = extension else {
-        return false;
-    };
-    if !is_native_pdf_summary_extension(&extension) {
-        return false;
-    }
-    binding.allowed_extensions.is_empty()
-        || binding.allowed_extensions.iter().any(|item| {
-            let normalized_item = item.trim().to_lowercase();
-            let normalized_item = if normalized_item.starts_with('.') {
-                normalized_item
-            } else {
-                format!(".{normalized_item}")
-            };
-            normalized_item == extension
-        })
 }
 
 fn run_native_library_index_worker_detached(
@@ -2789,94 +3032,6 @@ fn read_local_library_binding() -> Result<Option<LocalLibraryBinding>, String> {
     }))
 }
 
-struct NativeIndexWorkerCommand {
-    command: String,
-    args: Vec<String>,
-    cwd: PathBuf,
-}
-
-fn resolve_native_worker_entry_name(mode: &str) -> Result<&'static str, String> {
-    match mode {
-        "index-only" => Ok("library-index-worker.js"),
-        "search-only" => Ok("library-search-worker.js"),
-        other => Err(format!("未知的 native worker 模式：{other}")),
-    }
-}
-
-fn bundled_worker_entry_candidates(
-    resource_dir: &std::path::Path,
-    worker_entry_name: &str,
-) -> Vec<PathBuf> {
-    vec![
-        resource_dir
-            .join("x-file-library-engine")
-            .join("node_modules")
-            .join("@x-file")
-            .join("server")
-            .join("dist")
-            .join("library")
-            .join(worker_entry_name),
-        resource_dir
-            .join("x-file-library-engine")
-            .join("node_modules")
-            .join("@x-file")
-            .join("server")
-            .join("dist")
-            .join("src")
-            .join("library")
-            .join(worker_entry_name),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../server/dist/library")
-            .join(worker_entry_name),
-    ]
-}
-
-fn resolve_native_index_worker_command(
-    resource_dir: Option<PathBuf>,
-    mode: &str,
-    payload: &str,
-) -> Result<NativeIndexWorkerCommand, String> {
-    let resource_dir = resource_dir
-        .clone()
-        .or_else(|| {
-            env::current_exe()
-                .ok()
-                .and_then(|path| path.parent().map(PathBuf::from))
-        })
-        .unwrap_or_else(|| PathBuf::from("."));
-    let resource_boundary = read_resource_boundary_manifest(&resource_dir).ok().flatten();
-    let worker_entry_name = resolve_native_worker_entry_name(mode)?;
-    let worker_entry = bundled_worker_entry_candidates(&resource_dir, worker_entry_name)
-        .into_iter()
-        .find(|path| path.is_file())
-        .ok_or_else(|| "未找到索引 worker 入口".to_string())?;
-    let bundled_node = bundled_node_candidates(&resource_dir, resource_boundary.as_ref())
-        .into_iter()
-        .find(|path| path.is_file());
-    let node_command = match bundled_node {
-        Some(path) => path.to_string_lossy().to_string(),
-        None if allow_host_node_worker_fallback(resource_boundary.as_ref()) => {
-            default_backend_command()
-        }
-        None => {
-            return Err(explain_missing_node_worker_runtime(
-                resource_boundary.as_ref(),
-                mode,
-                &worker_entry,
-            ));
-        }
-    };
-
-    Ok(NativeIndexWorkerCommand {
-        command: node_command,
-        args: vec![
-            worker_entry.to_string_lossy().to_string(),
-            payload.to_string(),
-        ],
-        cwd: resource_dir,
-    })
-}
-
 fn read_resource_boundary_manifest(
     resource_dir: &std::path::Path,
 ) -> Result<Option<ResourceBoundaryManifest>, String> {
@@ -2885,61 +3040,6 @@ fn read_resource_boundary_manifest(
         return Ok(None);
     }
     read_json_file::<ResourceBoundaryManifest>(&path).map(Some)
-}
-
-fn allow_host_node_worker_fallback(
-    resource_boundary: Option<&ResourceBoundaryManifest>,
-) -> bool {
-    let explicit_env = resource_boundary
-        .and_then(|manifest| manifest.desktop_host.as_ref())
-        .and_then(|host| host.node_worker_fallback.as_ref())
-        .and_then(|policy| policy.explicit_opt_in_env.as_deref())
-        .unwrap_or("X_FILE_ENABLE_HOST_NODE_WORKER_FALLBACK");
-    if is_truthy_env(explicit_env) {
-        return true;
-    }
-    resource_boundary
-        .and_then(|manifest| manifest.desktop_host.as_ref())
-        .and_then(|host| host.node_worker_fallback.as_ref())
-        .and_then(|policy| policy.allow_host_node_fallback_by_default)
-        .unwrap_or(false)
-}
-
-fn explain_missing_node_worker_runtime(
-    resource_boundary: Option<&ResourceBoundaryManifest>,
-    mode: &str,
-    worker_entry: &std::path::Path,
-) -> String {
-    let explicit_env = resource_boundary
-        .and_then(|manifest| manifest.desktop_host.as_ref())
-        .and_then(|host| host.node_worker_fallback.as_ref())
-        .and_then(|policy| policy.explicit_opt_in_env.as_deref())
-        .unwrap_or("X_FILE_ENABLE_HOST_NODE_WORKER_FALLBACK");
-    let runtime_required = resource_boundary
-        .and_then(|manifest| manifest.resources.as_ref())
-        .and_then(|resources| resources.get("x-file-runtime"))
-        .and_then(|resource| resource.required_in_main_bundle)
-        .unwrap_or(resource_boundary.is_none());
-    let entry_hint = worker_entry.to_string_lossy();
-    if !runtime_required {
-        return format!(
-            "{mode} 需要 Node worker，但当前资源边界已声明 x-file-runtime 可省略；桌面宿主不会默认回退系统 Node。当前目标若不命中原生索引集合，请先补齐 native 执行体，或仅在调试时显式设置 {explicit_env}=1。worker={entry_hint}"
-        );
-    }
-    if resource_boundary.is_some() {
-        return format!(
-            "{mode} 需要随包 Node runtime，但当前正式包缺少 x-file-runtime；这是打包边界错误，桌面宿主不会默认回退系统 Node。请检查资源打包，或仅在调试时显式设置 {explicit_env}=1。worker={entry_hint}"
-        );
-    }
-    format!(
-        "{mode} 需要 Node worker。当前仍处于开发资源路径，若确需使用宿主 Node 调试，请显式设置 {explicit_env}=1。worker={entry_hint}"
-    )
-}
-
-fn is_truthy_env(name: &str) -> bool {
-    env::var(name)
-        .map(|value| value != "0" && value.to_lowercase() != "false")
-        .unwrap_or(false)
 }
 
 fn read_local_library_config() -> Result<LocalLibraryConfig, String> {
@@ -3130,6 +3230,22 @@ fn read_local_folders(
         .collect())
 }
 
+fn write_runtime_export_catalog_snapshot(
+    root_dir: &str,
+    snapshot: &LocalRuntimeExportCatalogSnapshot,
+) -> Result<String, String> {
+    let path = resolve_runtime_export_catalog_snapshot_path(root_dir);
+    write_json_file(&path, snapshot)?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+fn resolve_runtime_export_catalog_snapshot_path(root_dir: &str) -> PathBuf {
+    PathBuf::from(root_dir)
+        .join(".ai-index")
+        .join("runtime")
+        .join("export-catalog-snapshot.json")
+}
+
 fn merge_runtime_status(
     runtime_status: Option<LocalLibraryIndexStatus>,
     generated_at: Option<String>,
@@ -3175,24 +3291,6 @@ fn empty_local_status(state: &str, last_completed_at: Option<String>) -> LocalLi
         progress: None,
         runtime_index_state: None,
     }
-}
-
-fn count_local_tags(documents: &[MetaDocument]) -> HashMap<String, usize> {
-    let mut counts = HashMap::new();
-    for document in documents {
-        let mut expanded_paths = HashSet::new();
-        let direct = document.direct_tags.clone().unwrap_or_default();
-        let derived = document.derived_tags.clone().unwrap_or_default();
-        for tag_path in direct.into_iter().chain(derived.into_iter()) {
-            for ancestor_path in expand_local_tag_ancestor_paths(&tag_path) {
-                expanded_paths.insert(ancestor_path);
-            }
-        }
-        for path in expanded_paths {
-            *counts.entry(path).or_insert(0) += 1;
-        }
-    }
-    counts
 }
 
 fn count_document_tag_facets(
@@ -4046,19 +4144,6 @@ fn sha256_hex(buffer: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn expand_local_tag_ancestor_paths(tag_path: &str) -> Vec<String> {
-    let segments: Vec<&str> = tag_path
-        .split('/')
-        .map(str::trim)
-        .filter(|segment| !segment.is_empty())
-        .collect();
-    let mut paths = Vec::new();
-    for index in 1..=segments.len() {
-        paths.push(segments[..index].join("/"));
-    }
-    paths
-}
-
 fn read_json_file<T>(path: &PathBuf) -> Result<T, String>
 where
     T: for<'de> Deserialize<'de>,
@@ -4207,7 +4292,9 @@ fn save_local_http_server_state(
     let current = read_local_http_server_state(state);
     let enabled = request.enabled.unwrap_or_else(|| current.get("enabled").and_then(Value::as_bool).unwrap_or(true));
     let port = request.port.unwrap_or_else(|| current.get("port").and_then(Value::as_u64).unwrap_or(17321) as u16);
-    let persistent = request.persistent.unwrap_or_else(|| current.get("persistent").and_then(Value::as_bool).unwrap_or(false));
+    let persistent = request
+        .persistent
+        .unwrap_or_else(|| current.get("persistent").and_then(Value::as_bool).unwrap_or_else(default_backend_persistence));
     let payload = json!({
         "enabled": enabled,
         "host": "127.0.0.1",
@@ -4722,6 +4809,38 @@ where
     fs::write(path, buffer).map_err(|error| format!("写入文件失败 {}: {error}", path.display()))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_backend_extra_env_会注入状态文件路径和已保存端口() {
+        let temp_dir = env::temp_dir().join(format!("x-file-backend-env-{}", epoch_millis()));
+        fs::create_dir_all(&temp_dir).expect("创建临时目录失败");
+        let state_path = temp_dir.join("http-server-state.json");
+        write_json_file(
+            &state_path,
+            &json!({
+                "enabled": true,
+                "host": "127.0.0.1",
+                "port": 17322,
+                "persistent": true
+            }),
+        )
+        .expect("写入状态文件失败");
+
+        let envs = resolve_backend_extra_env(&temp_dir, &state_path);
+        let env_map: HashMap<String, String> = envs.into_iter().collect();
+
+        assert_eq!(
+            env_map.get("X_FILE_SERVER_STATE_PATH"),
+            Some(&state_path.to_string_lossy().to_string())
+        );
+        assert_eq!(env_map.get("X_FILE_SERVER_PORT"), Some(&"17322".to_string()));
+        assert_eq!(env_map.get("X_FILE_SERVER_HOST"), Some(&"127.0.0.1".to_string()));
+    }
+}
+
 fn epoch_millis_to_iso(value: u64) -> String {
     chrono::DateTime::<chrono::Utc>::from(UNIX_EPOCH + std::time::Duration::from_millis(value)).to_rfc3339()
 }
@@ -4740,77 +4859,392 @@ fn iso_now() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
+#[cfg(target_os = "macos")]
+unsafe fn configure_macos_live_resize_view(view: &NSView) {
+    view.setPostsFrameChangedNotifications(true);
+    view.setLayerContentsRedrawPolicy(NSViewLayerContentsRedrawPolicy::DuringViewResize);
+    view.setNeedsDisplay(true);
+}
+
+#[cfg(target_os = "macos")]
+fn configure_macos_window_live_resize(window: &WebviewWindow) -> Result<(), String> {
+    let window_for_resize = window.clone();
+
+    window
+        .run_on_main_thread(move || unsafe {
+            let Ok(ns_window_ptr) = window_for_resize.ns_window() else {
+                return;
+            };
+            let Ok(ns_view_ptr) = window_for_resize.ns_view() else {
+                return;
+            };
+            let ns_window: &NSWindow = &*ns_window_ptr.cast();
+            let content_view: &NSView = &*ns_view_ptr.cast();
+
+            // 透明 overlay 窗口在 live resize 期间最怕露底，
+            // 这里沿用父仓库策略，强制保留上一帧内容直到 webview 补齐。
+            ns_window.setPreservesContentDuringLiveResize(true);
+            configure_macos_live_resize_view(content_view);
+
+            let _ = window_for_resize.with_webview(|webview| {
+                let webview_view: &NSView = &*webview.inner().cast();
+                configure_macos_live_resize_view(webview_view);
+            });
+        })
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn configure_macos_window_chrome(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::TitleBarStyle;
+
+    let Some(window) = app.get_webview_window("main") else {
+        return Ok(());
+    };
+
+    window.set_title_bar_style(TitleBarStyle::Overlay)?;
+    let native_window = window.clone();
+    window.run_on_main_thread(move || unsafe {
+        let Ok(ns_window_ptr) = native_window.ns_window() else {
+            return;
+        };
+        let ns_window: &NSWindow = &*ns_window_ptr.cast();
+        let clear_color = NSColor::clearColor();
+
+        // 自定义标题栏和左右玻璃侧栏都依赖透明窗口通道，
+        // 把整窗打回不透明会直接把 overlay titlebar 变成假壳。
+        ns_window.setBackgroundColor(Some(&clear_color));
+        ns_window.setOpaque(false);
+    })?;
+    configure_macos_window_live_resize(&window).map_err(std::io::Error::other)?;
+    Ok(())
+}
+
 
 #[cfg(target_os = "macos")]
 fn configure_macos_native_glass_sidebars(app: &tauri::App) -> tauri::Result<()> {
     let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
         return Ok(());
     };
-
-    let window_for_glass = window.clone();
-
-    window
-        .run_on_main_thread(move || unsafe {
-            let Ok(ns_window_ptr) = window_for_glass.ns_window() else {
-                return;
-            };
-            let ns_window: &NSWindow = &*ns_window_ptr.cast();
-            let Some(content_view) = ns_window.contentView() else {
-                return;
-            };
-            let content_frame = content_view.frame();
-            let content_width = content_frame.size.width.max(0.0);
-            let content_height = content_frame.size.height.max(0.0);
-            let appearance = NSAppearance::appearanceNamed(NSAppearanceNameVibrantLight);
-
-            let left_frame = NSRect::new(
-                NSPoint::new(0.0, 0.0),
-                NSSize::new(MACOS_NATIVE_LEFT_SIDEBAR_WIDTH.min(content_width), content_height),
-            );
-            let right_width = MACOS_NATIVE_RIGHT_SIDEBAR_WIDTH.min(content_width);
-            let right_frame = NSRect::new(
-                NSPoint::new((content_width - right_width).max(0.0), 0.0),
-                NSSize::new(right_width, content_height),
-            );
-
-            add_macos_native_sidebar_view(
-                &content_view,
-                left_frame,
-                MACOS_NATIVE_LEFT_SIDEBAR_AUTOREZING_MASK,
-                appearance.as_deref(),
-            );
-            add_macos_native_sidebar_view(
-                &content_view,
-                right_frame,
-                MACOS_NATIVE_RIGHT_SIDEBAR_AUTOREZING_MASK,
-                appearance.as_deref(),
-            );
-        })
-        .map_err(|error| tauri::Error::Anyhow(error.into()))
+    let native_sidebar_state = app.state::<MacosNativeSidebarState>().inner().clone();
+    let initial_layout = NativeSidebarLayoutPayload {
+        left_width: MACOS_NATIVE_LEFT_SIDEBAR_WIDTH,
+        right_width: MACOS_NATIVE_RIGHT_SIDEBAR_WIDTH,
+        left_collapsed: false,
+        right_collapsed: false,
+        prefers_dark_appearance: false,
+        is_resizing: false,
+    };
+    let sidebar_state = native_sidebar_state.upsert_layout(window.label(), &initial_layout);
+    schedule_macos_native_sidebar_layout(
+        &window,
+        window.label().to_string(),
+        native_sidebar_state,
+        sidebar_state,
+    )
+    .map_err(std::io::Error::other)?;
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
-unsafe fn add_macos_native_sidebar_view(
-    content_view: &objc2_app_kit::NSView,
-    frame: NSRect,
-    autoresizing_mask: NSAutoresizingMaskOptions,
-    appearance: Option<&NSAppearance>,
+fn sanitize_native_sidebar_width(width: f64) -> f64 {
+    if width.is_finite() && width > 0.0 {
+        width
+    } else {
+        0.0
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_macos_native_sidebar_rendered_width(
+    previous_rendered_width: f64,
+    requested_width: f64,
+    collapsed: bool,
+    is_resizing: bool,
+) -> f64 {
+    if collapsed {
+        return 0.0;
+    }
+
+    if is_resizing {
+        previous_rendered_width.max(requested_width)
+    } else {
+        requested_width
+    }
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn apply_macos_native_sidebar_layout(
+    window: &WebviewWindow,
+    window_label: &str,
+    native_sidebar_state: &MacosNativeSidebarState,
+    sidebar_state: &MacosNativeSidebarWindowState,
 ) {
+    let Ok(ns_window_ptr) = window.ns_window() else {
+        return;
+    };
+    let ns_window: &NSWindow = &*ns_window_ptr.cast();
+    let Some(content_view) = ns_window.contentView() else {
+        return;
+    };
+    let content_frame = content_view.frame();
+    let content_width = content_frame.size.width.max(0.0);
+    let content_height = content_frame.size.height.max(0.0);
+    let sidebar_appearance =
+        resolve_macos_native_sidebar_appearance(sidebar_state.layout.prefers_dark_appearance);
+
+    let mut left_view_ptr = ensure_macos_native_sidebar_view(
+        &content_view,
+        sidebar_state.left_view_ptr,
+        sidebar_appearance.as_deref(),
+    );
+    let mut right_view_ptr = ensure_macos_native_sidebar_view(
+        &content_view,
+        sidebar_state.right_view_ptr,
+        sidebar_appearance.as_deref(),
+    );
+
+    let left_visible = !sidebar_state.layout.left_collapsed
+        && sidebar_state.rendered_left_width > MACOS_NATIVE_SIDEBAR_MIN_VISIBLE_WIDTH;
+    let right_visible = !sidebar_state.layout.right_collapsed
+        && sidebar_state.rendered_right_width > MACOS_NATIVE_SIDEBAR_MIN_VISIBLE_WIDTH;
+    let left_width = sidebar_state.rendered_left_width.min(content_width).max(0.0);
+    let right_width = sidebar_state.rendered_right_width.min(content_width).max(0.0);
+    let right_effect_width = if right_visible {
+        (right_width + MACOS_NATIVE_RIGHT_SIDEBAR_OVERSCAN_WIDTH)
+            .min(content_width)
+            .max(0.0)
+    } else {
+        0.0
+    };
+    let right_origin_x = (content_width - right_effect_width).max(0.0);
+
+    apply_macos_native_sidebar_frame(
+        left_view_ptr,
+        NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(left_width, content_height)),
+        left_visible,
+        MACOS_NATIVE_LEFT_SIDEBAR_AUTOREZING_MASK,
+    );
+    apply_macos_native_sidebar_frame(
+        right_view_ptr,
+        NSRect::new(
+            NSPoint::new(right_origin_x, 0.0),
+            NSSize::new(right_effect_width, content_height),
+        ),
+        right_visible,
+        MACOS_NATIVE_RIGHT_SIDEBAR_AUTOREZING_MASK,
+    );
+
+    if left_view_ptr.is_none() {
+        left_view_ptr = ensure_macos_native_sidebar_view(
+            &content_view,
+            None,
+            sidebar_appearance.as_deref(),
+        );
+    }
+    if right_view_ptr.is_none() {
+        right_view_ptr = ensure_macos_native_sidebar_view(
+            &content_view,
+            None,
+            sidebar_appearance.as_deref(),
+        );
+    }
+
+    native_sidebar_state.update_view_pointers(window_label, left_view_ptr, right_view_ptr);
+}
+
+#[cfg(target_os = "macos")]
+fn sync_macos_webview_frame(window: &WebviewWindow) -> Result<(), String> {
+    let window_for_resize = window.clone();
+
+    window
+        .run_on_main_thread(move || unsafe {
+            let Ok(ns_view_ptr) = window_for_resize.ns_view() else {
+                return;
+            };
+            let content_view: &NSView = &*ns_view_ptr.cast();
+            let content_bounds = content_view.bounds();
+
+            let _ = window_for_resize.with_webview(move |webview| {
+                let webview_view: &NSView = &*webview.inner().cast();
+                webview_view.setFrame(content_bounds);
+                webview_view.setNeedsDisplay(true);
+                webview_view.displayIfNeeded();
+            });
+        })
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn schedule_macos_native_sidebar_layout(
+    window: &WebviewWindow,
+    window_label: String,
+    native_sidebar_state: MacosNativeSidebarState,
+    sidebar_state: MacosNativeSidebarWindowState,
+) -> Result<(), String> {
+    let sync_window = window.clone();
+
+    window
+        .run_on_main_thread(move || unsafe {
+            apply_macos_native_sidebar_layout(
+                &sync_window,
+                &window_label,
+                &native_sidebar_state,
+                &sidebar_state,
+            );
+        })
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn sync_cached_macos_native_sidebar_layout(
+    window: &WebviewWindow,
+    native_sidebar_state: &MacosNativeSidebarState,
+) -> Result<(), String> {
+    let window_label = window.label().to_string();
+    let Some(sidebar_state) = native_sidebar_state.get_window_state(&window_label) else {
+        return Ok(());
+    };
+
+    schedule_macos_native_sidebar_layout(
+        window,
+        window_label,
+        native_sidebar_state.clone(),
+        sidebar_state,
+    )
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn ensure_macos_native_sidebar_view(
+    content_view: &NSView,
+    existing_ptr: Option<usize>,
+    appearance: Option<&NSAppearance>,
+) -> Option<usize> {
+    if let Some(ptr) = existing_ptr {
+        let view = &*(ptr as *const NSVisualEffectView);
+        view.setAppearance(appearance);
+
+        if let Some(superview) = view.superview() {
+            if std::ptr::eq(&*superview, content_view) {
+                return Some(ptr);
+            }
+        }
+
+        view.removeFromSuperviewWithoutNeedingDisplay();
+    }
+
     let mtm = MainThreadMarker::new().expect("创建 macOS 原生侧栏必须在主线程执行");
-    let effect_view = NSVisualEffectView::initWithFrame(mtm.alloc(), frame);
+    let effect_view = NSVisualEffectView::initWithFrame(
+        mtm.alloc(),
+        NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)),
+    );
     effect_view.setMaterial(NSVisualEffectMaterial::Sidebar);
     effect_view.setBlendingMode(NSVisualEffectBlendingMode::WithinWindow);
     effect_view.setState(NSVisualEffectState::FollowsWindowActiveState);
     effect_view.setAppearance(appearance);
-    effect_view.setAutoresizingMask(autoresizing_mask);
+    effect_view.setAutoresizingMask(MACOS_NATIVE_LEFT_SIDEBAR_AUTOREZING_MASK);
     effect_view.setLayerContentsRedrawPolicy(NSViewLayerContentsRedrawPolicy::DuringViewResize);
+    effect_view.setHidden(true);
     content_view.addSubview_positioned_relativeTo(&effect_view, NSWindowOrderingMode::Below, None);
+    Some((&*effect_view) as *const NSVisualEffectView as usize)
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_macos_native_sidebar_appearance(
+    prefers_dark_appearance: bool,
+) -> Option<objc2::rc::Retained<NSAppearance>> {
+    let appearance_name = unsafe {
+        if prefers_dark_appearance {
+            NSAppearanceNameVibrantDark
+        } else {
+            NSAppearanceNameVibrantLight
+        }
+    };
+
+    NSAppearance::appearanceNamed(appearance_name)
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn apply_macos_native_sidebar_frame(
+    view_ptr: Option<usize>,
+    frame: NSRect,
+    visible: bool,
+    autoresizing_mask: NSAutoresizingMaskOptions,
+) {
+    let Some(view_ptr) = view_ptr else {
+        return;
+    };
+    let view = &*(view_ptr as *const NSVisualEffectView);
+    view.setAutoresizingMask(autoresizing_mask);
+    view.setFrame(frame);
+    view.setNeedsDisplay(true);
+    view.setHidden(!visible);
+}
+
+#[cfg(target_os = "macos")]
+fn attach_macos_native_sidebar_handlers(
+    window: WebviewWindow,
+    native_sidebar_state: MacosNativeSidebarState,
+) {
+    let window_for_events = window.clone();
+    window.on_window_event(move |event| {
+        if matches!(event, WindowEvent::Resized(_)) {
+            let _ = sync_cached_macos_native_sidebar_layout(&window_for_events, &native_sidebar_state);
+            let _ = sync_macos_webview_frame(&window_for_events);
+        }
+    });
 }
 
 fn should_autostart_backend() -> bool {
     env::var("X_FILE_BACKEND_AUTOSTART")
         .map(|value| value != "0" && value.to_lowercase() != "false")
-        .unwrap_or(true)
+        .unwrap_or(false)
+}
+
+fn load_initial_backend_persistence() -> bool {
+    let file_path = resolve_local_http_server_state_path();
+    let saved = read_optional_json_file::<Value>(&file_path)
+        .ok()
+        .flatten();
+
+    saved
+        .as_ref()
+        .and_then(|payload| payload.get("persistent"))
+        .and_then(Value::as_bool)
+        .unwrap_or_else(default_backend_persistence)
+}
+
+fn default_backend_persistence() -> bool {
+    cfg!(target_os = "macos")
+}
+
+#[tauri::command]
+fn sync_native_sidebar_layout(
+    window: WebviewWindow,
+    native_sidebar_state: State<'_, MacosNativeSidebarState>,
+    layout: NativeSidebarLayoutPayload,
+) -> Result<(), String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        let _ = native_sidebar_state;
+        let _ = layout;
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let window_label = window.label().to_string();
+        let native_sidebar_state = native_sidebar_state.inner().clone();
+        let sidebar_state = native_sidebar_state.upsert_layout(&window_label, &layout);
+
+        schedule_macos_native_sidebar_layout(
+            &window,
+            window_label,
+            native_sidebar_state,
+            sidebar_state,
+        )
+    }
 }
 
 #[tauri::command]
@@ -4819,6 +5253,11 @@ async fn check_for_update(
     channel: String,
 ) -> Result<updater::DesktopReleaseState, String> {
     updater::check_for_update(&app, &channel).await
+}
+
+#[tauri::command]
+fn get_runtime_info(app: AppHandle) -> updater::DesktopRuntimeInfo {
+    updater::get_runtime_info(&app)
 }
 
 #[tauri::command]
@@ -4854,16 +5293,129 @@ fn open_external_url(url: String) -> Result<(), String> {
     updater::open_external(&url)
 }
 
+pub fn run_library_worker_cli_from_args(args: &[String]) -> i32 {
+    match try_run_library_worker_cli_from_args(args) {
+        Ok(output) => {
+            println!("{output}");
+            0
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            1
+        }
+    }
+}
+
+fn try_run_library_worker_cli_from_args(args: &[String]) -> Result<String, String> {
+    let mode = args
+        .get(2)
+        .map(String::as_str)
+        .ok_or_else(|| "library worker CLI 缺少 mode 参数".to_string())?;
+    let raw_payload = args
+        .get(3)
+        .map(String::as_str)
+        .ok_or_else(|| "library worker CLI 缺少 payload 参数".to_string())?;
+    let payload: NativeLibraryWorkerCliPayload = serde_json::from_str(raw_payload)
+        .map_err(|error| format!("library worker CLI payload 无法解析：{error}"))?;
+    let reason = payload
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("desktop_native_worker_cli")
+        .to_string();
+    let target_path = payload
+        .target_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+
+    let result = match mode {
+        "parse-file" => {
+            let file_path = payload
+                .file_path
+                .clone()
+                .or_else(|| payload.target_path.clone())
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| payload.root_dir.clone());
+            let extension = payload
+                .extension
+                .clone()
+                .filter(|value| !value.trim().is_empty())
+                .or_else(|| {
+                    payload
+                        .allowed_extensions
+                        .as_ref()
+                        .and_then(|items| items.first().cloned())
+                })
+                .or_else(|| {
+                    Some(file_path.as_str())
+                        .and_then(|value| std::path::Path::new(value).extension().and_then(|ext| ext.to_str()))
+                        .map(|ext| format!(".{ext}"))
+                })
+                .unwrap_or_default();
+            run_native_parser(NativeParserRequest {
+                file_path,
+                extension,
+            })
+        }
+        "index-only" => {
+            let allowed_extensions = payload.allowed_extensions.unwrap_or_default();
+            let included_hidden_paths = payload.included_hidden_paths.unwrap_or_default();
+            run_native_index_worker(NativeIndexRequest {
+                root_dir: payload.root_dir,
+                allowed_extensions,
+                included_hidden_paths,
+                config_relative_path: ".ai-index/doc-semantic-index.config.json".to_string(),
+                reason,
+                target_path,
+            })
+        }
+        "export-only" => {
+            let dirty_scope = payload
+                .dirty_scope
+                .ok_or_else(|| "library worker CLI export-only 缺少 dirtyScope".to_string())?;
+            run_native_export_worker(NativeExportRequest {
+                root_dir: payload.root_dir,
+                reason,
+                target_path,
+                dirty_scope,
+            })
+        }
+        "search-only" => {
+            run_native_search_worker(NativeSearchRequest {
+                root_dir: payload.root_dir,
+                reason,
+                target_path,
+                dirty_scope: payload.dirty_scope,
+            })
+        }
+        other => Err(format!("library worker CLI 不支持的 mode：{other}")),
+    }?;
+
+    serde_json::to_string(&result)
+        .map_err(|error| format!("library worker CLI 输出序列化失败：{error}"))
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Mutex::new(DesktopState::new()))
+        .manage(MacosNativeSidebarState::default())
         .manage(updater::DownloadedDesktopUpdateState::default())
         .setup(|app| {
             setup_tray(app)?;
             configure_backend_process(app);
             #[cfg(target_os = "macos")]
-            configure_macos_native_glass_sidebars(app)?;
+            {
+                configure_macos_window_chrome(app)?;
+                configure_macos_native_glass_sidebars(app)?;
+                if let Some(window) = app.get_webview_window("main") {
+                    let native_sidebar_state = app.state::<MacosNativeSidebarState>().inner().clone();
+                    attach_macos_native_sidebar_handlers(window, native_sidebar_state);
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -4873,6 +5425,7 @@ pub fn run() {
             stop_managed_backend,
             desktop_shell_status,
             get_native_library_engine_state,
+            sync_native_sidebar_layout,
             start_native_library_watcher,
             stop_native_library_watcher,
             native_request_library_refresh,
@@ -4882,6 +5435,17 @@ pub fn run() {
             native_save_library_config,
             native_browse_host_directories,
             native_get_library_snapshot,
+            native_list_library_tag_details,
+            native_get_library_tag_detail,
+            native_create_library_tag,
+            native_update_library_tag,
+            native_delete_library_tag,
+            native_get_document_tag_details,
+            native_save_document_tags,
+            native_get_folder_tag_details,
+            native_save_folder_tags,
+            native_request_library_tag_recompute,
+            native_get_library_tag_recompute_task,
             native_list_library_documents,
             native_list_library_files,
             native_get_library_preview,
@@ -4899,6 +5463,7 @@ pub fn run() {
             open_path,
             reveal_path_in_file_manager,
             show_library_context_menu,
+            get_runtime_info,
             check_for_update,
             download_update,
             install_update,

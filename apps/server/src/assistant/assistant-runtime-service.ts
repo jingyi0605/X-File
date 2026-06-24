@@ -1,38 +1,35 @@
-// 文档助手运行时服务：把文档库根目录作为 codex / Claude Code 的工作区，
-// 复用 session-sync-core 的 ClaudeRuntimeAdapter / CodexRuntimeAdapter /
-// ProviderRuntimeService，自己只维护会话表与 SSE 事件流转。
+// 文档助手运行时服务：把文档库根目录作为插件 provider 的工作区，
+// 主 APP 只维护会话表、SSE 和权限桥。真正的 provider runtime 固定由 external sidecar/runtime bridge 提供。
 import { homedir } from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { existsSync, promises as fsPromises, readdirSync } from "node:fs";
-import { spawnSync } from "node:child_process";
 
 import {
-  ClaudeRuntimeAdapter,
-  ClaudeCodeAdapter,
-  CodexAdapter,
-  CodexRuntimeAdapter,
   ProviderRuntimeService,
   type NormalizedMessage,
   type NormalizedMessageAttachment,
   type ProviderRuntimeAdapter,
   type ProviderRuntimeRunRequest,
-  type ProviderModelOption,
   type ProviderSubscription,
   type RuntimeAttachment,
   type RuntimeEvent
 } from "@codingns/session-sync-core";
+import type {
+  AssistantPluginPermissionRequest,
+  AssistantPluginRuntimeCapability,
+  AssistantPluginRuntimeModule
+} from "@x-file/shared";
 
 import type { LibraryBindingStore } from "../storage/library-binding-store.js";
+import type { PluginService } from "../plugins/plugin-service.js";
 import { AssistantError } from "./assistant-errors.js";
 import { AssistantSessionStore, type AssistantSessionRecord } from "./assistant-session-store.js";
 import {
-  ASSISTANT_PROVIDER_IDS,
   isAssistantProviderId,
   type AssistantEventSink,
   type AssistantMessage,
   type AssistantPermissionAction,
-  type AssistantPermissionKind,
   type AssistantPermissionRequest,
   type AssistantProviderId,
   type AssistantProviderInfo,
@@ -44,110 +41,64 @@ import {
 const X_FILE_WORKSPACE_ID = "x-file-library";
 const DEFAULT_PERMISSION_MODE = "acceptEdits";
 
+interface AssistantProviderRuntimeHost {
+  runtime: ProviderRuntimeService;
+  capabilities: ReturnType<typeof normalizePluginCapabilities>;
+  runtimeHomeDir: string;
+}
+
 export class AssistantRuntimeService {
-  private readonly runtime: ProviderRuntimeService;
+  private runtimeBySession = new Map<string, ProviderRuntimeService>();
   private readonly providerCapabilities = new Map<AssistantProviderId, {
     supportsAttachments: boolean;
-    modelOptions: ProviderModelOption[];
+    modelOptions: Array<{
+      id: string;
+      name: string;
+      usesProviderDefault?: boolean;
+      supportedReasoningEfforts?: string[];
+    }>;
     defaultReasoningLevel: string | null;
     supportedReasoningLevels: string[];
   }>();
-  private readonly availableProviders = new Set<AssistantProviderId>();
   private readonly subscriptionsBySession = new Map<string, ProviderSubscription>();
-  // 当前活跃 SSE 连接的 sink，用于把 codex 权限请求实时推给前端。
+  // 当前活跃 SSE 连接的 sink，用于把插件权限请求实时推给前端。
   private readonly sessionSinks = new Map<string, AssistantEventSink>();
-  // 权限请求的 deferred，前端回复时 resolve，让 handleServerRequest 返回 codex。
+  // 权限请求的 deferred，前端回复时 resolve，让宿主只回插件定义的 provider-specific 结果。
   private readonly permissionDeferreds = new Map<
     string,
-    { resolve: (value: unknown) => void; kind: AssistantPermissionKind; timer: NodeJS.Timeout }
+    { resolve: (value: unknown) => void; responseBuilder: (action: AssistantPermissionAction) => unknown | Promise<unknown>; timer: NodeJS.Timeout }
   >();
 
   constructor(
     private readonly bindingStore: LibraryBindingStore,
+    private readonly pluginService: PluginService,
     private readonly store = new AssistantSessionStore()
-  ) {
-    const adapters: ProviderRuntimeAdapter[] = [];
+  ) {}
 
-    try {
-      const homeDir = this.resolveGlobalRuntimeHome("claude-code");
-      adapters.push(
-        new ClaudeRuntimeAdapter({
-          homeDir,
-          hookBridge: null
-        })
-      );
-      this.providerCapabilities.set("claude-code", readAssistantProviderCapabilities(
-        new ClaudeCodeAdapter({ homeDir })
-      ));
-      this.availableProviders.add("claude-code");
-    } catch (error) {
-      console.warn("[assistant] claude-code adapter 初始化失败", error);
-    }
-
-    try {
-      const homeDir = this.resolveGlobalRuntimeHome("codex");
-      adapters.push(
-        new CodexRuntimeAdapter({
-          homeDir,
-          handleServerRequest: async (input) => this.handleCodexServerRequest(input)
-        })
-      );
-      this.providerCapabilities.set("codex", readAssistantProviderCapabilities(
-        new CodexAdapter({ homeDir }),
-        getDefaultCodexModelOptions()
-      ));
-      this.availableProviders.add("codex");
-    } catch (error) {
-      console.warn("[assistant] codex adapter 初始化失败", error);
-    }
-
-    this.runtime = new ProviderRuntimeService(adapters);
-  }
-
-  listProviders(): AssistantProviderInfo[] {
-    return ASSISTANT_PROVIDER_IDS.map((id) => {
-      const status = this.detectProvider(id);
-      const capabilities = this.providerCapabilities.get(id);
+  async listProviders(): Promise<AssistantProviderInfo[]> {
+    const entries = await Promise.all(
+      this.pluginService.listEnabledAssistantProviders().map(async (item) => {
+        const resolvedCapabilities = await this.resolveProviderCapabilities(item.providerId);
+        return {
+          item,
+          capabilities: resolvedCapabilities,
+        };
+      })
+    );
+    return entries.map(({ item, capabilities }) => {
       return {
-        id,
-        label: id === "claude-code" ? "Claude Code" : "Codex",
-        commandReady: status.commandReady,
-        authReady: status.authReady,
-        available: status.commandReady && status.authReady,
-        detail: status.detail,
+        id: item.providerId,
+        label: item.manifest.provider?.displayName ?? item.manifest.name,
+        commandReady: item.health.commandReady ?? false,
+        authReady: item.health.authReady ?? false,
+        available: item.health.commandReady === true && item.health.authReady === true,
+        detail: item.health.detail ?? null,
         supportsAttachments: capabilities?.supportsAttachments ?? false,
         modelOptions: capabilities?.modelOptions ?? [],
         defaultReasoningLevel: normalizeAssistantReasoningLevel(capabilities?.defaultReasoningLevel ?? null),
         supportedReasoningLevels: normalizeAssistantReasoningLevels(capabilities?.supportedReasoningLevels ?? []),
       };
     });
-  }
-
-  // 检测本机 CLI 命令与登录态是否就绪，给前端 provider 选择提供准确状态。
-  private detectProvider(id: AssistantProviderId): {
-    commandReady: boolean;
-    authReady: boolean;
-    detail: string | null;
-  } {
-    const command = id === "claude-code" ? "claude" : "codex";
-    const label = id === "claude-code" ? "Claude Code" : "Codex";
-    const commandReady = detectCommandReady(command);
-    if (!commandReady) {
-      return {
-        commandReady: false,
-        authReady: false,
-        detail: `未检测到 ${command} 命令，请先安装 ${label} CLI`
-      };
-    }
-    const authReady = detectAuthReady(id);
-    if (!authReady) {
-      return {
-        commandReady: true,
-        authReady: false,
-        detail: `未检测到 ${label} 登录态，请先在终端登录`
-      };
-    }
-    return { commandReady: true, authReady: true, detail: null };
   }
 
   resolveWorkspacePath(): string {
@@ -159,7 +110,7 @@ export class AssistantRuntimeService {
     return binding.mirrorRoot?.trim() || binding.rootDir.trim();
   }
 
-  startSession(input: StartAssistantSessionInput): AssistantSessionSummary {
+  async startSession(input: StartAssistantSessionInput): Promise<AssistantSessionSummary> {
     if (!isAssistantProviderId(input.provider)) {
       throw new AssistantError(
         400,
@@ -167,12 +118,12 @@ export class AssistantRuntimeService {
         `不支持的 provider: ${String(input.provider)}`
       );
     }
-    const status = this.detectProvider(input.provider);
-    if (!status.commandReady || !status.authReady) {
+    const status = (await this.listProviders()).find((item) => item.id === input.provider);
+    if (!status || !status.commandReady || !status.authReady) {
       throw new AssistantError(
         503,
         "ASSISTANT_PROVIDER_UNAVAILABLE",
-        status.detail ?? `${input.provider} 运行时不可用`
+        status?.detail ?? `${input.provider} 运行时不可用`
       );
     }
 
@@ -182,7 +133,7 @@ export class AssistantRuntimeService {
       sessionId,
       provider: input.provider,
       workspacePath,
-      runtimeHomeDir: this.resolveGlobalRuntimeHome(input.provider),
+      runtimeHomeDir: await this.resolveRuntimeHomeDir(input.provider),
       providerSessionId: input.resumeProviderSessionId ?? null
     });
     return this.store.toSummary(record);
@@ -222,7 +173,8 @@ export class AssistantRuntimeService {
 
     // 先订阅本 session 的事件，再启动 run，确保 message/complete/error 都能收到。
     // active-run-registry 的 attach 在 register 之前调用也是安全的。
-    const subscription = this.runtime.subscribe(sessionId, (event) => {
+    const runtime = await this.resolveRuntimeForSession(session);
+    const subscription = runtime.subscribe(sessionId, (event) => {
       void this.handleRuntimeEvent(sessionId, event, sink, subscription);
     });
     this.subscriptionsBySession.set(sessionId, subscription);
@@ -250,8 +202,8 @@ export class AssistantRuntimeService {
 
     try {
       const handle = session.providerSessionId
-        ? await this.runtime.continueSession(request)
-        : await this.runtime.startSession(request);
+        ? await runtime.continueSession(request)
+        : await runtime.startSession(request);
       const snapshot = handle.getSnapshot();
       this.store.updateBinding(sessionId, snapshot.providerSessionId, snapshot.rawStoreRef);
     } catch (error) {
@@ -268,6 +220,8 @@ export class AssistantRuntimeService {
     sink: AssistantEventSink,
     subscription: ProviderSubscription
   ): Promise<void> {
+    this.mirrorRuntimeBindingToSessionStore(sessionId, event.providerSessionId, event.rawStoreRef);
+
     if (event.type === "message") {
       const message = toAssistantMessage(sessionId, event.message);
       this.store.appendMessage(sessionId, message);
@@ -302,6 +256,17 @@ export class AssistantRuntimeService {
     }
   }
 
+  private mirrorRuntimeBindingToSessionStore(
+    sessionId: string,
+    providerSessionId: string | null,
+    rawStoreRef: string | null
+  ): void {
+    if (!providerSessionId && !rawStoreRef) {
+      return;
+    }
+    this.store.updateBinding(sessionId, providerSessionId, rawStoreRef);
+  }
+
   private finishRun(sessionId: string, subscription: ProviderSubscription): void {
     this.store.setActiveRun(sessionId, false);
     this.sessionSinks.delete(sessionId);
@@ -311,38 +276,41 @@ export class AssistantRuntimeService {
     }
   }
 
-  // codex app-server 请求审批时回调：解析成可读请求，推给前端，等用户回复。
-  private async handleCodexServerRequest(input: {
+  // 插件 runtime 请求审批时回调：宿主只存储、推给前端并等待回复，不再解析 provider-specific 协议。
+  private async handlePluginPermissionRequest(input: {
     sessionId: string;
-    providerSessionId: string;
-    request: Record<string, unknown>;
+    request: AssistantPluginPermissionRequest;
+    responseBuilder: (action: AssistantPermissionAction) => unknown | Promise<unknown>;
   }): Promise<unknown> {
-    const parsed = parseCodexServerRequest(input.sessionId, input.request);
     const request: AssistantPermissionRequest = {
       requestId: randomUUID(),
       sessionId: input.sessionId,
-      kind: parsed.kind,
-      title: parsed.title,
-      summary: parsed.summary,
-      detail: parsed.detail,
+      kind: input.request.kind,
+      title: input.request.title,
+      summary: input.request.summary,
+      detail: input.request.detail,
+      metadata: buildAssistantPermissionMetadata(input.request),
       status: "pending",
       createdAt: new Date().toISOString()
     };
     this.store.addPermissionRequest(input.sessionId, request);
 
-    const sink = this.sessionSinks.get(input.sessionId);
-    sink?.({ kind: "permission_request", request });
-
     return new Promise<unknown>((resolve) => {
-      // 5 分钟无人回复则自动批准，避免 codex 永久阻塞。
+      // 5 分钟无人回复则自动批准，避免 provider runtime 永久阻塞。
       const timer = setTimeout(() => {
         if (this.permissionDeferreds.has(request.requestId)) {
           this.permissionDeferreds.delete(request.requestId);
           this.store.resolvePermissionRequest(request.requestId, "approved");
-          resolve(buildCodexApprovalResult(parsed.kind, "accept"));
+          void Promise.resolve(input.responseBuilder("accept")).then(resolve);
         }
       }, 300000);
-      this.permissionDeferreds.set(request.requestId, { resolve, kind: parsed.kind, timer });
+      this.permissionDeferreds.set(request.requestId, {
+        resolve,
+        responseBuilder: input.responseBuilder,
+        timer
+      });
+      const sink = this.sessionSinks.get(input.sessionId);
+      sink?.({ kind: "permission_request", request });
     });
   }
 
@@ -358,7 +326,7 @@ export class AssistantRuntimeService {
     this.permissionDeferreds.delete(requestId);
     const status = action === "accept" ? "approved" : "rejected";
     const request = this.store.resolvePermissionRequest(requestId, status);
-    deferred.resolve(buildCodexApprovalResult(deferred.kind, action));
+    void Promise.resolve(deferred.responseBuilder(action)).then(deferred.resolve);
     return request;
   }
 
@@ -372,7 +340,11 @@ export class AssistantRuntimeService {
       throw new AssistantError(404, "ASSISTANT_SESSION_NOT_FOUND", `会话不存在: ${sessionId}`);
     }
     try {
-      await this.runtime.interrupt(sessionId);
+      const runtime = this.runtimeBySession.get(sessionId);
+      if (!runtime) {
+        return;
+      }
+      await runtime.interrupt(sessionId);
     } catch (error) {
       // 没有 active run 时中断会抛 ACTIVE_RUN_NOT_FOUND / INTERRUPT_NOT_SUPPORTED，按幂等处理。
       if (
@@ -400,6 +372,21 @@ export class AssistantRuntimeService {
     return this.store;
   }
 
+  async dispose(): Promise<void> {
+    for (const deferred of this.permissionDeferreds.values()) {
+      clearTimeout(deferred.timer);
+    }
+    this.permissionDeferreds.clear();
+    this.sessionSinks.clear();
+    this.subscriptionsBySession.clear();
+    const runtimes = [...new Set(this.runtimeBySession.values())];
+    this.runtimeBySession.clear();
+    this.providerCapabilities.clear();
+    for (const runtime of runtimes) {
+      await runtime.dispose();
+    }
+  }
+
   resolveAttachmentPath(sessionId: string, attachmentId: string): string | null {
     const directory = this.store.getAttachmentDirectory(sessionId);
     const safeId = attachmentId.trim();
@@ -417,12 +404,84 @@ export class AssistantRuntimeService {
     return null;
   }
 
-  // 精简版直接复用全局 CLI 登录态：claude 用 ~/.claude，codex 用 ~/.codex。
-  // adapter 内部会把 CLAUDE_CONFIG_DIR / codex 配置指向这里，从而读到已登录的凭证。
-  private resolveGlobalRuntimeHome(provider: AssistantProviderId): string {
+  private async resolveRuntimeForSession(session: AssistantSessionRecord): Promise<ProviderRuntimeService> {
+    const cached = this.runtimeBySession.get(session.sessionId);
+    if (cached) {
+      return cached;
+    }
+
+    const plugin = await this.pluginService.getEnabledAssistantRuntimePlugin(session.provider);
+    if (!plugin) {
+      throw new AssistantError(
+        503,
+        "ASSISTANT_PROVIDER_UNAVAILABLE",
+        `${session.provider} 插件未安装或未启用`
+      );
+    }
+
+    const host = await this.buildRuntimeHost(session, plugin.runtimeModule);
+    const runtime = host.runtime;
+    this.runtimeBySession.set(session.sessionId, runtime);
+    this.providerCapabilities.set(session.provider, host.capabilities);
+    return runtime;
+  }
+
+  private async resolveRuntimeHomeDir(provider: AssistantProviderId): Promise<string> {
+    const plugin = await this.pluginService.getEnabledAssistantRuntimePlugin(provider);
+    if (plugin?.runtimeModule.provider.runtimeHomeDir?.trim()) {
+      return plugin.runtimeModule.provider.runtimeHomeDir.trim();
+    }
     return provider === "claude-code"
       ? path.join(homedir(), ".claude")
       : path.join(homedir(), ".codex");
+  }
+
+  private async resolveProviderCapabilities(provider: AssistantProviderId) {
+    const cached = this.providerCapabilities.get(provider);
+    if (cached) {
+      return cached;
+    }
+    const plugin = await this.pluginService.getEnabledAssistantRuntimePlugin(provider);
+    if (!plugin) {
+      return null;
+    }
+    const normalized = normalizePluginCapabilities(plugin.runtimeModule.capabilities);
+    this.providerCapabilities.set(provider, normalized);
+    return normalized;
+  }
+
+  private async buildRuntimeHost(
+    session: AssistantSessionRecord | null,
+    runtimeModule: AssistantPluginRuntimeModule
+  ): Promise<AssistantProviderRuntimeHost> {
+    const runtimeAdapter = await runtimeModule.createRuntimeAdapter({
+      permissionBridge: {
+        requestPermission: async (input) => this.handlePluginPermissionRequest({
+          sessionId: session?.sessionId ?? input.sessionId,
+          request: input.request,
+          responseBuilder: (action) => {
+            if (typeof runtimeModule.buildPermissionResponse === "function") {
+              return runtimeModule.buildPermissionResponse({
+                action,
+                request: input.request
+              });
+            }
+            return { decision: action === "accept" ? "accept" : "decline" };
+          }
+        })
+      },
+      session: {
+        sessionId: session?.sessionId ?? "assistant-provider-probe",
+        workspaceId: X_FILE_WORKSPACE_ID,
+        workspacePath: session?.workspacePath ?? this.resolveWorkspacePath()
+      }
+    }) as ProviderRuntimeAdapter;
+
+    return {
+      runtime: new ProviderRuntimeService([runtimeAdapter]),
+      capabilities: normalizePluginCapabilities(runtimeModule.capabilities),
+      runtimeHomeDir: runtimeModule.provider.runtimeHomeDir
+    };
   }
 
   private async materializeRuntimeAttachments(
@@ -552,51 +611,13 @@ function buildSafeAttachmentFileName(id: string, fileName: string, fallbackExten
   return `${id}-${normalized}`;
 }
 
-function readAssistantProviderCapabilities(adapter: {
-  getProviderCapabilities(): {
-    supportsAttachments: boolean;
-    modelOptions?: ProviderModelOption[];
-    defaultReasoningLevel?: string | null;
-  };
-}, fallbackModelOptions?: ProviderModelOption[]) {
-  const capabilities = adapter.getProviderCapabilities();
-  const modelOptions = capabilities.modelOptions?.length ? capabilities.modelOptions : (fallbackModelOptions ?? []);
-  const reasoningLevels = new Set<string>();
-  modelOptions.forEach((option) => {
-    option.supportedReasoningEfforts?.forEach((level) => {
-      reasoningLevels.add(level);
-    });
-  });
-  if (capabilities.defaultReasoningLevel) {
-    reasoningLevels.add(capabilities.defaultReasoningLevel);
-  }
+function normalizePluginCapabilities(capabilities: AssistantPluginRuntimeCapability) {
   return {
     supportsAttachments: capabilities.supportsAttachments,
-    modelOptions,
+    modelOptions: capabilities.modelOptions ?? [],
     defaultReasoningLevel: capabilities.defaultReasoningLevel ?? null,
-    supportedReasoningLevels: [...reasoningLevels]
+    supportedReasoningLevels: capabilities.supportedReasoningLevels ?? []
   };
-}
-
-function getDefaultCodexModelOptions(): ProviderModelOption[] {
-  return [
-    {
-      id: "provider-default",
-      name: "默认",
-      usesProviderDefault: true,
-      supportedReasoningEfforts: ["minimal", "low", "medium", "high", "maximum"]
-    },
-    {
-      id: "gpt-5.3-codex",
-      name: "GPT-5.3 Codex",
-      supportedReasoningEfforts: ["minimal", "low", "medium", "high", "maximum"]
-    },
-    {
-      id: "codex-mini-latest",
-      name: "Codex Mini Latest",
-      supportedReasoningEfforts: ["minimal", "low", "medium", "high", "maximum"]
-    }
-  ];
 }
 
 function normalizeAssistantReasoningLevel(value: string | null) {
@@ -617,6 +638,83 @@ function normalizeAssistantReasoningLevels(values: string[]) {
     .map((value) => normalizeAssistantReasoningLevel(value))
     .filter((value): value is NonNullable<ReturnType<typeof normalizeAssistantReasoningLevel>> => Boolean(value));
   return Array.from(new Set(normalized));
+}
+
+function buildAssistantPermissionMetadata(input: AssistantPluginPermissionRequest): AssistantPermissionRequest["metadata"] {
+  if (input.kind === "command") {
+    const payload = input.payload ?? null;
+    return {
+      kind: "command",
+      command: typeof payload?.command === "string" ? payload.command : input.summary,
+      reason: typeof payload?.reason === "string" ? payload.reason : input.detail,
+      cwd: typeof payload?.cwd === "string" ? payload.cwd : null
+    };
+  }
+
+  if (input.kind === "file_change") {
+    const payload = input.payload ?? null;
+    const rawChanges = Array.isArray(payload?.changes) ? payload.changes : [];
+    const changes = rawChanges.flatMap((change: (typeof rawChanges)[number]) => {
+      if (!change || typeof change !== "object") {
+        return [];
+      }
+      const record = change as Record<string, unknown>;
+      const path = typeof record.path === "string" ? record.path.trim() : "";
+      if (!path) {
+        return [];
+      }
+      const rawKind = typeof record.kind === "string"
+        ? record.kind.trim().toLowerCase()
+        : typeof record.action === "string"
+          ? record.action.trim().toLowerCase()
+          : "";
+      return [{
+        path,
+        action: normalizeFileChangeAction(rawKind)
+      }];
+    });
+    const diffSummary = rawChanges
+      .map((change: (typeof rawChanges)[number]) => {
+        if (!change || typeof change !== "object") {
+          return "";
+        }
+        const record = change as Record<string, unknown>;
+        const diff = typeof record.diff === "string" ? record.diff : record.patch;
+        return typeof diff === "string" ? diff.trim() : "";
+      })
+      .find(Boolean) || null;
+
+    return {
+      kind: "file_change",
+      primaryPath: typeof payload?.primaryPath === "string"
+        ? payload.primaryPath
+        : typeof payload?.grantRoot === "string"
+          ? payload.grantRoot
+          : changes[0]?.path ?? input.summary,
+      changes,
+      diffSummary
+    };
+  }
+
+  const payload = input.payload ?? null;
+  return {
+    kind: "other",
+    method: typeof payload?.method === "string" ? payload.method : null,
+    payloadText: input.detail ?? null
+  };
+}
+
+function normalizeFileChangeAction(rawKind: string): "add" | "update" | "delete" | "unknown" {
+  if (rawKind === "add" || rawKind === "create") {
+    return "add";
+  }
+  if (rawKind === "delete" || rawKind === "remove") {
+    return "delete";
+  }
+  if (rawKind === "update" || rawKind === "modify" || rawKind === "edit") {
+    return "update";
+  }
+  return "unknown";
 }
 
 export function mapRuntimeEventToAssistantStatus(
@@ -655,87 +753,6 @@ export function mapRuntimeEventToAssistantStatus(
   }
 
   return null;
-}
-
-function detectCommandReady(command: string): boolean {
-  try {
-    const checker = process.platform === "win32" ? "where" : "which";
-    const result = spawnSync(checker, [command], { stdio: "ignore" });
-    return result.status === 0;
-  } catch {
-    return false;
-  }
-}
-
-function detectAuthReady(id: AssistantProviderId): boolean {
-  const home = homedir();
-  if (id === "codex") {
-    // codex 登录后凭证写在 ~/.codex/auth.json
-    return existsSync(path.join(home, ".codex", "auth.json"));
-  }
-  // claude 登录态可能落在 keychain，文件不一定存在；~/.claude 存在即认为配置过。
-  return existsSync(path.join(home, ".claude"));
-}
-
-// 解析 codex app-server 的 server request（JSON-RPC）成可读权限请求。
-function parseCodexServerRequest(
-  sessionId: string,
-  request: Record<string, unknown>
-): {
-  kind: AssistantPermissionKind;
-  title: string;
-  summary: string;
-  detail: string | null;
-} {
-  const method = typeof request.method === "string" ? request.method : "";
-  const params = (request.params ?? {}) as Record<string, unknown>;
-
-  if (method === "item/commandExecution/requestApproval") {
-    const command = typeof params.command === "string" ? params.command : "";
-    const reason = typeof params.reason === "string" ? params.reason : "";
-    return {
-      kind: "command",
-      title: "Codex 请求执行命令",
-      summary: command || "执行命令",
-      detail: reason || null
-    };
-  }
-
-  if (method === "item/fileChange/requestApproval") {
-    const grantRoot = typeof params.grantRoot === "string" ? params.grantRoot : "";
-    return {
-      kind: "file_change",
-      title: "Codex 请求改动文件",
-      summary: grantRoot || "改动文件",
-      detail: null
-    };
-  }
-
-  const detail = safeStringify(params);
-  return {
-    kind: "other",
-    title: `Codex 请求：${method || "未知操作"}`,
-    summary: method || "未知操作",
-    detail
-  };
-}
-
-// 构造给 codex 的审批响应。command/file_change 都是 { decision }。
-function buildCodexApprovalResult(
-  _kind: AssistantPermissionKind,
-  action: AssistantPermissionAction
-): unknown {
-  // codex 的 command/file_change 审批响应统一是 { decision }；other 兜底也用 decision。
-  return { decision: action === "accept" ? "accept" : "decline" };
-}
-
-function safeStringify(value: unknown): string {
-  try {
-    const text = JSON.stringify(value);
-    return text.length > 500 ? `${text.slice(0, 500)}…` : text;
-  } catch {
-    return "";
-  }
 }
 
 const SESSION_TITLE_MAX_LENGTH = 72;

@@ -5,18 +5,29 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "dev": "node --import tsx src/main.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx --test \"src/**/*.test.ts\"",
-    "dev": "tsx watch src/main.ts",
+    "test": "node --import tsx --test",
     "start": "node dist/main.js"
   },
+  "exports": {
+    "./http-server-manager": {
+      "types": "./dist/http-server-manager.d.ts",
+      "import": "./dist/http-server-manager.js"
+    },
+    "./library-engine-feature": {
+      "types": "./dist/library/library-engine-feature.d.ts",
+      "import": "./dist/library/library-engine-feature.js"
+    }
+  },
   "dependencies": {
-    "@codingns/session-sync-core": "workspace:*",
     "@x-file/indexer": "workspace:*",
     "@x-file/shared": "workspace:*",
     "fastify": "^5.2.1"
   },
   "devDependencies": {
-    "tsx": "^4.19.2"
+    "@types/node": "^22.15.30",
+    "tsx": "^4.20.6",
+    "typescript": "^5.8.3"
   }
 }

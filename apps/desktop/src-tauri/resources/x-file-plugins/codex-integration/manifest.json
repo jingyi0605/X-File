@@ -1,0 +1,56 @@
+{
+  "id": "codex",
+  "name": "Codex Integration",
+  "version": "0.1.0",
+  "pluginType": "integration",
+  "minAppVersion": "0.1.0",
+  "entry": {
+    "backend": null,
+    "ui": "ui/index.js"
+  },
+  "assistant": {
+    "descriptor": {
+      "type": "inline",
+      "descriptor": {
+        "formatVersion": 1,
+        "provider": {
+          "providerId": "codex",
+          "runtimeHomeDir": {
+            "kind": "home_relative",
+            "relativePath": ".codex"
+          }
+        },
+        "capabilitySource": {
+          "kind": "session-sync-provider-capabilities",
+          "adapterExport": "CodexAdapter"
+        },
+        "runtimeBridge": {
+          "kind": "external-sidecar-runtime",
+          "command": "x-file-codex-sidecar",
+          "adapterExport": "CodexRuntimeAdapter",
+          "args": ["serve-runtime"],
+          "shell": false,
+          "permissionProtocol": "codex-server-request-v1",
+          "permissionResponseProtocol": "decision-accept-decline-v1"
+        }
+      }
+    }
+  },
+  "capabilities": [
+    "provider.detect",
+    "assistant.entry"
+  ],
+  "provider": {
+    "providerId": "codex",
+    "displayName": "Codex",
+    "command": "codex",
+    "auth": {
+      "strategy": "file_exists",
+      "path": "~/.codex/auth.json"
+    }
+  },
+  "signature": {
+    "algorithm": "unsigned",
+    "value": "development"
+  }
+}

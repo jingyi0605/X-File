@@ -6,8 +6,10 @@ import {
 } from "./http-server-manager.js";
 import { AssistantController } from "./assistant/assistant-controller.js";
 import { registerLibraryEngineFeature } from "./library/library-engine-feature.js";
+import { clearLibraryDefaultExecutors } from "./library/library-default-executors.js";
 import { registerAssistantRoutes } from "./routes/assistant-routes.js";
 import { LibraryBindingStore } from "./storage/library-binding-store.js";
+import { registerWebShellRoutes } from "./web-shell-routes.js";
 
 const APP_VERSION = "0.1.0";
 const ROUTER_MAX_PARAM_LENGTH = 4096;
@@ -18,6 +20,7 @@ export interface CreateServerOptions {
   manageHttpServerLifecycle?: boolean;
   includeAssistant?: boolean;
   sidecarProfile?: "full" | "sidecar-only";
+  forceWebDevProxy?: boolean;
 }
 
 export function createServer(options: CreateServerOptions = {}) {
@@ -54,11 +57,13 @@ export function createServer(options: CreateServerOptions = {}) {
     version: APP_VERSION,
   }));
 
+  clearLibraryDefaultExecutors();
+
   // Node 入口现在只负责装配仍需 HTTP sidecar 的服务；
   // 文档库主读链与 refresh 宿主已经优先走桌面 native 路径。
   const feature = registerLibraryEngineFeature(server, {
     ...options,
-    sidecarProfile: options.sidecarProfile ?? "full",
+    sidecarProfile: options.sidecarProfile ?? "sidecar-only",
   });
   if (options.includeAssistant !== false) {
     void registerAssistantRoutes(
@@ -66,6 +71,9 @@ export function createServer(options: CreateServerOptions = {}) {
       createLazyAssistantController(feature.libraryBindingStore, feature.pluginService),
     );
   }
+  registerWebShellRoutes(server, {
+    forceDevProxy: options.forceWebDevProxy === true
+  });
 
   return server;
 }

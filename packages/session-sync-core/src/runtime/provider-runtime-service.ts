@@ -135,7 +135,9 @@ export class ProviderRuntimeService {
     await handle.emit({
       type: "status",
       status: "starting",
-      detail: mode === "start" ? "starting native session" : "resuming native session"
+      detail: mode === "start"
+        ? "starting external runtime sidecar session"
+        : "resuming external runtime sidecar session"
     });
 
     try {
@@ -157,7 +159,7 @@ export class ProviderRuntimeService {
         status: "starting",
         providerSessionId: launch.providerSessionId,
         rawStoreRef: launch.rawStoreRef,
-        detail: "native session attached"
+        detail: "external runtime sidecar attached"
       });
 
       void launch.completed
@@ -234,6 +236,13 @@ export class ProviderRuntimeService {
 
         try {
           handle.updateSessionBinding(binding);
+          void handle.emit({
+            type: "session_created",
+            status: "starting",
+            providerSessionId: binding.providerSessionId,
+            rawStoreRef: binding.rawStoreRef,
+            detail: "session binding updated"
+          });
         } catch (error) {
           if (isActiveRunNotFoundError(error) || !this.isHandleActive(handle)) {
             return;

@@ -1,4 +1,5 @@
 import { t } from "../i18n";
+import { getActiveApiBaseUrl } from "../runtime/runtime-config";
 
 export class ApiClientError extends Error {
   readonly status: number;
@@ -13,8 +14,6 @@ export class ApiClientError extends Error {
     this.detail = detail;
   }
 }
-
-const DEFAULT_API_BASE_URL = "http://127.0.0.1:17321";
 
 export async function apiRequest<T>(
   path: string,
@@ -66,15 +65,12 @@ export function resolveApiUrl(path: string): string {
     return new URL(path, explicitBase.trim()).toString();
   }
 
-  if (typeof window !== "undefined" && /^https?:$/i.test(window.location.protocol)) {
+  const runtimeBase = getActiveApiBaseUrl();
+  if (!runtimeBase) {
     return path;
   }
 
-  if (import.meta.env.DEV) {
-    return new URL(path, DEFAULT_API_BASE_URL).toString();
-  }
-
-  return new URL(path, DEFAULT_API_BASE_URL).toString();
+  return new URL(path, runtimeBase).toString();
 }
 
 function jsonBody(value: unknown): BodyInit {

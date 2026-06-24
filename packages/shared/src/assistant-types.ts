@@ -81,6 +81,34 @@ export interface AssistantSessionSummary {
 
 export type AssistantPermissionKind = "command" | "file_change" | "other";
 
+export interface AssistantPermissionCommandMetadata {
+  kind: "command";
+  command: string;
+  reason: string | null;
+  cwd: string | null;
+}
+
+export interface AssistantPermissionFileChangeMetadata {
+  kind: "file_change";
+  primaryPath: string | null;
+  changes: Array<{
+    path: string;
+    action: "add" | "update" | "delete" | "unknown";
+  }>;
+  diffSummary: string | null;
+}
+
+export interface AssistantPermissionOtherMetadata {
+  kind: "other";
+  method: string | null;
+  payloadText: string | null;
+}
+
+export type AssistantPermissionMetadata =
+  | AssistantPermissionCommandMetadata
+  | AssistantPermissionFileChangeMetadata
+  | AssistantPermissionOtherMetadata;
+
 export interface AssistantPermissionRequest {
   requestId: string;
   sessionId: string;
@@ -88,6 +116,7 @@ export interface AssistantPermissionRequest {
   title: string;
   summary: string;
   detail: string | null;
+  metadata: AssistantPermissionMetadata | null;
   status: "pending" | "approved" | "rejected";
   createdAt: string;
 }

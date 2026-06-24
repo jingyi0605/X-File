@@ -1,0 +1,56 @@
+{
+  "id": "claude-code",
+  "name": "Claude Code Integration",
+  "version": "0.1.0",
+  "pluginType": "integration",
+  "minAppVersion": "0.1.0",
+  "entry": {
+    "backend": null,
+    "ui": "ui/index.js"
+  },
+  "assistant": {
+    "descriptor": {
+      "type": "inline",
+      "descriptor": {
+        "formatVersion": 1,
+        "provider": {
+          "providerId": "claude-code",
+          "runtimeHomeDir": {
+            "kind": "home_relative",
+            "relativePath": ".claude"
+          }
+        },
+        "capabilitySource": {
+          "kind": "session-sync-provider-capabilities",
+          "adapterExport": "ClaudeCodeAdapter"
+        },
+        "runtimeBridge": {
+          "kind": "external-sidecar-runtime",
+          "command": "x-file-claude-sidecar",
+          "adapterExport": "ClaudeRuntimeAdapter",
+          "args": ["serve-runtime"],
+          "shell": false,
+          "permissionProtocol": "none",
+          "permissionResponseProtocol": "none"
+        }
+      }
+    }
+  },
+  "capabilities": [
+    "provider.detect",
+    "assistant.entry"
+  ],
+  "provider": {
+    "providerId": "claude-code",
+    "displayName": "Claude Code",
+    "command": "claude",
+    "auth": {
+      "strategy": "directory_exists",
+      "path": "~/.claude"
+    }
+  },
+  "signature": {
+    "algorithm": "unsigned",
+    "value": "development"
+  }
+}
