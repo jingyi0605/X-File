@@ -40,7 +40,7 @@ use tauri::menu::{
     Menu, MenuBuilder, MenuEvent, MenuItemBuilder, SubmenuBuilder,
 };
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow, Window, WindowEvent};
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 
 #[cfg(target_os = "macos")]
@@ -484,6 +484,7 @@ fn resolve_backend_extra_env(
 struct DesktopState {
     backend_persistent: bool,
     is_quitting: bool,
+    main_window_geometry: Option<MainWindowGeometry>,
     backend: BackendProcessManager,
     resource_dir: Option<PathBuf>,
     native_context_menu_selection: Option<String>,
@@ -497,6 +498,7 @@ impl DesktopState {
         Self {
             backend_persistent,
             is_quitting: false,
+            main_window_geometry: None,
             backend: BackendProcessManager::from_env(),
             resource_dir: None,
             native_context_menu_selection: None,
@@ -504,6 +506,14 @@ impl DesktopState {
             onlyoffice_bridge: OnlyOfficeBridgeState::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MainWindowGeometry {
+    position_x: i32,
+    position_y: i32,
+    width: u32,
+    height: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -2211,9 +2221,76 @@ fn epoch_millis() -> u64 {
         .unwrap_or(0)
 }
 
+fn capture_main_window_geometry_from_window(window: &Window) -> Option<MainWindowGeometry> {
+    let position = window.outer_position().ok()?;
+    let size = window.outer_size().ok()?;
+    if size.width == 0 || size.height == 0 {
+        return None;
+    }
+    Some(MainWindowGeometry {
+        position_x: position.x,
+        position_y: position.y,
+        width: size.width,
+        height: size.height,
+    })
+}
+
+fn capture_main_window_geometry_from_webview(window: &WebviewWindow) -> Option<MainWindowGeometry> {
+    let position = window.outer_position().ok()?;
+    let size = window.outer_size().ok()?;
+    if size.width == 0 || size.height == 0 {
+        return None;
+    }
+    Some(MainWindowGeometry {
+        position_x: position.x,
+        position_y: position.y,
+        width: size.width,
+        height: size.height,
+    })
+}
+
+fn remember_main_window_geometry(window: &Window) {
+    let Some(geometry) = capture_main_window_geometry_from_window(window) else {
+        return;
+    };
+    let desktop_state = window.state::<Mutex<DesktopState>>();
+    let Some(mut state) = desktop_state.try_lock().ok() else {
+        return;
+    };
+    state.main_window_geometry = Some(geometry);
+}
+
+fn remember_main_window_geometry_from_webview(window: &WebviewWindow) {
+    let Some(geometry) = capture_main_window_geometry_from_webview(window) else {
+        return;
+    };
+    let desktop_state = window.state::<Mutex<DesktopState>>();
+    let Some(mut state) = desktop_state.try_lock().ok() else {
+        return;
+    };
+    state.main_window_geometry = Some(geometry);
+}
+
 fn show_main_window(app: &AppHandle) {
     let _ = app.show();
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        let saved_geometry = app
+            .try_state::<Mutex<DesktopState>>()
+            .and_then(|desktop_state| {
+                desktop_state
+                    .try_lock()
+                    .ok()
+                    .and_then(|state| state.main_window_geometry)
+            });
+        if let Some(geometry) = saved_geometry {
+            let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize::new(
+                geometry.width,
+                geometry.height,
+            )));
+            let _ = window.set_position(tauri::Position::Physical(
+                tauri::PhysicalPosition::new(geometry.position_x, geometry.position_y),
+            ));
+        }
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
@@ -5468,6 +5545,7 @@ pub fn run() {
                 configure_macos_window_chrome(app)?;
                 configure_macos_native_glass_sidebars(app)?;
                 if let Some(window) = app.get_webview_window("main") {
+                    remember_main_window_geometry_from_webview(&window);
                     let native_sidebar_state = app.state::<MacosNativeSidebarState>().inner().clone();
                     attach_macos_native_sidebar_handlers(window, native_sidebar_state);
                 }
@@ -5529,6 +5607,18 @@ pub fn run() {
         ])
         .on_menu_event(handle_menu_event)
         .on_window_event(|window, event| {
+            if window.label() == MAIN_WINDOW_LABEL {
+                match event {
+                    WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
+                        remember_main_window_geometry(window);
+                    }
+                    WindowEvent::CloseRequested { .. } => {
+                        remember_main_window_geometry(window);
+                    }
+                    _ => {}
+                }
+            }
+
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let desktop_state = window.state::<Mutex<DesktopState>>();
                 let Some(state) = desktop_state.try_lock().ok() else {
