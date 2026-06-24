@@ -913,7 +913,6 @@ function LibraryDisabledPanel({
               </span>
               <span className="xfile-sidebar-brand-copy">
                 <strong>{t("appTitle")}</strong>
-                <span>{t("appTagline")}</span>
               </span>
             </div>
             <footer className="workbench-sidebar-footer">
@@ -1175,16 +1174,19 @@ function LibraryDesktopSidebar({
         <div
           className="xfile-sidebar-brand"
           aria-label={t("appTitle")}
-          data-window-drag-handle={overlayMacOsTitlebar ? "xfile-sidebar-brand" : undefined}
-          data-tauri-drag-region={overlayMacOsTitlebar ? "" : undefined}
         >
-          <span className="xfile-sidebar-brand-icon" aria-hidden="true">
-            {renderXFileBrandIcon()}
-          </span>
-          <span className="xfile-sidebar-brand-copy">
-            <strong>{t("appTitle")}</strong>
-            <span>{t("appTagline")}</span>
-          </span>
+          <div
+            className="xfile-sidebar-brand-drag-surface"
+            data-window-drag-handle={overlayMacOsTitlebar ? "xfile-sidebar-brand" : undefined}
+            data-tauri-drag-region={overlayMacOsTitlebar ? "" : undefined}
+          >
+            <span className="xfile-sidebar-brand-icon" aria-hidden="true">
+              {renderXFileBrandIcon()}
+            </span>
+            <span className="xfile-sidebar-brand-copy">
+              <strong>{t("appTitle")}</strong>
+            </span>
+          </div>
         </div>
         <div className="affairs-sidebar-shell">
           <div className="affairs-sidebar-content">
@@ -2300,21 +2302,8 @@ function LibraryStageToolbar({
   return (
     <div
       className={overlayTitlebar ? "xfile-stage-titlebar overlay" : "xfile-stage-titlebar"}
-      data-window-drag-handle={overlayTitlebar ? "xfile-library-titlebar" : undefined}
-      data-tauri-drag-region={overlayTitlebar ? "" : undefined}
     >
       <div className="xfile-stage-titlebar-left">
-        <div
-          className="xfile-stage-titlebar-brand"
-          data-tauri-drag-region={overlayTitlebar ? "" : undefined}
-        >
-          <span className="xfile-stage-titlebar-app">{t("appTitle")}</span>
-          <span className="xfile-stage-titlebar-path">
-            {library.viewState.browseMode === "folder"
-              ? (library.viewState.selectedFolderPath || t("libraryRootFolder"))
-              : (library.viewState.selectedTagPath || t("libraryTagTreeSectionTitle"))}
-          </span>
-        </div>
         <div className="affairs-stage-toolbar-left" data-window-drag="ignore">
           <div className="affairs-stage-breadcrumb" aria-label={t("libraryCurrentFolder")}>
             <button
@@ -2338,6 +2327,12 @@ function LibraryStageToolbar({
             />
           </div>
         </div>
+        <div
+          className="xfile-stage-titlebar-drag-spacer"
+          aria-hidden="true"
+          data-window-drag-handle={overlayTitlebar ? "xfile-library-titlebar-spacer" : undefined}
+          data-tauri-drag-region={overlayTitlebar ? "" : undefined}
+        />
       </div>
       <div className="affairs-stage-toolbar-right" data-window-drag="ignore">
         <div className="affairs-stage-toolbar-group">
@@ -3619,8 +3614,6 @@ function LibraryDetail({
       <header
         className="workbench-auxiliary-header"
         aria-label={t("libraryDetails")}
-        data-window-drag-handle={overlayMacOsTitlebar ? "xfile-detail-header" : undefined}
-        data-tauri-drag-region={overlayMacOsTitlebar ? "" : undefined}
       >
         <div className="workbench-info-tabs affairs-auxiliary-tabs" role="tablist" aria-label={t("libraryDetails")}>
           <button
@@ -3642,6 +3635,12 @@ function LibraryDetail({
             {t("libraryAssistant")}
           </button>
         </div>
+        <div
+          className="workbench-auxiliary-header-drag-spacer"
+          aria-hidden="true"
+          data-window-drag-handle={overlayMacOsTitlebar ? "xfile-detail-header-spacer" : undefined}
+          data-tauri-drag-region={overlayMacOsTitlebar ? "" : undefined}
+        />
         <div className="affairs-auxiliary-header-tools">
           <div
             className="affairs-auxiliary-header-actions"

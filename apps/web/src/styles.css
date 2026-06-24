@@ -643,6 +643,12 @@ p {
   max-width: min(280px, 26vw);
 }
 
+.xfile-stage-titlebar-drag-spacer {
+  flex: 1 1 auto;
+  align-self: stretch;
+  min-width: 24px;
+}
+
 .xfile-stage-titlebar-app {
   color: var(--text-primary);
   font-size: 14px;
@@ -3407,6 +3413,26 @@ body[data-workbench-macos-vibrancy="true"] #root {
   -webkit-user-select: none;
 }
 
+.workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] [data-window-drag-handle] {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+.workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] [data-window-drag="ignore"],
+.workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] button,
+.workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] a,
+.workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] input,
+.workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] select,
+.workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] textarea,
+.workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] summary,
+.workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] [role="tab"],
+.workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] [role="button"],
+.workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] [role="link"],
+.workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] [role="menuitem"] {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
 .workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] .library-native-debug-panel {
   background: transparent;
 }
@@ -4629,18 +4655,23 @@ body[data-workbench-macos-vibrancy="true"] #root {
 
 /* 复刻 CodingNS 文档库侧栏：品牌区 + 默认折叠标签树。 */
 .xfile-sidebar-brand {
-  display: grid;
-  grid-template-columns: 34px minmax(0, 1fr);
-  align-items: center;
-  gap: 9px;
+  display: block;
   min-height: 46px;
   margin: 2px 6px 8px;
-  padding: 7px 9px;
   border-radius: 14px;
   color: var(--text-primary);
   background: transparent;
   border: 1px solid color-mix(in srgb, rgba(255, 255, 255, 0.12) 48%, var(--panel-border));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.xfile-sidebar-brand-drag-surface {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  min-height: 46px;
+  padding: 7px 9px;
 }
 
 .xfile-sidebar-brand-icon {
@@ -21781,9 +21812,15 @@ body[data-workbench-macos-vibrancy="true"] #root {
 }
 
 .affairs-auxiliary-tabs {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   min-height: 100%;
+}
+
+.workbench-auxiliary-header-drag-spacer {
+  flex: 1 1 auto;
+  align-self: stretch;
+  min-width: 24px;
 }
 
 .affairs-auxiliary-header-tools {
