@@ -322,7 +322,7 @@ p {
 /* 可调整宽度的三栏布局：在左右边栏与主面板之间各插入一根分割线。
    该类仅用于已注入分割线 DOM 的主布局，禁用态窗口仍是 3 列默认布局。 */
 .workbench-window-resizable {
-  --workbench-resizer-gutter: 7px;
+  --workbench-resizer-gutter: 0px;
   grid-template-columns:
     272px var(--workbench-resizer-gutter) minmax(420px, 1fr)
     var(--workbench-resizer-gutter) 340px;
@@ -336,6 +336,7 @@ p {
   cursor: col-resize;
   user-select: none;
   background: transparent;
+  overflow: visible;
 }
 
 .workbench-panel-resizer::before {
@@ -348,6 +349,16 @@ p {
   transform: translateX(-50%);
   background: var(--panel-separator);
   transition: background 0.12s ease;
+}
+
+.workbench-panel-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 9px;
+  transform: translateX(-50%);
 }
 
 .workbench-panel-resizer:hover::before,
@@ -593,9 +604,6 @@ p {
   gap: 0;
   padding: 0;
   background: var(--workbench-main-surface);
-  box-shadow:
-    inset 1px 0 0 var(--workbench-main-border),
-    inset -1px 0 0 var(--workbench-main-border);
   overflow: hidden;
 }
 
@@ -3375,7 +3383,7 @@ body[data-workbench-macos-vibrancy="true"] #root {
 }
 
 .workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] .workbench-panel-resizer {
-  background: var(--content-surface-opaque, var(--workbench-main-surface));
+  background: transparent;
 }
 
 .workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] .workbench-panel-resizer::before {

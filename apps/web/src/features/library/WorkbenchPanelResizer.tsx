@@ -6,9 +6,9 @@ import {
   type RefObject,
 } from "react";
 
-// 分割线热区列宽(px)：与 styles.css 中的 --workbench-resizer-gutter 保持一致。
-// 拖拽 clamp 需要数值，所以这里也保留一份常量。
-export const WORKBENCH_RESIZER_GUTTER = 7;
+// 分割线布局列宽(px)：与 styles.css 中的 --workbench-resizer-gutter 保持一致。
+// 实际分隔线与拖拽热区都由 CSS 伪元素外扩，不再占据可见布局宽度。
+export const WORKBENCH_RESIZER_GUTTER = 0;
 
 // 边栏宽度边界(px)
 const SIDEBAR_MIN = 200;
