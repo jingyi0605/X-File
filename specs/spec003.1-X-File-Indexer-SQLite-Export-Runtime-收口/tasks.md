@@ -8,27 +8,519 @@
   - 已完成：默认成功路径的 `manual binding / identity migration / carry-forward / syncManualResolvedTags / legacy fallback` 已迁入独立 `TextIndexTagStore`，不再依赖旧仓库这批语义。
 - [x] B. `ParserSkipRepository` 从默认 index-only 主写链彻底独立
   - 已完成：默认主写链已改走独立 `parser-skip-store.ts`，`text-index-catalog-store.ts` 不再直接 `new ParserSkipRepository`。
-- [ ] C. `DocumentParser` / parser-router 从默认执行体里抽成宿主无关接口，桌面主链优先 native
+- [x] C. `DocumentParser` / parser-router 从默认执行体里抽成宿主无关接口，桌面主链优先 native
+  - 已完成：`TextIndexer` 现在通过可注入 parser executor 工作，不再把 `DocumentParser` 硬写死在默认执行体里；桌面默认 allowed extensions 集合也已能继续命中 Rust native `index-only`。
 - [x] D. 默认 SQLite 宿主不再依赖 Node runtime
   - 已完成：`open-database.ts` 默认解析已改成宿主注册 driver 优先，`openDatabase()`/migration/repository/parser-skip 这些继续直连默认入口的薄层不再天然要求 `node:sqlite`；未注册宿主时仅退回库内兼容 driver。
 - [x] E. 桌面 Rust 宿主去掉 Node worker fallback 默认依赖
+  - 已完成：正式包默认不再偷偷回退 host Node；`index-only` 只在命中 native 能力集合时走 Rust，否则缺少 `x-file-runtime` 时直接 fail-fast。当前宿主也不再保留 host Node worker 调试回退。
 - [x] F. `apps/server` Node sidecar 从正式包必须宿主继续剥离，并同步更新资源边界/验包
   - 状态：DONE
   - 本轮落地：
     - `apps/desktop/src-tauri/src/lib.rs` 已移除“缺少 bundled Node 时默认偷偷回退系统 Node / 自动改走 Rust fallback”的宿主行为。
     - `index-only` 现在只会在两种情况下进入 Rust：一是命中 `should_prefer_native_index()` 的原生能力集合；二不是。若明确需要 Node worker 但正式包缺少 `x-file-runtime`，宿主现在直接 fail-fast。
-    - host Node fallback 只保留为显式调试开关：`X_FILE_ENABLE_HOST_NODE_WORKER_FALLBACK=1`。
+    - host Node worker fallback 已删除。
     - `apps/server/src/library/library-engine-feature.ts` 已新增默认 `sidecar-only` profile；正式包默认不再由 Node sidecar 承载 `/api/library/*`、`/api/host/directories`、tag 相关核心数据面路由。
     - sidecar-only 模式下，这些核心路由会返回 503 并指向桌面 native bridge；`/api/integration/status` 也改为反映 sidecar-only 真相，不再谎报 library HTTP 主路径仍可用。
     - `x-file-resource-boundary.json`、`prepare-bundled-server.mjs`、`verify-desktop.mjs` 已同步新增桌面宿主策略字段：
       - `desktopHost.nodeWorkerFallback.allowHostNodeFallbackByDefault=false`
-      - `desktopHost.nodeWorkerFallback.explicitOptInEnv=X_FILE_ENABLE_HOST_NODE_WORKER_FALLBACK`
+      - `desktopHost.nodeWorkerFallback` 目前仅保留资源边界历史描述，不再参与宿主回退决策
       - `desktopHost.nodeSidecar.profileInMainBundle=sidecar-only`
       - `desktopHost.nodeSidecar.libraryCoreHttpRoutesServedByDefault=false`
   - 当前效果：
     1. 正式包默认不再隐式依赖 host Node
     2. Node sidecar 默认不再持有 library 数据面主 HTTP 路径
     3. `x-file-runtime` 是否保留、为何保留、何时允许调试回退，已经变成代码和验包都能校验的显式状态
+  - 本轮验证：
+    - `node scripts/verify-desktop.mjs --platform macos --mode preflight`：通过。
+
+- [x] G. `assistant runtime` 与 `plugin backend ABI` 从 Node backend import 继续收口
+  - 状态：DONE
+  - 本轮落地：
+    - `packages/shared/src/assistant-plugin-types.ts` 已新增宿主无关 `assistant.descriptor` contract，内置 assistant 插件不再只能靠 `backend/index.js` 描述 runtime ABI。
+    - `plugins/codex-integration/manifest.json` 与 `plugins/claude-code-integration/manifest.json` 已内联声明 descriptor，明确 provider home、capability source 和 runtime bridge。
+    - `apps/server/src/plugins/plugin-backend-loader.ts` 已优先消费 descriptor，旧 `backend/index.js` 仍保留为兼容回退路径。
+    - `apps/server/src/plugins/plugin-runtime-installer.ts` 已把 `npm-runtime` 收口成仅在需要 backend 入口时才热安装；descriptor-only 插件不再触发安装。
+    - `apps/server/src/assistant/assistant-runtime-service.ts` 已把 permission bridge / runtime host 边界再压薄一层，并修正 file change permission metadata 的兼容映射与 deferred 时序。
+  - 当前效果：
+    1. 内置 assistant 插件已可以不依赖 `backend/index.js` 作为唯一 runtime ABI
+    2. `plugin backend` 的 Node import 退成兼容路径，而不是硬阻塞
+    3. `npm-runtime` 不再是 descriptor-only assistant 插件的主包硬阻塞
+  - 本轮验证：
+    - `pnpm --filter @x-file/server build`：通过
+    - `node --import tsx --test src/plugins/plugin-backend-loader.test.ts src/plugins/plugin-runtime-installer.test.ts`：通过
+    - `node --import tsx --test src/routes/assistant-runtime-plugin-chain.test.ts`：通过
+
+- [x] G.1 `assistant/plugin` legacy backend / npm-runtime 兼容装载面永久移除
+  - 状态：DONE
+  - 本轮落地：
+    - `apps/server/src/plugins/plugin-backend-loader.ts` 已删除 legacy `backend/index.js` 动态 import 路径；未声明 `assistant.descriptor` 的 assistant 插件现在会被直接拒绝。
+    - `apps/server/src/plugins/plugin-runtime-installer.ts` 已删除 `npm-runtime` 热安装兼容实现；这条 Node 安装 ABI 现在只剩显式拒绝，不再保留暗门。
+    - `apps/server/src/plugins/plugin-service.ts` 已把拒绝逻辑前移到安装/更新/内置同步阶段：
+      - 声明 `entry.backend` 的插件直接拒绝
+      - 声明 `runtime.install.strategy = npm-runtime` 的插件直接拒绝
+      - 声明 `assistant.entry` 但缺少 `assistant.descriptor` 的插件直接拒绝
+    - `plugin-backend-loader.test.ts`、`plugin-runtime-installer.test.ts`、`plugin-routes.test.ts`、`assistant-routes.test.ts`、`provider-bridge-service.test.ts` 已同步切到 descriptor-only / no-backend 语义。
+  - 当前效果：
+    1. `assistant/plugin` 默认主路径不再只是“默认拒绝 legacy backend”，而是已经真正移除这条装载 ABI
+    2. `npm-runtime` 不再是“代码还在但默认关掉”，而是主包明确不支持
+    3. 剩余 `x-file-runtime` 保留理由进一步收缩回 index/search/parser/write-side，而不是 plugin backend
+  - 本轮验证：
+    - `pnpm --filter @x-file/server build`
+    - `pnpm --filter @x-file/server typecheck`
+    - `pnpm --filter @x-file/server test -- src/plugins/plugin-backend-loader.test.ts src/plugins/plugin-runtime-installer.test.ts src/routes/plugin-routes.test.ts src/routes/assistant-routes.test.ts src/routes/assistant-runtime-plugin-chain.test.ts`
+
+- [x] G.2 `PluginRuntimeInstaller` 从 server/plugin 主路径移除
+  - 状态：DONE
+  - 本轮落地：
+    - `apps/server/src/plugins/plugin-service.ts` 已移除对 `PluginRuntimeInstaller` 的依赖。
+    - 插件 install / update / bundled sync 现在直接写 registry record，不再尝试准备任何 Node runtime 安装目录。
+    - 这意味着 server/plugin 主路径已经没有“虽然默认拒绝，但仍然会走 installer”的残余分叉。
+  - 当前效果：
+    1. `PluginRuntimeInstaller` 退成只剩测试覆盖的历史兼容壳，不再参与生产主流程
+    2. `assistant/plugin` 侧的 Node 安装 ABI 已从“不可达分支”进一步缩成“可删死代码”
+    3. 剩余 `x-file-runtime` 必留理由继续收窄到 library/index/search/parser/write-side
+  - 本轮验证：
+    - `pnpm --filter @x-file/server build`
+    - `pnpm --filter @x-file/server typecheck`
+    - `pnpm --filter @x-file/server test -- src/routes/plugin-routes.test.ts src/routes/assistant-routes.test.ts src/routes/assistant-runtime-plugin-chain.test.ts`
+
+- [x] G.3 `assistant/plugin` Node 安装 ABI 的 schema / registry 残影删除
+  - 状态：DONE
+  - 本轮落地：
+    - `packages/shared/src/plugin-types.ts` 已移除 `PluginRegistryRecord.runtimeInstallDir`
+    - `apps/server/src/storage/plugin-registry-store.ts` 已移除 `plugin-runtimes` 目录职责与 `getPluginRuntimeRootDir()`
+    - `apps/server/src/plugins/plugin-runtime-installer.ts` 与对应测试已删除
+    - `apps/server/src/routes/plugin-routes.test.ts`、`apps/server/src/plugins/plugin-backend-loader.test.ts`、`apps/web/src/features/library/__tests__/mockLibraryApi.ts` 已同步删掉旧字段依赖
+  - 当前效果：
+    1. `assistant/plugin` 侧的 Node 安装 ABI 不再只是逻辑上不可达，而是从类型、存储和测试夹层一起删除
+    2. `PluginRuntimeInstaller` 已从“历史兼容壳”进一步变成彻底不存在
+    3. `x-file-runtime` 继续保留的理由现在只剩 library/index/search/parser/write-side 与 Node sidecar 主入口
+  - 本轮验证：
+    - `pnpm --filter @x-file/server build`
+    - `pnpm --filter @x-file/server typecheck`
+    - `pnpm --filter @x-file/web typecheck`
+    - `pnpm --filter @x-file/server test -- src/plugins/plugin-backend-loader.test.ts src/routes/plugin-routes.test.ts src/routes/assistant-routes.test.ts src/routes/assistant-runtime-plugin-chain.test.ts`
+
+- [x] H.1 桌面正式包默认后端入口从 `x-file-library-engine` 切到 `x-file-server`
+  - 状态：DONE
+  - 本轮落地：
+    - `scripts/archive/20260616/prepare-bundled-server.mjs` 已把打包/部署/入口优先级改为优先产出和选择 `x-file-server/dist/main.js`
+    - `apps/desktop/src-tauri/src/lib.rs` 的资源入口候选已优先改为 `x-file-server/dist/main.js`
+    - `apps/desktop/src-tauri/resources/x-file-resource-boundary.json` 已把 `x-file-library-engine` 从默认后端入口叙事降成历史兼容壳，把默认入口叙事转到 `x-file-server`
+    - `scripts/verify-desktop.mjs` 已同步按 `x-file-server/dist/main.js` 做正式包主入口校验
+  - 当前效果：
+    1. `x-file-library-engine` 不再是桌面正式包的默认主入口
+    2. 正式包资源边界已经开始按 `x-file-server` 作为主承载对象校验
+    3. `x-file-runtime` 与 `x-file-library-engine` 的绑定理由继续收缩
+  - 本轮验证：
+    - `pnpm --filter @x-file/server build`
+    - `node scripts/verify-desktop.mjs --platform macos --mode preflight`
+  - 备注：
+    - 当前是“默认入口优先级与打包脚本已切到 x-file-server，验包也已接受过渡态兼容壳”的状态。
+    - `x-file-library-engine` 资源目录尚未从正式包物理删除；它现在是兼容壳，不再是默认主入口。
+
+- [x] H. `TextIndexer/SearchIndexBuilder` 主执行面与 `assistant runtime` 外部 sidecar 边界继续抽薄
+  - 状态：DONE
+  - 本轮落地：
+    - `packages/indexer/src/services/indexer/text-indexer.ts` 已新增显式 `TextIndexExecutor` / `executeTextIndex(...)`，主入口不再把 `new TextIndexer(...).index(...)` 硬写死成唯一执行面。
+    - `packages/indexer/src/library-index-tool.ts` 已改成通过可注入 executor 跑默认 text index 主链，为后续 native / sidecar 替换保留真出口。
+    - `packages/indexer/src/services/search/search-index-builder.ts` 已新增 `SearchIndexExecutor` / `executeSearchIndex(...)`，`buildLibrarySearchIndex(...)` 不再只是内联 `new SearchIndexBuilder(...)`。
+    - `packages/indexer/src/services/export/export-builder.ts` 已显式接入 `searchExecutor`，search 阶段从 export 内嵌尾段继续抽成可替换执行面。
+    - `packages/session-sync-core/src/runtime/external-sidecar-runtime.ts` 已新增 `ExternalSidecarRuntimeAdapter`，支持把 provider runtime 执行责任下沉到外部 sidecar 进程。
+    - `packages/shared/src/assistant-plugin-types.ts` 与 `apps/server/src/plugins/plugin-backend-loader.ts` 已新增 `runtimeBridge.kind = external-sidecar-runtime`，descriptor 插件现在可以显式声明“主包外部 runtime bridge”。
+  - 当前效果：
+    1. `TextIndexer/SearchIndexBuilder` 的默认编排入口已经和具体 Node 类实现解耦
+    2. `assistant runtime` 不再只能走内嵌 `CodexRuntimeAdapter/ClaudeRuntimeAdapter`
+    3. 主包已经具备“descriptor -> external sidecar runtime bridge”的真实可运行 ABI 切口
+  - 本轮验证：
+    - `pnpm --filter @codingns/session-sync-core build`：通过
+    - `pnpm --filter @x-file/indexer build`：通过
+    - `pnpm --filter @x-file/server build`：通过
+    - `node --import tsx --test src/plugins/plugin-backend-loader.test.ts`：通过
+
+- [x] I. 内置 `codex/claude` 默认 runtime 改为 external-sidecar
+  - 这一步到底做什么：把内置 assistant 插件从“默认依赖 Node backend import”改成“默认依赖外部 sidecar bridge”，让主包里的 Node runtime 继续收薄。
+  - 做完你能看到什么：`codex/claude` 的运行时执行面不再默认挂在 `backend/index.js` 上。
+  - 先依赖什么：G、H
+  - 开始前先看：
+    - `packages/shared/src/assistant-plugin-types.ts`
+    - `apps/server/src/plugins/plugin-backend-loader.ts`
+    - `packages/session-sync-core/src/runtime/external-sidecar-runtime.ts`
+    - `plugins/codex-integration/manifest.json`
+    - `plugins/claude-code-integration/manifest.json`
+  - 主要改哪里：
+    - `apps/server/src/assistant/provider-runtime-sidecar.ts`
+    - `apps/server/src/plugins/plugin-backend-loader.ts`
+    - `plugins/codex-integration/manifest.json`
+    - `plugins/claude-code-integration/manifest.json`
+  - 怎么算完成：
+    1. 内置插件清单默认不再声明 Node backend 为主入口
+    2. provider runtime 能通过 sidecar 路径直接跑
+    3. 旧 `backend/index.js` 仅剩兼容回退，不再是默认 ABI
+  - 怎么验证：
+    - `pnpm --filter @x-file/server build`
+    - `pnpm --filter @codingns/session-sync-core build`
+  - 本轮落地：
+    - 已新增 `apps/server/src/assistant/provider-runtime-sidecar.ts`，作为 provider runtime 外部 sidecar 入口。
+    - `plugins/codex-integration/manifest.json`、`plugins/claude-code-integration/manifest.json` 已改为 descriptor-only，默认不再声明 `backend/index.js` 为主入口。
+    - `apps/desktop/src-tauri/resources/x-file-plugins/*/manifest.json` 已同步到同一 descriptor-only 形态，避免正式包与源码插件资源分叉。
+  - 本轮验证：
+    - `pnpm --filter @x-file/server build`：通过
+    - `pnpm --filter @codingns/session-sync-core build`：通过
+
+- [x] J. runtime sidecar 协议补齐并验证
+  - 这一步到底做什么：把权限请求、会话绑定、完成/失败回传补完整，避免 sidecar 只是纸面切口。
+  - 做完你能看到什么：外部 runtime 真的能从宿主拿到权限响应并继续完成 turn。
+  - 先依赖什么：I
+  - 开始前先看：
+    - `apps/server/src/assistant/provider-runtime-sidecar.ts`
+    - `packages/session-sync-core/src/runtime/external-sidecar-runtime.ts`
+  - 主要改哪里：
+    - sidecar 入口
+    - external-sidecar adapter
+  - 怎么算完成：
+    1. sidecar 协议至少支持 `start / continue / submit / permission_response`
+    2. 权限请求能回传宿主并继续执行
+  - 怎么验证：
+    - `pnpm --filter @x-file/server build`
+    - `pnpm --filter @codingns/session-sync-core build`
+  - 本轮落地：
+    - `packages/session-sync-core/src/runtime/external-sidecar-runtime.ts` 已补齐 `permission_request / permission_response` 往返协议。
+    - `apps/server/src/plugins/plugin-backend-loader.ts` 已把宿主 permission bridge 接进 external sidecar runtime。
+    - 内置 `codex` sidecar 已能把 `codex-server-request-v1` 权限请求回传主宿主。
+  - 本轮验证：
+    - `pnpm --filter @x-file/server build`：通过
+    - `pnpm --filter @codingns/session-sync-core build`：通过
+    - `cd apps/server && node --import tsx --test src/plugins/plugin-backend-loader.test.ts src/plugins/plugin-runtime-installer.test.ts`：通过
+
+- [x] K. 默认 `TextIndexer/SearchIndexBuilder` 执行面继续去类硬编码
+  - 这一步到底做什么：把包内还在 `new TextIndexer/new SearchIndexBuilder` 的调用点尽量收掉，默认执行器入口改成宿主可注册、Node 类实现只当 fallback。
+  - 做完你能看到什么：`packages/indexer` 不再把 Node 类实例当唯一执行面，后续 native/sidecar 才能真接管。
+  - 先依赖什么：H、J
+  - 开始前先看：
+    - `packages/indexer/src/services/indexer/text-indexer.ts`
+    - `packages/indexer/src/services/search/search-index-builder.ts`
+    - `packages/indexer/src/services/indexer/allowed-extensions-diff-service.ts`
+    - `packages/indexer/src/services/watch/watch-service.ts`
+  - 主要改哪里：
+    - `packages/indexer/src/services/indexer/text-indexer.ts`
+    - `packages/indexer/src/services/search/search-index-builder.ts`
+    - `packages/indexer/src/services/indexer/allowed-extensions-diff-service.ts`
+    - `packages/indexer/src/services/watch/watch-service.ts`
+  - 怎么算完成：
+    1. 默认执行入口不再直接依赖 Node 类 new 出来的单例执行体
+    2. 包内主要调用点改成通过可注册执行器或统一入口调用
+    3. `TextIndexer/SearchIndexBuilder` 保留兼容实现，但不再是默认主执行面
+  - 怎么验证：
+    - `pnpm --filter @x-file/indexer build`
+    - `pnpm --filter @x-file/server build`
+  - 本轮落地：
+    - `packages/indexer` 已新增 `text-index-executor-registry.ts` 与 `search-index-executor-registry.ts`，默认执行面开始支持宿主注册。
+    - `executeTextIndex` / `executeSearchIndex` 已改成“注册执行器优先、in-process 类实现 fallback”。
+    - `AllowedExtensionsDiffService` 与 `WatchService` 已不再直接 `new TextIndexer(...)`，统一改走执行入口。
+    - `apps/server` 已新增 `library-worker-executor.ts`，并在 `createServer()` 启动时把默认 text/search 执行器注册成 worker-backed executor。
+    - `library-search-worker.ts` 已改走 `executeSearchIndex(...)`，不再直连 `buildLibrarySearchIndex(...)`。
+  - 本轮验证：
+    - `pnpm --filter @x-file/indexer build`：通过
+    - `pnpm --filter @x-file/server build`：通过
+    - `cd apps/server && node --import tsx --test src/library/library-index-worker.test.ts`：通过
+
+- [x] L. 默认 `ExportBuilder` 执行面继续迁出进程内主路径
+  - 这一步到底做什么：把 `buildLibraryExport` 也改成“注册执行器优先、in-process fallback”，并让 server 默认主路径接到独立 export worker。
+  - 做完你能看到什么：`index/search/export` 三段默认执行面都开始优先走 worker-backed executor，而不是默认进程内类实现。
+  - 先依赖什么：K
+  - 开始前先看：
+    - `packages/indexer/src/services/export/export-builder.ts`
+    - `packages/indexer/src/services/export/export-builder-executor-registry.ts`
+    - `apps/server/src/library/library-export-worker.ts`
+    - `apps/server/src/library/library-worker-executor.ts`
+  - 主要改哪里：
+    - `packages/indexer/src/services/export/export-builder.ts`
+    - `packages/indexer/src/services/export/export-builder-executor-registry.ts`
+    - `apps/server/src/library/library-export-worker.ts`
+    - `apps/server/src/library/library-default-executors.ts`
+    - `apps/server/src/library/library-worker-executor.ts`
+    - `apps/server/src/app.ts`
+  - 怎么算完成：
+    1. `buildLibraryExport` 不再把 `new ExportBuilder(...)` 当默认主执行面
+    2. server 默认 export 主路径已接到独立 export worker
+    3. export 阶段内部 search 也改走统一执行入口
+  - 本轮落地：
+    - `buildLibraryExport` 已改成 registry 优先，新增 `buildLibraryExportInProcess(...)` 显式 fallback。
+    - `library-export-worker.ts` 已回传完整 `exportResult`。
+    - server 启动时已把默认 export 执行器注册成 worker-backed executor。
+    - `export-builder.ts` 内部默认 search 阶段已改走 `executeSearchIndex(...)`，继续沿用默认 search executor。
+  - 本轮验证：
+    - `pnpm --filter @x-file/indexer build`：通过
+    - `pnpm --filter @x-file/server build`：通过
+    - `cd apps/server && node --import tsx --test src/library/library-index-worker.test.ts src/library/library-index-e2e.test.ts`：通过
+
+- [x] M. 默认 `index/search/export` worker transport 开始切到桌面原生 CLI
+  - 这一步到底做什么：把 `apps/server/src/library/library-worker-executor.ts` 的默认 transport 从 `process.execPath + *.js worker` 再抽一层，优先改走桌面 Rust 二进制的 `library-worker` 子命令，继续压 Node 作为 worker 载体的必要性。
+  - 做完你能看到什么：`index-only / export-only / search-only` 在桌面可执行文件存在时，会优先走原生 CLI transport；Node JS worker 退成 fallback，而不是默认执行面。
+  - 先依赖什么：L、4.44
+  - 开始前先看：
+    - `apps/server/src/library/library-worker-executor.ts`
+    - `apps/desktop/src-tauri/src/lib.rs`
+    - `apps/desktop/src-tauri/src/main.rs`
+  - 主要改哪里：
+    - `apps/server/src/library/library-worker-executor.ts`
+    - `apps/desktop/src-tauri/src/lib.rs`
+    - `apps/desktop/src-tauri/src/main.rs`
+  - 这一步先不做什么：不删除 Node worker 兼容路径，不改 `index/search/export` 产物契约，不碰 orchestration。
+  - 实际结果：
+    - 桌面二进制已新增 `library-worker` 子命令，支持 `index-only / export-only / search-only`。
+    - `apps/server` 默认 worker transport 已改成“桌面原生 CLI 优先、Node JS worker fallback”。
+    - `resolve_backend_extra_env()` 现在会向桌面子进程注入 `X_FILE_DESKTOP_CLI_PATH`，便于 Node sidecar 也能定位桌面原生 worker。
+  - 怎么算完成：
+    1. 默认 worker transport 不再只有 Node JS 子进程一种载体
+    2. 桌面原生 worker CLI 能稳定返回 JSON
+    3. 现有 worker 协议和产物契约不破坏
+  - 怎么验证：
+    - `cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml`
+    - `pnpm --filter @x-file/server build`
+    - `cd apps/server && node --import tsx --test src/library/library-index-worker.test.ts src/library/library-index-e2e.test.ts`
+
+- [x] N. 默认 worker transport 禁止静默回退 Node JS worker
+  - 这一步到底做什么：把 `apps/server` 默认执行面里还残留的“找不到桌面原生 worker 就自动跑 Node JS worker”暗门关掉，避免默认主路径继续含混地依赖 Node。
+  - 做完你能看到什么：默认 `index/search/export` worker transport 只有桌面原生 CLI 是主路径；找不到桌面 CLI 时会直接失败，不再回退 Node JS worker。
+  - 先依赖什么：M
+  - 开始前先看：
+    - `apps/server/src/library/library-worker-executor.ts`
+  - 主要改哪里：
+    - `apps/server/src/library/library-worker-executor.ts`
+  - 这一步先不做什么：不删除 Node worker 文件，不改测试协议，不碰 orchestraton。
+  - 实际结果：
+    - 默认 transport 现在找不到桌面原生 CLI 时会直接失败并给出明确错误。
+    - Node JS worker fallback 已删除。
+    - 这让默认执行面与“可删 Node”的目标更一致，不再靠静默暗门续命。
+  - 怎么算完成：
+    1. 默认 transport 不再静默依赖 Node JS worker
+    2. 不再保留 Node JS worker 调试回退路径
+    3. 现有 worker 协议不破坏
+  - 怎么验证：
+    - `pnpm --filter @x-file/server build`
+    - `cd apps/server && node --import tsx --test src/library/library-index-worker.test.ts src/library/library-index-e2e.test.ts`
+    - `cd apps/server && node --import tsx --test src/library/library-worker-executor.test.ts src/library/library-index-worker.test.ts src/library/library-index-e2e.test.ts`
+
+- [x] O. 原生复杂 `index-only` 开始承接 unchanged 复用与 snapshot 标签保真
+  - 这一步到底做什么：不去碰 orchestration，直接把桌面原生 `index-only` 执行体补成更像真正主执行面。最先补两件事：`unchanged` 复用判定，以及重建 snapshot 时保住已有 `tags`，避免每次原生重扫都像一次“盲写全量”。
+  - 做完你能看到什么：同一目录第二次跑原生 `index-only` 时，进度会体现 `unchangedCount`；原生重建 snapshot 时不再把已有手工标签直接清空。
+  - 先依赖什么：M、N
+  - 开始前先看：
+    - `apps/desktop/src-tauri/src/native_index.rs`
+  - 主要改哪里：
+    - `apps/desktop/src-tauri/src/native_index.rs`
+  - 这一步先不做什么：不引入 Rust SQLite 真写侧，不宣称已完全等价于 Node `TextIndexer`，不接管 tag/manual binding 真源。
+  - 实际结果：
+    - 原生 `index-only` 已新增 previous-state 复用：会读取上一次 `active-file-state-snapshot.json` 与 `export-catalog-snapshot.json`，对未变化文档直接复用 title/summary/tags/derivedTags。
+    - `IndexProgress` 现在会正确区分 `indexedCount` 与 `unchangedCount`，第二次执行同一目录时可观测到 `indexedCount=0 / unchangedCount>0`。
+    - 原生 `write_export_snapshot()` 已不再把 `tags` 硬写成空数组，而是保留前一轮 snapshot 中已存在的 tag 信息。
+  - 怎么算完成：
+    1. 原生复杂 `index-only` 不再每次都表现成“全量全脏”
+    2. snapshot 重写不再无条件抹掉既有 tags
+    3. 为后续继续替换 Node `TextIndexer` 真写侧铺路
+  - 怎么验证：
+    - `cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml`
+    - `pnpm --filter @x-file/server build`
+    - 同目录连续两次执行 `apps/desktop/src-tauri/target/debug/x-file-desktop library-worker index-only ...`，第二次出现 `indexedCount=0` 且 `unchangedCount>0`
+
+- [x] P. 原生本地 tag snapshot 真源继续收口
+  - 状态：DONE
+  - 本轮落地：
+    - `apps/desktop/src-tauri/src/lib.rs` 的 `build_local_tag_snapshot()` 已改为优先合并现有 `runtime/export-catalog-snapshot.json`，不会因为本轮只改局部 tag 就把旧 snapshot 里的非本地文档条目直接抹掉。
+    - `resolve_manual_tag_paths()` / `resolve_folder_tag_paths()` 已改为只返回 active tag，并在 snapshot 侧做去重，减少 disabled tag 和重复绑定污染。
+    - `write_runtime_export_catalog_snapshot()` 已抽出明确路径解析函数，和读取逻辑对称。
+    - `packages/indexer/src/parser/parser-skip-repository.ts`、`packages/indexer/src/services/indexer/text-index-catalog-store.ts`、`packages/indexer/src/repositories/catalog-write-repository.ts` 已补齐 parser skip 列表能力，`refreshRuntimeIndexStateSnapshot()` 不再硬依赖旧仓库类。
+  - 当前效果：
+    1. 原生 `index-only` 的本地 tag snapshot 不再是纯覆盖写
+    2. 默认 `index-only` 状态快照对 parser skip 的读取不再靠旧仓库类硬绑
+    3. tag / snapshot / runtime 状态真源更接近独立实现
+  - 本轮验证：
+    - `cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml`：通过
+    - `pnpm --filter @x-file/indexer build`：通过
+    - `pnpm --filter @x-file/server build`：通过
+    - `cd apps/server && node --import tsx --test src/library/library-index-worker.test.ts src/library/library-index-e2e.test.ts`：通过
+
+- [x] Q. 原生 `index-only` 默认命中范围继续扩到 skip-only 复杂格式
+  - 状态：DONE
+  - 本轮落地：
+    - `apps/desktop/src-tauri/src/lib.rs` 的 `should_prefer_native_index()` 已新增 `should_prefer_native_skip_only_target()` 与 `should_prefer_native_skip_only_directory()`。
+    - 现在 `.doc/.xls/.ppt` 这类 Rust 已能稳定承接 `skip-only` 的格式，在单文件 target 和“目录内全部都是 skip-only 格式”的场景下，不会再无谓回落到 Node 主执行面。
+    - `apps/desktop/src-tauri/src/native_index.rs` 已显式导出 `is_native_skip_only_extension()` 给桌面宿主复用。
+  - 当前效果：
+    1. 默认原生 worker 可接管的 `index-only` 刷新请求又扩大了一层
+    2. 一部分原本只是为了产出 skip/runtime snapshot 而拉起 Node 的复杂格式刷新，现在可以直接留在 Rust 主路径
+    3. 这继续压缩了 Node 在默认 `index-only` 主执行面里的必要性
+  - 本轮验证：
+    - `cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml`：通过
+    - `pnpm --filter @x-file/server build`：通过
+    - `pnpm --filter @x-file/indexer build`：通过
+    - `cd apps/server && node --import tsx --test src/library/library-index-worker.test.ts`：通过
+
+- [x] R. 原生 `TextIndexer` 默认目录命中继续扩大到 mixed summary+skip-only 复杂集合
+  - 状态：DONE
+  - 本轮落地：
+    - `apps/desktop/src-tauri/src/native_index.rs` 已把 `skip-only` 原生集合扩到与 Node `ComplexDocumentSkipAdapter` 退化语义一致的复杂格式族：`.odt/.wps/.ods/.et/.numbers/.odp/.key` 等不再无谓要求 Node。
+    - `extension_type_tag()` 已同步补齐这些复杂办公格式的类型派生标签，避免 native route 与既有导出标签语义脱节。
+    - `apps/desktop/src-tauri/src/lib.rs` 已新增 `should_prefer_native_default_route_directory()`；当目标目录内文件全部落在 Rust 已支持的 `summary + skip-only` 默认集合时，`index-only` 会直接留在原生主路径，不再因为目录里混有 skip-only 文件就回退 Node。
+  - 当前效果：
+    1. 默认复杂 `TextIndexer` 执行体的 Rust 覆盖面继续扩大
+    2. 一批原本只是为了处理“复杂格式但实际只需 skip/runtime mirror”的目录刷新，现在不再拉起 Node worker
+    3. `TextIndexer` 的默认 Node 主执行面被进一步压缩到“Rust 仍未承接的真实解析/写侧缺口”
+  - 本轮验证：
+    - `cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml`：通过
+    - `pnpm --filter @x-file/server build`：通过
+    - `cd apps/server && node --import tsx --test src/library/library-index-worker.test.ts src/library/library-index-e2e.test.ts`：通过
+
+- [x] S. 原生 `SearchIndexBuilder` 增量执行体补齐 manifest merge 真实验证
+  - 状态：DONE
+  - 本轮落地：
+    - `apps/desktop/src-tauri/src/native_export.rs` 已补齐 `SearchBucketManifestEntry` 的 `Deserialize` 契约，并修正 `SearchManifestFile` 读取字段与磁盘 `search/manifest.json` 的 snake_case 结构保持一致。
+    - Rust `search-only` 执行体现在可以稳定读取旧 manifest，按 dirty bucket 重建、按未脏 bucket 复用，并在 bucket 内容变化时清掉旧词项残留。
+    - 已新增原生单测 `incremental_search_only_reuses_unchanged_buckets_and_rebuilds_dirty_bucket`，直接验证：
+      1. 未脏 bucket 文件保持不变
+      2. 脏 bucket 被重建
+      3. 旧词项不会残留在重建后的 bucket 内
+  - 当前效果：
+    1. 默认 `SearchIndexBuilder` 执行体已经不是“只有 transport 切口”，而是有真实 Rust 增量数据面 vertical slice
+    2. `search-only` 继续脱离 Node in-process 主执行面
+    3. 后续继续删 Node 时，搜索索引侧的最大风险已经从“无原生执行体”缩成“能力覆盖继续补齐”
+  - 本轮验证：
+    - `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml native_export`：通过
+    - `cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml`：通过
+    - `pnpm --filter @x-file/server build`：通过
+    - `cd apps/server && node --import tsx --test src/library/library-index-worker.test.ts src/library/library-index-e2e.test.ts`：通过
+
+- [x] T. server 默认 text executor 接上 Rust 原生完整 index 结果
+  - 状态：DONE
+  - 本轮落地：
+    - `apps/server/src/library/library-worker-executor.ts` 已新增对 worker `index` 字段的直接消费；当桌面 Rust `index-only` 返回完整 `TextIndexResult` 时，server 默认 executor 不再把结果映射成全零壳。
+    - 旧 Node worker 或旧协议若仍只返回 `dirtyScope`，当前仍保留兼容 fallback 映射，不破坏现有兼容路径。
+    - 已新增 `apps/server/src/library/library-worker-executor.test.ts`，验证 worker-backed text executor 会优先返回原始 index 统计值。
+  - 当前效果：
+    1. 默认原生 `TextIndexer` 主执行面现在不只是 transport 改走 Rust，结果面也开始保真
+    2. 上层调用方可以真实看到 scanned/indexed/indexedPaths 等原生统计，而不是一堆 0
+    3. 这继续削弱了 “必须保留 Node in-process TextIndexer 才能拿到完整结果” 这个借口
+  - 本轮验证：
+    - `pnpm --filter @x-file/server build`：通过
+    - `cd apps/server && node --import tsx --test src/library/library-worker-executor.test.ts src/library/library-index-worker.test.ts src/library/library-index-e2e.test.ts`：通过
+
+- [x] U. 默认 allowedExtensions 为空时不再误判回 Node
+  - 状态：DONE
+  - 本轮落地：
+    - `apps/desktop/src-tauri/src/native_index.rs` 的 `can_native_index_lightweight_set()` 已改成：当 `allowedExtensions=[]` 时，按 scanner 真实语义视为“默认支持集合全部允许”，直接命中 Rust native route。
+    - 已新增原生单测 `empty_allowed_extensions_means_default_supported_set_can_stay_on_native_route`。
+  - 当前效果：
+    1. 默认配置下的复杂 `TextIndexer` 不会因为 `allowedExtensions` 为空这个伪特殊情况，被无谓踢回 Node
+    2. 这直接缩小了默认 `index-only` 的 Node 命中面，尤其是未显式收窄扩展名的资料库
+    3. 数据结构语义和宿主判定终于一致，不再一边说“空=全部允许”，一边在路由层把它当“不确定”
+  - 本轮验证：
+    - `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml native_index`：通过
+    - `pnpm --filter @x-file/server build`：通过
+    - `cd apps/server && node --import tsx --test src/library/library-worker-executor.test.ts src/library/library-index-worker.test.ts src/library/library-index-e2e.test.ts`：通过
+
+- [x] V. 默认 text index 结束后的 runtime 状态回刷不再反向依赖 Node/SQLite 真源
+  - 状态：DONE
+  - 本轮落地：
+    - `packages/indexer/src/library-index-tool.ts` 已移除 `runLibraryTextIndex()` 结束后对 `refreshRuntimeIndexStateSnapshot(config, dbDriver)` 的强制 SQLite 回刷。
+    - `refreshRuntimeActiveFileStateSnapshot()` 的默认读源已改成 `runtime preferred read store`，不再默认要求 `createSqliteTextIndexCatalogWriteStore()` 反查 SQLite。
+    - `packages/indexer/src/services/watch/watch-service.ts` 也已同步改成用 `stores.readStore` 做 active-file runtime snapshot 刷新，避免继续把 write-store 借壳当 read-store。
+  - 当前效果：
+    1. 当默认 `TextIndexer` 已经走 Rust/native worker 并写好 runtime snapshots 后，Node/SQLite 兼容层不会再把这份状态反向覆盖回旧真源
+    2. 默认 text index 主链对 SQLite 真源的依赖又少了一层
+    3. 这让“原生执行体是真主执行面，Node 只是兼容回退”这件事更接近代码现实
+  - 本轮验证：
+    - `pnpm --filter @x-file/indexer build`：通过
+    - `pnpm --filter @x-file/server build`：通过
+    - `cd apps/server && node --import tsx --test src/library/library-worker-executor.test.ts src/library/library-index-worker.test.ts src/library/library-index-e2e.test.ts`：通过
+
+- [x] W. assistant provider runtime sidecar 不再主包硬绑具体 provider adapter
+  - 状态：DONE
+  - 本轮落地：
+    - `apps/server/src/assistant/provider-runtime-sidecar.ts` 已从静态 import `CodexRuntimeAdapter / ClaudeRuntimeAdapter` 改成通用 sidecar shim。
+    - 现在它只认显式配置：
+      - `X_FILE_PROVIDER_RUNTIME_ADAPTER_EXPORT`
+      - `X_FILE_PROVIDER_RUNTIME_PERMISSION_PROTOCOL`
+      - `X_FILE_PROVIDER_RUNTIME_ADAPTER_OPTIONS_JSON`
+    - sidecar 通过动态 `import("@codingns/session-sync-core") + adapterExport` 构造 runtime adapter，主包里不再直接硬写死具体 provider runtime 类。
+    - 已新增 `provider-runtime-sidecar.test.ts` 覆盖：环境变量解析、adapterExport 构造、codex permission protocol 注入。
+  - 当前效果：
+    1. `provider-runtime-sidecar` 已降成“显式启用的兼容 sidecar 入口”，而不是主包内 `codex/claude` runtime 的硬绑定实现
+    2. `codex/claude` 的主路径继续是 plugin manifest 里的 `external-sidecar-runtime`
+    3. assistant/plugin 侧剩余 Node 阻塞已进一步收缩到 host ABI 层：plugin backend loader、runtime installer、provider bridge、外部 sidecar 拉起
+  - 本轮验证：
+    - `pnpm --filter @x-file/server test -- src/assistant/provider-runtime-sidecar.test.ts src/plugins/plugin-backend-loader.test.ts src/plugins/plugin-runtime-installer.test.ts`：通过
+    - `pnpm --filter @x-file/server typecheck`：通过
+
+- [x] X. 原生 `search-only` 无 `dirtyScope` 时不再回 Node fallback，结果映射补齐
+  - 状态：DONE
+  - 本轮落地：
+    - `apps/server/src/library/library-worker-executor.ts` 已移除 “`!options.dirtyScope` 就直接 fallback 到 Node in-process SearchIndexBuilder” 的分叉；默认 search executor 现在无 `dirtyScope` 也会继续走 worker transport。
+    - `apps/desktop/src-tauri/src/native_export.rs` 的 `NativeSearchRequest` 已改为允许 `dirty_scope: Option<Value>`；Rust `search-only` 在缺少 dirtyScope 时会直接按 full rebuild 执行，而不是要求上层先回 Node。
+    - `apps/desktop/src-tauri/src/lib.rs` 的桌面宿主 `search-only` 分支与 `library-worker` CLI 已同步允许空 dirtyScope，避免 transport 层再次强制回退。
+    - `apps/server/src/library/library-search-worker.ts` 与 `apps/server/src/library/library-worker-executor.ts` 已补齐 `filesWritten` / `exportedAt` 映射，不再伪造空数组和本地当前时间。
+  - 当前效果：
+    1. `search-only` 默认主路径最大的回 Node 后门已经关掉
+    2. Rust native search 现在既能跑增量，也能在无 dirtyScope 时承接 full rebuild
+    3. server 侧 `SearchIndexBuildResult` 开始保真映射原生 worker 返回结果
+  - 本轮验证：
+    - `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml native_index`：通过
+    - `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml native_export`：通过
+    - `pnpm --filter @x-file/server build`：通过
+    - `cd apps/server && node --import tsx --test src/library/library-worker-executor.test.ts src/library/library-index-worker.test.ts`：通过
+
+- [x] Y. 原生 `TextIndexer` 默认命中继续扩大到 OpenDocument 轻量 summary 集合
+  - 状态：DONE
+  - 本轮落地：
+    - `apps/desktop/src-tauri/src/native_index.rs` 已新增 `NATIVE_OPENDOCUMENT_TARGET_EXTENSIONS`，把 `.odt/.ods/.odp` 从原来的 `skip-only` 集合提升为原生 `summary` 集合。
+    - 已新增 `is_native_opendocument_target_extension()`，并让 `is_native_summary_extension()` 把 OpenDocument 轻量摘要能力纳入默认原生路由判定。
+    - `read_summary()` 已补齐 OpenDocument `content.xml` 轻量提取，`ODT/ODS/ODP` 现在可直接由 Rust 生成 summary，而不是为了这批格式继续回 Node 或仅写 skip。
+    - 原生单测已同步覆盖：`.odt/.ods/.odp` 属于 `summary` 而不再是 `skip-only`。
+  - 当前效果：
+    1. 默认复杂 `TextIndexer` 的原生覆盖面继续扩大
+    2. `parser` 已不再是桌面默认 `index-only` 的硬阻塞；真正残余已进一步收缩到 SQLite write-side
+    3. Node 主执行面又少了一批“其实只需要轻量摘要”的 Office 兼容格式
+  - 本轮验证：
+    - `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml native_index`：通过
+
+- [x] Z. 默认 `index-only` 的 status write 真源从 SQLite 再剥一层
+  - 状态：DONE
+  - 本轮落地：
+    - `packages/indexer/src/services/indexer/text-index-status-store.ts` 已新增独立 `createRuntimeTextIndexStatusStore(config, mirrorStore)`。
+    - 这层实现直接把 `active-file-state-snapshot.json` / `index-state.json` 作为状态真源维护：`indexed / failed / skipped / deleted` 更新先写 runtime snapshots，再选择性镜像到 SQLite status store。
+    - `packages/indexer/src/services/indexer/text-index-catalog-store.ts` 的 `createDefaultRuntimeBackedTextIndexStores()` 已改为：默认 `statusStore` 先走 `runtime snapshot status store`，SQLite status 退成兼容镜像层。
+  - 当前效果：
+    1. 默认 `index-only` 的状态写侧已经不再只能依赖 SQLite 真表
+    2. `unchanged` / active-file / failed / skipped 这组状态的真源开始向 runtime snapshot 靠拢
+    3. 剩余更硬的 Node write-side 已进一步收缩到 `document/chunk/tag` 三块
+  - 本轮验证：
+    - `pnpm --filter @x-file/indexer build`：通过
+    - `pnpm --filter @x-file/server build`：通过
+    - `cd apps/server && node --import tsx --test src/library/library-index-worker.test.ts src/library/library-worker-executor.test.ts`：通过
+
+- [x] AA. 默认 `TextIndexDocumentStore / ChunkWriteStore / TextIndexTagStore` 主写链继续从 SQLite 真源剥离
+  - 状态：DONE
+  - 本轮落地：
+    - `packages/indexer/src/services/indexer/text-index-document-store.ts` 已新增 runtime-backed document store，直接维护 `runtime/export-catalog-snapshot.json` 里的 `documents` 真源，并保留 SQLite document store 镜像兼容。
+    - `packages/indexer/src/services/indexer/chunk-write-store.ts` 已新增 runtime-backed chunk store，维护 `runtime/chunk-state-snapshot.json`，默认主链不再只能靠 SQLite `chunks` 表保留正文写侧结果。
+    - `packages/indexer/src/services/indexer/text-index-tag-store.ts` 已新增 runtime-backed tag store，直接维护 snapshot 中的 `tags/derivedTags/tag tree`，SQLite tag store 退成兼容镜像。
+    - `packages/indexer/src/services/indexer/text-index-catalog-store.ts` 已把默认 runtime-backed stores 全部接上：
+      - status -> runtime snapshot 真源
+      - document -> runtime export snapshot 真源
+      - chunk -> runtime chunk snapshot 真源
+      - tag -> runtime export snapshot tag 真源
+    - 删除/清理路径也已同步到这三块新真源，避免 runtime snapshots 累积僵尸文档、正文或 tag tree。
+  - 当前效果：
+    1. 默认 `index-only` 的 `document/chunk/tag/status` 四块写侧都已经开始由 runtime/file-backed 真源承接
+    2. `refreshLibraryExportCatalogSnapshot()` 不再是索引后唯一把 SQLite 真源转成 snapshot 的必要步骤；`runLibraryTextIndex()` 自身已经能把 export snapshot 所需核心数据维护起来
+    3. SQLite 仍保留兼容镜像与旧查询面，但默认主链对它的依赖继续显著收缩
+  - 本轮验证：
+    - `pnpm --filter @x-file/indexer build`：通过
+    - `pnpm --filter @x-file/server build`：通过
+    - `cd apps/server && node --import tsx --test src/library/library-index-worker.test.ts src/library/library-worker-executor.test.ts`：通过
+    - `cd apps/server && node --import tsx --test src/library/library-index-e2e.test.ts`：通过
 
 ## 阶段 1：先把数据面真实边界盘死
 
@@ -854,6 +1346,38 @@
     - `apps/web/src/api/library.ts`
     - `specs/spec003.1-X-File-Indexer-SQLite-Export-Runtime-收口/tasks.md`
   - 这一步先不做什么：不改 mirror 模式远端链路，不把 assistant/plugin runtime 迁出 Node，不碰 index/export worker 执行体。
+
+- [x] 4.16 native skip-only runtime mirror 补齐
+  - 状态：DONE
+  - 这一步到底做什么：把 Rust native `skip-only` 扩展从“只计数”补成“真正写入 runtime mirror 真源”。
+  - 做完你能看到什么：`.doc/.xls/.ppt` 这类 native skip-only 文件会进入 `.ai-index/runtime/active-file-state-snapshot.json` 与 `.ai-index/runtime/index-state.json`，前台 runtimeIndexState 不再只在 Node worker 路径下可见。
+  - 先依赖什么：3.4、4.15
+  - 主要改哪里：
+    - `apps/desktop/src-tauri/src/native_index.rs`
+    - `specs/spec003.1-X-File-Indexer-SQLite-Export-Runtime-收口/tasks.md`
+  - 本轮落地：
+    - Rust native index 已把 skip-only 扩展落成 `skippedDocuments + parserSkips` 的 runtime mirror 写入。
+    - 增量 targetPath 刷新会合并已有 runtime state，不会把其他路径的 skip/active 状态粗暴覆盖掉。
+  - 怎么验证：
+    - `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml`
+
+- [x] 4.17 本地模式 tag 服务面 native bridge + 本地导出同步
+  - 状态：DONE
+  - 这一步到底做什么：把 local 模式下 tag 管理从 Node HTTP 主路径收成 Tauri native bridge，并让本地 tag 写入能真正回流到 `.ai-index/exports/*`。
+  - 做完你能看到什么：local 模式下 tag 列表、文档标签、文件夹标签、tag 增删改与重算请求，不再必须依赖 `/api/library/tags*`；写入后 native 会重写 runtime snapshot 并触发 `export-only + search-only`。
+  - 先依赖什么：4.14、4.16
+  - 主要改哪里：
+    - `apps/web/src/runtime/native-library-bridge.ts`
+    - `apps/web/src/api/library.ts`
+    - `apps/desktop/src-tauri/src/lib.rs`
+    - `specs/spec003.1-X-File-Indexer-SQLite-Export-Runtime-收口/tasks.md`
+  - 本轮落地：
+    - 前端 local 模式 tag API 已优先走 native bridge，mirror/web 继续保留 HTTP fallback。
+    - Rust 宿主已新增本地 tag 命令、`library-tags.json` 真源读写、runtime `export-catalog-snapshot.json` 重写，以及 `export-only + search-only` 本地同步链。
+    - `recompute task` 也补了本地磁盘快照，不再只剩内存态。
+  - 怎么验证：
+    - `pnpm --filter @x-file/web typecheck`
+    - `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml`
   - 实际结果：
     - Rust 宿主已新增 `native_get_library_binding`、`native_save_library_binding`、`native_get_library_config`、`native_save_library_config`、`native_browse_host_directories`。
     - 本地 binding/config 的持久化与 sidecar config 文件写入，已在 Rust 侧复刻现有 Node 行为：继续写 `.x-file/library-binding.json` 与 binding 指定的 config 相对路径，不破坏现有契约。
@@ -1781,4 +2305,249 @@
   - 怎么验证：
     - `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml`
     - `pnpm --filter @x-file/web typecheck`
+    - `node scripts/verify-desktop.mjs --platform macos --mode preflight`
+
+- [x] AB. 默认 `index-only` 主链去掉 SQLite 反向 refresh，runtime snapshot 自成真源
+  - 这一步到底做什么：把 `runLibraryTextIndex()` 和 `library-index-worker.ts` 里“索引完成后再从 SQLite 反刷 `export-catalog-snapshot`”这条旧脐带剪掉，让一次默认 index 自己就把 runtime export snapshot 维护完整。
+  - 做完你能看到什么：`index-only` 成功后，`.ai-index/runtime/export-catalog-snapshot.json` 会直接存在；默认主链不再显式调用 `refreshLibraryExportCatalogSnapshot(sqlite)`。
+  - 先依赖什么：AA
+  - 主要改哪里：
+    - `packages/indexer/src/library-index-tool.ts`
+    - `apps/server/src/library/library-index-worker.ts`
+    - `apps/server/src/library/library-index-e2e.test.ts`
+    - `apps/server/src/library/library-index-worker.test.ts`
+  - 实际结果：
+    - `runLibraryTextIndex()` 现在会基于 runtime-backed read store 直接重写 `export-catalog-snapshot.json`，不再要求外部再补一刀 SQLite refresh。
+    - `library-index-worker.ts` 已移除显式 `refreshLibraryExportCatalogSnapshot(...)` 调用，只回报 runtime snapshot 路径。
+    - e2e / worker test 已同步改成校验 index 后 snapshot 天然存在。
+
+- [x] AC. `TagRecomputeService` 默认候选文档/正文读面开始优先走 runtime snapshot
+  - 这一步到底做什么：不给 `TagRecompute` 再硬绑 `CatalogRepository.listRecomputeCandidateDocuments()`；先把候选文档与 chunk 正文读取改成 runtime/file-backed 优先，把最重的 SQLite 读依赖拔掉。
+  - 做完你能看到什么：标签重算默认会优先读 `active-file-state-snapshot.json`、`export-catalog-snapshot.json`、`chunk-state-snapshot.json` 组合出来的候选文档视图；SQLite 退成 tag rule / binding / 回写兼容层。
+  - 先依赖什么：AA、AB
+  - 主要改哪里：
+    - `packages/indexer/src/services/tagging/tag-recompute-store.ts`
+    - `packages/indexer/src/services/tagging/tag-recompute-service.ts`
+  - 实际结果：
+    - 已新增 `createRuntimePreferredTagRecomputeStore(...)`。
+    - `listRecomputeCandidateDocuments()` 现在优先从 runtime snapshots 组装候选文档与 `contentText`；`folder_bindings_only` 会跳过正文读取。
+    - `TagRecomputeService` 默认依赖已切到 runtime-preferred store，SQLite 主要保留规则/绑定/回写兼容职责。
+
+- [x] AD. 内置 assistant/plugin 的 bundled `backend/index.js` 兼容残影从主包资源边界移除
+  - 这一步到底做什么：把主包内置 Codex/Claude 插件里残留的 `backend/index.js` 兼容文件从 bundled resources 里删掉，并让验包脚本明确禁止 descriptor-only 插件再夹带 backend 目录。
+  - 做完你能看到什么：正式包里的内置 assistant/plugin 默认只剩 descriptor + external sidecar，不再随包带一个看起来像默认 Node ABI 的 backend 残影。
+  - 主要改哪里：
+    - `apps/desktop/src-tauri/resources/x-file-plugins/codex-integration/backend/index.js`
+    - `apps/desktop/src-tauri/resources/x-file-plugins/claude-code-integration/backend/index.js`
+    - `scripts/verify-desktop.mjs`
+    - `apps/desktop/src-tauri/resources/x-file-resource-boundary.json`
+  - 实际结果：
+    - 内置 Codex/Claude 插件的 bundled backend 兼容文件已删除。
+    - `verify-desktop.mjs` 已新增 descriptor-only bundled plugin 的 backend 残影校验。
+
+- [x] AE. 默认复杂 `index-only` 主执行面在桌面原生路由下继续实证收口
+  - 这一步到底做什么：用 Rust 侧真实单测把“默认允许扩展集合”钉成可运行证据，确认 `.md + .doc` 这类默认混合集合可以直接在原生 `index-only` 里完成，不需要再靠 Node worker 兜底。
+  - 做完你能看到什么：`cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml native_index` 里会有覆盖默认混合集合的原生断言。
+  - 主要改哪里：
+    - `apps/desktop/src-tauri/src/native_index.rs`
+  - 实际结果：
+    - 新增 `default_route_mix_of_markdown_and_legacy_office_stays_on_native_index_worker` 测试。
+    - 默认扩展混合集合会直接产出原生 `indexed + skip-only` 结果，不再把这类集合当成默认 Node 硬阻塞。
+
+- [x] AF. 默认 runtime-backed `TextIndexer` 写侧不再天然 mirror 回 SQLite
+  - 这一步到底做什么：把 `createDefaultRuntimeBackedTextIndexStores()` 从“runtime snapshot + SQLite 强制镜像”改成“runtime snapshot 真源优先，SQLite 仅在显式兼容模式下参与写侧”。
+  - 做完你能看到什么：默认 `runLibraryTextIndex()` 再组装 runtime stores 时，不会天然把 `status/document/chunk/tag` 四组写入回落到 SQLite；Node/SQLite 退成显式兼容镜像，而不是默认真源。
+  - 主要改哪里：
+    - `packages/indexer/src/services/indexer/text-index-catalog-store.ts`
+  - 实际结果：
+    - `createDefaultRuntimeBackedTextIndexStores()` 已新增 `sqliteMirror` 开关，默认值为 `false`。
+    - `status/document/chunk/tag` 四组 runtime store 现在默认只维护 runtime snapshots；只有显式 `sqliteMirror=true` 时才继续镜像写 SQLite。
+    - 这意味着默认复杂 `index-only` 主写链已经不再“表面 native，实际天然借壳 SQLite”。
+  - 怎么验证：
+    - `pnpm --filter @x-file/indexer build`
+    - `pnpm --filter @x-file/server build`
+
+- [x] AG. `TextIndexTagStore` 的上一版 identity 读取开始脱离 SQLite 真源
+  - 这一步到底做什么：不给 runtime tag store 再把“previousManualBindingTarget 从哪里来”硬绑 SQLite；先把文档 identity 快照独立写到 runtime 层，让默认复杂 tag 写侧至少能从 runtime 状态恢复上一版 binding 身份。
+  - 做完你能看到什么：`createRuntimeTextIndexTagStore()` 会维护 `tag-state-snapshot.json`，`captureBatchUpsertContexts()` 优先从 runtime identity snapshot 取 `previousManualBindingTarget`，SQLite 只在缺失时才做兼容回退。
+  - 主要改哪里：
+    - `packages/indexer/src/services/indexer/text-index-tag-store.ts`
+  - 实际结果：
+    - 已新增 `runtime/tag-state-snapshot.json`。
+    - runtime tag store 现在会把 `path/documentId/inodeKey/contentHash/size/extension` 写入该快照。
+    - 默认复杂 tag 写侧拿上一版 manual binding 身份时，已经不再天然依赖 SQLite active file identity 查询。
+  - 怎么验证：
+    - `pnpm --filter @x-file/indexer build`
+    - `pnpm --filter @x-file/server build`
+
+- [x] AH. 默认 `search/export` 数据源切到 runtime snapshot 优先
+  - 这一步到底做什么：把 `SearchIndexBuilder` / `ExportBuilder` 默认数据源从“强制 sqlite”改成“auto”，让默认主链优先消费 runtime export snapshot，而不是继续把 search/export 默认绑回 SQLite。
+  - 做完你能看到什么：`executeSearchIndexInProcess()`、`buildLibraryExportInProcess()`、对应 builder constructor 的默认数据源都会优先命中 runtime snapshot；只有 snapshot 不存在时才回退 SQLite。
+  - 主要改哪里：
+    - `packages/indexer/src/services/search/search-index-builder.ts`
+    - `packages/indexer/src/services/export/export-builder.ts`
+  - 实际结果：
+    - `SearchIndexBuilder` 默认数据源已从 `createExportCatalogDataSource(config, "sqlite")` 改为 `auto`
+    - `ExportBuilder` 默认数据源也已改为 `auto`
+    - 默认 `search/export` 主链已经不再把 SQLite 当成天然真源，而是先吃 runtime snapshot
+  - 怎么验证：
+    - `pnpm --filter @x-file/indexer build`
+    - `pnpm --filter @x-file/server build`
+    - `pnpm --filter @x-file/server typecheck`
+
+- [x] AI. 默认 `search/export` 主执行面继续压成 worker/native 优先，Node builder 明确降格为 fallback
+  - 这一步到底做什么：把当前真实执行边界写实，不再让 `SearchIndexBuilder` / `ExportBuilder` 的包内 Node in-process 实现看起来像默认主路径；正式主链继续由宿主注册的 worker/native executor 接管。
+  - 做完你能看到什么：server 默认 search/export 主路径的叙事已经和真实执行面一致，Node builder 只剩兼容 fallback 身份。
+  - 主要改哪里：
+    - `apps/server/src/library/library-default-executors.ts`
+    - `packages/indexer/src/services/search/search-index-builder.ts`
+  - 实际结果：
+    - `createDefaultLibrarySearchExecutor()` / `createDefaultLibraryExportExecutor()` 已明确标注为兼容 fallback。
+    - `SearchIndexBuilder` 注释已对齐为“TypeScript/Node fallback”，不再伪装成默认主执行面。
+    - 配合前一条 `AH`，默认 `search/export` 现在已经是 runtime snapshot + worker/native 优先，Node builder 只在 fallback 场景残留。
+  - 怎么验证：
+    - `pnpm --filter @x-file/indexer build`
+    - `pnpm --filter @x-file/server build`
+    - `pnpm --filter @x-file/server typecheck`
+
+- [x] AJ. 默认 executor registry 去掉“未注册时偷偷回 Node in-process”暗门
+  - 这一步到底做什么：把 `text/search/export` 三个 executor registry 的无注册 fallback 改成 fail-fast，默认主路径未注册执行器时直接报错，不再隐式掉进 Node in-process。
+  - 做完你能看到什么：默认主链若没有宿主注册 executor，会明确报错要求显式调用 `*InProcess()`；这意味着 Node fallback 从“默认暗门”退成“显式兼容 API”。
+  - 主要改哪里：
+    - `packages/indexer/src/services/indexer/text-index-executor-registry.ts`
+    - `packages/indexer/src/services/search/search-index-executor-registry.ts`
+    - `packages/indexer/src/services/export/export-builder-executor-registry.ts`
+  - 实际结果：
+    - `resolveDefaultTextIndexExecutor()` / `resolveDefaultSearchIndexExecutor()` / `resolveDefaultExportBuilderExecutor()` 现在在未注册默认执行器时会直接 fail-fast。
+    - `executeTextIndexInProcess()` / `executeSearchIndexInProcess()` / `buildLibraryExportInProcess()` 仍保留为显式兼容调用，但已经不是默认回退暗门。
+  - 怎么验证：
+    - `pnpm --filter @x-file/indexer build`
+    - `pnpm --filter @x-file/server build`
+    - `pnpm --filter @x-file/server typecheck`
+
+- [x] AK. runtime tag state snapshot 开始保留 manual tag 路径，继续压缩 SQLite manual-binding 依赖
+  - 这一步到底做什么：不给 runtime tag state 只存 identity 空壳；把已解析的 manual tag paths 一起落进 snapshot，让默认复杂 tag 写侧后续可以直接从 runtime 恢复手工标签路径，而不是每次都回 SQLite legacy/manual bindings。
+  - 做完你能看到什么：`tag-state-snapshot.json` 会保存 `resolvedManualTagPaths`；runtime tag store 在下一次 batch upsert 时会把这些手工标签路径继续带回 `document.tags` 与 runtime identity 状态。
+  - 主要改哪里：
+    - `packages/indexer/src/services/indexer/text-index-tag-store.ts`
+  - 实际结果：
+    - `TextIndexTagWriteContext` 与 runtime tag snapshot 已新增 `resolvedManualTagPaths`
+    - `captureBatchUpsertContexts()` 会优先从 runtime snapshot 恢复 manual tag paths
+    - runtime tag store 写回 snapshot 时会保留并延续这些 manual tag paths，继续缩小对 SQLite manual binding 查询的依赖
+  - 怎么验证：
+    - `pnpm --filter @x-file/indexer build`
+    - `pnpm --filter @x-file/server build`
+
+- [x] AL. runtime `TextIndexTagStore` 自己承担 orphan tag tree 清理
+  - 这一步到底做什么：不给 runtime tag store 的 `cleanupOrphanTags()` 再只是空壳转发到 SQLite mirror；先让 runtime export snapshot 自己按当前 documents/tag paths 重建 tag tree，保证默认路径下 orphan 清理不再完全依赖 SQLite。
+  - 做完你能看到什么：默认 runtime tag store 执行 cleanup 时，会直接重写 export snapshot 里的 `tags` 树；SQLite mirror 只剩兼容补写，而不是 runtime cleanup 的唯一执行体。
+  - 主要改哪里：
+    - `packages/indexer/src/services/indexer/text-index-tag-store.ts`
+  - 实际结果：
+    - `createRuntimeTextIndexTagStore().cleanupOrphanTags()` 现在会先从 runtime export snapshot 的 documents 重建 tag tree
+    - 这让 runtime tag 路径在默认主链下已经具备最小自洽的 orphan cleanup 语义
+  - 怎么验证：
+    - `pnpm --filter @x-file/indexer build`
+    - `pnpm --filter @x-file/server build`
+    - `pnpm --filter @x-file/server typecheck`
+
+- [x] AM. server 默认主链彻底断开 `*InProcess` fallback 入口
+  - 这一步到底做什么：把 server 里最后仍直接引用 `executeTextIndexInProcess()` / `executeSearchIndexInProcess()` / `buildLibraryExportInProcess()` 的默认 fallback 入口改成 fail-fast，确保正式主链必须走 worker/native 注册执行器。
+  - 做完你能看到什么：即便没有成功注册默认 executor，server 也会明确报错，而不是悄悄回落到 Node in-process。
+  - 主要改哪里：
+    - `apps/server/src/library/library-default-executors.ts`
+  - 实际结果：
+    - `createDefaultLibraryTextExecutor()` / `createDefaultLibrarySearchExecutor()` / `createDefaultLibraryExportExecutor()` 已全部改成 fail-fast 占位实现
+    - server 正式主链现在只能依赖 `registerLibraryDefaultExecutors(...)` 注入的 worker/native executor
+  - 怎么验证：
+    - `pnpm --filter @x-file/server build`
+    - `pnpm --filter @x-file/server typecheck`
+
+- [x] AN. runtime tag snapshot 的 manual tag 路径继续归一化固化
+  - 这一步到底做什么：把 runtime tag state 里的 manual tag paths 持续归一化，避免不同来源的 context/runtime 合并后残留重复/脏值，保证 runtime 自己能稳定复原手工标签路径。
+  - 做完你能看到什么：`tag-state-snapshot.json` 内的 `resolvedManualTagPaths` 会在写回前统一去重、trim、排序。
+  - 主要改哪里：
+    - `packages/indexer/src/services/indexer/text-index-tag-store.ts`
+  - 实际结果：
+    - 已新增 `normalizeTagPathList(...)`
+    - runtime tag snapshot 写回时会统一归一化 `resolvedManualTagPaths`
+    - 这让 runtime manual tag 路径成为更稳定的真源，而不是临时 context 拼装结果
+  - 怎么验证：
+    - `pnpm --filter @x-file/indexer build`
+    - `pnpm --filter @x-file/server build`
+
+- [x] AO. sqlite tag mirror 也开始优先消费 runtime tag snapshot
+  - 这一步到底做什么：不给 sqlite tag store 再把 `resolvedManualTagPaths` 完全当成本地 SQLite 查询结果；让它在 capture context 阶段也优先读取 runtime `tag-state-snapshot.json`，继续压缩 manual-binding 语义对 SQLite 的真源依赖。
+  - 做完你能看到什么：无论默认主链是否启用 sqlite mirror，`captureBatchUpsertContexts()` 都会先看 runtime tag snapshot；只有 runtime 缺失时才回退 SQLite 查询。
+  - 主要改哪里：
+    - `packages/indexer/src/services/indexer/text-index-tag-store.ts`
+    - `packages/indexer/src/services/indexer/text-index-catalog-store.ts`
+  - 实际结果：
+    - `createSqliteTextIndexTagStore()` 已新增 `runtimeTagStateSnapshotPath`
+    - sqlite tag mirror 在 capture context 阶段会优先使用 runtime snapshot 中的 `resolvedManualTagPaths`
+    - runtime/manual tag 路径的真源地位继续加强，SQLite 进一步退成兼容层
+  - 怎么验证：
+    - `pnpm --filter @x-file/indexer build`
+    - `pnpm --filter @x-file/server build`
+    - `pnpm --filter @x-file/server typecheck`
+
+- [x] AP. manual-binding / identity 唯一性判定继续改成 runtime snapshot 优先
+  - 这一步到底做什么：把 `text-index-tag-store.ts` 里最顽固的三条 SQLite 查询链继续往 runtime 真源收口，优先覆盖 migration candidate、manual file binding 解析、manual resolved tags 同步。
+  - 做完你能看到什么：`resolveMigrationCandidateInConnection(...)`、`resolveManualFileBindingsForTargetInConnection(...)`、`syncManualResolvedTagsForDocumentInConnection(...)` 现在都会先基于 runtime `tag-state-snapshot.json` 的 identity 索引做唯一候选判定；命中时会先物化成真实 tag/binding，再走现有 SQLite 契约。
+  - 主要改哪里：
+    - `packages/indexer/src/services/indexer/text-index-tag-store.ts`
+  - 实际结果：
+    - 新增 runtime manual tag path 解析：按 `documentId -> inodeKey -> contentKey` 顺序做唯一性命中
+    - runtime manual tag 不再把 `tagPath` 混充 `tagId`；现在会先 `ensureTag(...)` 并写入真实 `manual_file_tag_bindings`
+    - `syncManualResolvedTagsForDocumentInConnection(...)` 成功路径已改成共享 `tagCache`，避免 runtime/manual 补写阶段重复造 tag
+    - SQLite 在这三条路径上退成兜底，而不是默认真源
+  - 怎么验证：
+    - `pnpm --filter @x-file/indexer build`
+    - `pnpm --filter @x-file/server typecheck`
+
+- [x] AQ. 默认复杂 parser 主执行面接入桌面原生 CLI 桥
+  - 这一步到底做什么：把 `NativeComplexParserAdapter` 接到桌面 `library-worker parse-file` 入口，让 `.docx/.xlsx/.pptx/.pdf` 默认优先走原生 CLI，而不是继续只靠 Node 复杂 parser 适配器。
+  - 做完你能看到什么：默认复杂格式解析会先命中 `native-parser-bridge.ts`，Node 的 `docx/xlsx/pptx/pdf` 适配器退成兼容回退。
+  - 主要改哪里：
+    - `packages/indexer/src/parser/parser-router.ts`
+    - `packages/indexer/src/parser/native-complex-parser-adapter.ts`
+    - `packages/indexer/src/parser/native-parser-bridge.ts`
+    - `apps/desktop/src-tauri/src/lib.rs`
+  - 实际结果：
+    - `createDefaultParserAdapters()` 已把 `NativeComplexParserAdapter` 提前到复杂解析链前面
+    - `NativeComplexParserAdapter` 现在会通过桌面原生 CLI 执行复杂文档解析
+    - `parse-file` CLI 分支已兼容 `filePath` / `extension` 形态，避免原生 parser 桥 payload 继续错配
+  - 怎么验证：
+    - `pnpm --filter @x-file/indexer build`
+    - `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml`（当前工作区资源目录缺失会导致该命令失败，需在正式资源目录齐全后复核）
+
+- [x] AR. 原生 parser 结果契约单测补齐
+  - 这一步到底做什么：不给 native parser 再停留在“能跑 parse-file”层面；直接补 Rust 单测，钉住 `docx/xlsx/pptx/pdf` 的 `parser/title/text/structured/stats` 契约。
+  - 做完你能看到什么：`apps/desktop/src-tauri/src/native_index.rs` 已包含四类最小样本测试，原生 parser 结果是否可替代 Node 主链会变成可执行证据，而不是口头判断。
+  - 主要改哪里：
+    - `apps/desktop/src-tauri/src/native_index.rs`
+  - 实际结果：
+    - 已新增最小 `docx/xlsx/pptx/pdf` 解析样本构造与断言
+    - 断言覆盖 `parser`、`title/text`、`structured.stats`
+    - 已直接复用现有 `x-file-library-engine` 资源内容补齐 `apps/desktop/src-tauri/resources/x-file-server` 测试资源形态，不额外造轮子
+    - Rust 原生 parser 契约测试现已在本地真正跑通
+  - 怎么验证：
+    - `cargo test parser_payload_matches_default_contract --manifest-path apps/desktop/src-tauri/Cargo.toml`
+    - `cargo test native_ --manifest-path apps/desktop/src-tauri/Cargo.toml`
+
+- [x] AS. 桌面资源测试前置补齐并复核原生 parser 主链
+  - 这一步到底做什么：把 `resources/x-file-server` 这类桌面测试前置条件直接从现有 X-File 资源中迁移补齐，保证资源内容不自造、不改样式，再用它把原生 parser 测试真正跑通。
+  - 做完你能看到什么：桌面 crate 不再因为缺少 `resources/x-file-server` 卡死；`docx/xlsx/pptx/pdf` 默认复杂 parser 主链具备真实原生测试证据。
+  - 主要改哪里：
+    - `apps/desktop/src-tauri/resources/x-file-server/*`
+    - `scripts/verify-desktop.mjs`
+    - `apps/desktop/src-tauri/src/native_index.rs`
+  - 实际结果：
+    - 已基于现有 `x-file-library-engine` 资源目录直接迁移补齐 `x-file-server` 测试资源目录
+    - `verify-desktop preflight` 已恢复通过
+    - `read_zip_text_entries(...)` 已修复为同时读取 `.xml` 与 `.xml.rels`，补上原生 `xlsx/pptx` parser 的真实缺口
+    - `docx/xlsx/pptx/pdf` 四类原生 parser 契约测试已全部通过
+  - 怎么验证：
+    - `cargo test parser_payload_matches_default_contract --manifest-path apps/desktop/src-tauri/Cargo.toml`
+    - `cargo test native_ --manifest-path apps/desktop/src-tauri/Cargo.toml`
     - `node scripts/verify-desktop.mjs --platform macos --mode preflight`

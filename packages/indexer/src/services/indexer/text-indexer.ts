@@ -4,12 +4,13 @@ import type { RuntimeConfig } from "../../types/runtime-config.js";
 import fs from "node:fs";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
-import { DocumentParser } from "../../parser/document-parser.js";
-import { ParserSkipRepository } from "../../parser/parser-skip-repository.js";
-import { CatalogRepository } from "../../repositories/catalog-repository.js";
+import {
+  createDefaultDocumentParseExecutor,
+  type DocumentParseExecutor,
+} from "../../parser/document-parser.js";
+import type { ParseSkip } from "../../parser/parser-adapter.js";
 import {
   type ActiveIndexedFileState,
-  CatalogWriteRepository,
   type IndexedDocumentBatchEntry,
 } from "../../repositories/catalog-write-repository.js";
 import { FileScanner, type FileScanResult } from "../../scanner/file-scanner.js";
@@ -20,6 +21,20 @@ import type { TagAssignment } from "../../tagging/simple-tag-inference.js";
 import { DirtyScopeResolver, type DirtyScope } from "../dirty/dirty-scope-resolver.js";
 import { logLibraryIndexerRss } from "../../utils/rss-log.js";
 import { throwIfAborted, yieldToEventLoop } from "../../utils/abort.js";
+import type {
+  LibraryIndexerDatabaseDriver,
+  LibraryIndexerDatabaseDriverKind,
+} from "../../sqlite/open-database.js";
+import {
+  createSqliteTextIndexCatalogStore,
+  type TextIndexCatalogReadStore,
+  type TextIndexCatalogStore,
+  type TextIndexCatalogWriteStore,
+} from "./text-index-catalog-store.js";
+import {
+  resolveDefaultTextIndexExecutor,
+} from "./text-index-executor-registry.js";
+import type { ExportDocumentRecord } from "../../repositories/catalog-repository.js";
 
 export interface TextIndexResult {
   scannedCount: number;
@@ -82,6 +97,38 @@ export interface TextIndexProgress {
   maxConcurrency: number;
 }
 
+export interface TextIndexerDependencies {
+  dbDriver?: LibraryIndexerDatabaseDriver;
+  catalogStore?: TextIndexCatalogStore;
+  readStore?: TextIndexCatalogReadStore;
+  writeStore?: TextIndexCatalogWriteStore;
+  dirtyScopeResolver?: DirtyScopeResolver;
+  parser?: TextIndexParser;
+}
+
+export type TextIndexParser = Pick<DocumentParseExecutor, "parseWithOutcome">;
+export type TextIndexExecutor = (
+  options: RunTextIndexExecutorOptions
+) => Promise<TextIndexResult>;
+
+export interface RunTextIndexExecutorOptions {
+  config: RuntimeConfig;
+  targetPath?: string;
+  allowedExtensionsOverride?: string[];
+  reconcileMode?: "scope" | "none";
+  collectChangedPaths?: boolean;
+  dirtyScopeTrigger?: "full" | "incremental";
+  signal?: AbortSignal;
+  onProgress?: (progress: TextIndexProgress) => void;
+  dbDriver?: LibraryIndexerDatabaseDriver;
+  dbDriverKind?: LibraryIndexerDatabaseDriverKind;
+  parser?: TextIndexParser;
+  catalogStore?: TextIndexCatalogStore;
+  readStore?: TextIndexCatalogReadStore;
+  writeStore?: TextIndexCatalogWriteStore;
+  dirtyScopeResolver?: DirtyScopeResolver;
+}
+
 const RSS_PROGRESS_DOCUMENT_INTERVAL = 2000;
 const RSS_PROGRESS_BATCH_INTERVAL = 10;
 const LARGE_FILE_SKIP_REASON = "file_too_large";
@@ -122,7 +169,10 @@ function resolveReconcileScope(rootDir: string, targetPath?: string): ReconcileS
  * 第二阶段补上 Dirty Scope 计算，为 watcher 和增量 export 打地基。
  */
 export class TextIndexer {
-  constructor(private readonly config: RuntimeConfig) {}
+  constructor(
+    private readonly config: RuntimeConfig,
+    private readonly dependencies: TextIndexerDependencies = {},
+  ) {}
 
   async index(
     targetPath?: string,
@@ -140,15 +190,23 @@ export class TextIndexer {
       allowedExtensions: options.allowedExtensionsOverride ?? this.config.allowedExtensions,
       includedHiddenPaths: this.config.includedHiddenPaths,
     });
-    const parser = new DocumentParser({ config: this.config });
+    const parser = this.dependencies.parser ?? createDefaultDocumentParseExecutor({
+      config: this.config,
+    });
     const tagger = new SimpleTagInferenceEngine();
-    const writer = new CatalogWriteRepository(this.config.dbPath);
-    const repository = new CatalogRepository(this.config.dbPath);
-    const skipRepository = new ParserSkipRepository(this.config.dbPath);
+  const store = this.dependencies.catalogStore ?? createSqliteTextIndexCatalogStore({
+      dbPath: this.config.dbPath,
+      dbDriver: this.dependencies.dbDriver ?? null,
+    });
+    const readStore = this.dependencies.readStore ?? store;
+    const writeStore = this.dependencies.writeStore ?? store;
+    const dirtyScopeResolver = this.dependencies.dirtyScopeResolver ?? new DirtyScopeResolver({
+      listExportDocumentsByPaths: (paths: string[]) => readStore.listExportDocumentsByPaths(paths),
+    });
     const estimatedTotalCount = targetPath
       ? null
       : (() => {
-        const value = writer.countActiveFiles();
+        const value = readStore.countActiveFiles();
         return value > 0 ? value : null;
       })();
     const runObservedAt = new Date().toISOString();
@@ -166,6 +224,7 @@ export class TextIndexer {
     }> = [];
     const seenPaths = options.reconcileMode === "none" ? null : new Set<string>();
     const successEntries: IndexedDocumentBatchEntry[] = [];
+    const changedDocuments: ExportDocumentRecord[] = [];
     const skippedEntries: Array<{
       file: FileScanResult;
       adapter: string;
@@ -257,7 +316,7 @@ export class TextIndexer {
         return;
       }
       const t0 = performance.now();
-      writer.batchUpsertDocuments(successEntries, runObservedAt);
+      writeStore.batchUpsertDocuments(successEntries, runObservedAt);
       writeIndexedMs += performance.now() - t0;
       successBatchCount += 1;
       successEntries.length = 0;
@@ -269,7 +328,7 @@ export class TextIndexer {
         return;
       }
       const t0 = performance.now();
-      writer.batchUpsertParseFailures(failureEntries, runObservedAt);
+      writeStore.batchUpsertParseFailures(failureEntries, runObservedAt);
       writeFailureMs += performance.now() - t0;
       failureBatchCount += 1;
       failureEntries.length = 0;
@@ -281,7 +340,7 @@ export class TextIndexer {
         return;
       }
       const t0 = performance.now();
-      writer.batchMarkSkippedDocuments(skippedEntries, runObservedAt);
+      writeStore.batchMarkSkippedDocuments(skippedEntries, runObservedAt);
       writeSkippedMs += performance.now() - t0;
       skipBatchCount += 1;
       skippedEntries.length = 0;
@@ -393,6 +452,15 @@ export class TextIndexer {
           tags: result.tags,
           derivedTags: result.derivedTags,
         });
+        changedDocuments.push({
+          documentId: "",
+          path: result.file.relativePath,
+          title: result.document.title,
+          summary: result.document.summary,
+          tags: result.tags.map((item) => item.tagPath),
+          derivedTags: result.derivedTags.map((item) => item.tagPath),
+          mtime: result.file.mtime,
+        });
         indexedCount += 1;
         if (collectChangedPaths) {
           indexedPaths.push(result.file.relativePath);
@@ -419,7 +487,7 @@ export class TextIndexer {
           message: result.message,
         });
         const skipCatalogStartedAt = performance.now();
-        const skipRecord = skipRepository.record({
+        const skipRecord = writeStore.recordSkip({
           adapter: result.adapter,
           reasonCode: result.reasonCode,
           extension: result.file.extension,
@@ -475,8 +543,7 @@ export class TextIndexer {
     };
 
     const scanStartedAt = performance.now();
-    writer.beginSession();
-    skipRepository.beginSession();
+    writeStore.beginSession();
     try {
       const iterator = scanner.scanIterator(targetPath, options.signal);
       while (true) {
@@ -491,7 +558,7 @@ export class TextIndexer {
         scannedCount += 1;
         seenPaths?.add(normalizeRelativePath(file.relativePath));
         maybeLogParseProgress();
-        const existing = writer.getActiveIndexedFileState(file.relativePath);
+        const existing = readStore.getActiveIndexedFileState(file.relativePath);
         if (isUnchangedFile(file, existing)) {
           unchangedCount += 1;
           emitProgress();
@@ -528,8 +595,7 @@ export class TextIndexer {
       flushFailures();
       emitProgress();
     } finally {
-      skipRepository.endSession();
-      writer.endSession();
+      writeStore.endSession();
     }
     cleanupMs = 0;
     const scanAndParseMs = performance.now() - scanStartedAt;
@@ -550,22 +616,24 @@ export class TextIndexer {
     if ((options.reconcileMode ?? "scope") !== "none") {
       throwIfAborted(options.signal, "事务文档库索引已取消");
       const reconcileStartedAt = performance.now();
-      reconcile = writer.reconcileScope(
-        resolveReconcileScope(this.config.rootDir, targetPath),
-        runObservedAt,
-        { seenPaths: seenPaths ?? undefined }
-      );
+      const reconcileScope = resolveReconcileScope(this.config.rootDir, targetPath);
+      const activeFiles = readStore.listActiveFiles(reconcileScope);
+      const candidatePaths = activeFiles
+        .filter((item) => !seenPaths?.has(item.path))
+        .map((item) => item.path);
+      reconcile = writeStore.deleteActiveFilesByPaths(candidatePaths, runObservedAt);
       reconcileMs = performance.now() - reconcileStartedAt;
     }
 
     throwIfAborted(options.signal, "事务文档库索引已取消");
     const dirtyScopeStartedAt = performance.now();
-    const dirtyScope = new DirtyScopeResolver(repository).resolve({
+    const dirtyScope = dirtyScopeResolver.resolve({
       targetPath,
       indexedPaths: collectChangedPaths ? indexedPaths : [],
       skippedPaths: collectChangedPaths ? skippedPaths : [],
       deletedPaths: reconcile.deletedPaths,
       failedPaths: collectChangedPaths ? failedPaths : [],
+      changedDocuments,
       triggerOverride: options.dirtyScopeTrigger,
     });
     const dirtyScopeMs = performance.now() - dirtyScopeStartedAt;
@@ -633,4 +701,28 @@ export class TextIndexer {
       },
     };
   }
+}
+
+async function executeTextIndexInProcess(
+  options: RunTextIndexExecutorOptions,
+): Promise<TextIndexResult> {
+  return new TextIndexer(options.config, {
+    dbDriver: options.dbDriver,
+    catalogStore: options.catalogStore,
+    readStore: options.readStore,
+    writeStore: options.writeStore,
+    dirtyScopeResolver: options.dirtyScopeResolver,
+    parser: options.parser,
+  }).index(options.targetPath, {
+    allowedExtensionsOverride: options.allowedExtensionsOverride,
+    reconcileMode: options.reconcileMode,
+    collectChangedPaths: options.collectChangedPaths,
+    dirtyScopeTrigger: options.dirtyScopeTrigger,
+    signal: options.signal,
+    onProgress: options.onProgress,
+  });
+}
+
+export async function executeTextIndex(options: RunTextIndexExecutorOptions): Promise<TextIndexResult> {
+  return resolveDefaultTextIndexExecutor(executeTextIndexInProcess)(options);
 }

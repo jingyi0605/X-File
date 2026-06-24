@@ -46,8 +46,43 @@ describe("LibraryPage 高风险交互", () => {
     const { LibraryPage } = await import("../LibraryPage");
     render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
 
-    expect(await screen.findByDisplayValue(defaultRootDir)).toBeInTheDocument();
+    expect(await screen.findByText("先决定这台实例扮演什么角色")).toBeInTheDocument();
+    expect(await screen.findByText("本地模式", { selector: ".settings-runtime-badge" })).toBeInTheDocument();
+    expect(await screen.findByText("镜像模式", { selector: ".settings-runtime-badge" })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "继续配置本地模式" }));
+    expect(screen.getByText("绑定本地真实源目录")).toBeInTheDocument();
+    expect(screen.getByDisplayValue(defaultRootDir)).toBeInTheDocument();
     expect(screen.getByText(new RegExp(`默认资料库根目录是 ${defaultRootDir.replaceAll("/", "\\/")}`))).toBeInTheDocument();
+  });
+
+  it("初始化页在镜像模式下会先展示源端连接步骤", async () => {
+    libraryApiMock.getLibrarySnapshot.mockResolvedValue(
+      createLibrarySnapshot({
+        binding: null,
+        defaultRootDir: "/Users/test/X-File",
+        requiresInitialization: true,
+      }),
+    );
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(
+      <LibraryPage
+        onOpenSettings={vi.fn()}
+        platformData={platformData}
+        runtimeConfig={{
+          mode: "mirror",
+          remoteApiBaseUrl: "http://127.0.0.1:17321",
+          localRootDir: "/Users/test/X-File-Mirror",
+          updatedAt: "2026-06-16T00:00:00.000Z",
+        }}
+      />,
+    );
+
+    expect(await screen.findByText("连接源端并设置本机镜像目录")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("http://127.0.0.1:17321")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("/Users/test/X-File-Mirror")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "保存镜像连接" })).toBeInTheDocument();
   });
 
   it("文档名称显示真实文件名，而不是摘要标题", async () => {
@@ -216,10 +251,77 @@ describe("LibraryPage 高风险交互", () => {
     fireEvent.contextMenu(item, { clientX: 10, clientY: 10 });
     await userEvent.click(await screen.findByRole("menuitem", { name: "标签" }));
 
-    const recommendations = await screen.findByLabelText("推荐标签");
-    const buttons = within(recommendations).getAllByRole("button", { name: /分配推荐标签/ });
+    const dialog = await screen.findByRole("dialog", { name: "分配标签" });
+    const recommendationsTitle = await within(dialog).findByText("推荐标签");
+    const recommendations = recommendationsTitle.closest(".affairs-document-tag-recommendations");
+    expect(recommendations).not.toBeNull();
+
+    const buttons = within(recommendations as HTMLElement).getAllByRole("button", { name: /分配推荐标签/ });
     expect(buttons).toHaveLength(8);
-    expect(within(recommendations).queryByText("项目/已分配")).not.toBeInTheDocument();
+    expect(within(recommendations as HTMLElement).queryByText("项目/已分配")).not.toBeInTheDocument();
+  });
+
+  it("调试命中面板默认收起，支持展开、收起并复制调试结果", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
+
+    const toggle = await screen.findByTestId("library-native-debug-toggle");
+    expect(toggle).toBeInTheDocument();
+    expect(screen.queryByTestId("library-native-debug-panel")).not.toBeInTheDocument();
+
+    await userEvent.click(toggle);
+
+    const panel = await screen.findByTestId("library-native-debug-panel");
+    expect(within(panel).getByText("Native 调试命中")).toBeInTheDocument();
+
+    await userEvent.click(within(panel).getByRole("button", { name: "复制调试结果" }));
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(writeText.mock.calls[0]?.[0]).toContain("\"runtime\"");
+    expect(writeText.mock.calls[0]?.[0]).toContain("\"channels\"");
+
+    await userEvent.click(within(panel).getByRole("button", { name: "收起调试命中" }));
+    expect(screen.queryByTestId("library-native-debug-panel")).not.toBeInTheDocument();
+    expect(screen.getByTestId("library-native-debug-toggle")).toBeInTheDocument();
+  });
+
+  it("已有内容时刷新不会把主区域整块切成骨架", async () => {
+    libraryApiMock.getLibrarySnapshot.mockResolvedValue(
+      createLibrarySnapshot({
+        status: createIndexStatus({
+          state: "running",
+          runningTaskId: "task-refresh",
+          runningStage: "index",
+        }),
+      }),
+    );
+    libraryApiMock.listLibraryDocuments
+      .mockResolvedValueOnce(createDocumentList([createDocumentRecord({ path: "docs/初始文件.md" })]))
+      .mockResolvedValueOnce(createDocumentList([createDocumentRecord({ path: "docs/刷新后文件.md" })]));
+    libraryApiMock.requestLibraryRefresh.mockResolvedValue({
+      taskId: "task-refresh",
+      deduped: false,
+      status: createIndexStatus({
+        state: "running",
+        runningTaskId: "task-refresh",
+        runningStage: "index",
+      }),
+    });
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
+
+    expect(await screen.findByText("初始文件.md")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "刷新文档库" }));
+
+    expect(screen.queryByText("正在加载")).not.toBeInTheDocument();
+    expect(await screen.findByText("刷新后文件.md")).toBeInTheDocument();
   });
 });
 
@@ -272,6 +374,20 @@ function createLibraryStateMock(
     selectedDocument: null,
     selectedDocuments: [],
     selectedFolderEntries: [],
+    debug: {
+      enabled: true,
+      runtime: "web",
+      mode: "local",
+      nativeBridgeEligible: true,
+      nativeBridgeAvailable: false,
+      watcher: { transport: "idle", detail: "未尝试", updatedAt: null },
+      health: { transport: "idle", detail: "未读取", updatedAt: null },
+      snapshot: { transport: "http", detail: "测试 mock", updatedAt: null },
+      documents: { transport: "http", detail: "测试 mock", updatedAt: null },
+      files: { transport: "http", detail: "测试 mock", updatedAt: null },
+      preview: { transport: "idle", detail: "未读取", updatedAt: null },
+      refresh: { transport: "idle", detail: "未触发", updatedAt: null },
+    },
     setViewState: vi.fn(),
     bindLibrary: vi.fn(),
     reload: vi.fn(),

@@ -4,7 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { runLibraryIndexOnce } from "@x-file/indexer";
+import {
+  createLibraryRuntimeConfig,
+  prepareLibraryIndexRuntime,
+  runLibraryExportOnce,
+  runLibraryIndexOnce,
+  runLibraryTextIndex,
+} from "@x-file/indexer";
 
 import type { LibraryBinding, LibraryIndexStatus } from "@x-file/shared";
 
@@ -123,4 +129,139 @@ test("增量索引会返回限定 targetPath 的 dirty scope", async () => {
   assert.deepEqual(result.index.dirtyScope.changedPaths, ["docs/a.md"]);
   assert.deepEqual(result.index.dirtyScope.dirtyDirectories, ["docs"]);
   assert.equal(result.index.deletedCount, 0);
+});
+
+test("export 可以从 full worker 中拆出并独立执行", async () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "x-file-export-only-"));
+  fs.mkdirSync(path.join(rootDir, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(rootDir, "docs", "a.md"), "# A", "utf8");
+  fs.writeFileSync(path.join(rootDir, "docs", "b.md"), "# B", "utf8");
+
+  const prepared = prepareLibraryIndexRuntime({
+    rootDir,
+    allowedExtensions: [".md"],
+  });
+  const index = await runLibraryTextIndex({
+    config: prepared.config,
+    allowedExtensions: [".md"],
+  });
+  const snapshotPath = path.join(rootDir, ".ai-index", "runtime", "export-catalog-snapshot.json");
+  assert.equal(fs.existsSync(snapshotPath), true);
+  const exportResult = await runLibraryExportOnce({
+    config: prepared.config,
+    dirtyScope: index.dirtyScope,
+    reason: "export_only_test",
+  });
+
+  assert.equal(fs.existsSync(path.join(rootDir, ".ai-index", "exports", "manifest.json")), true);
+  assert.equal(exportResult.resolvedDataSourceMode, "snapshot");
+  assert.equal(exportResult.requestedDataSourceMode, "snapshot");
+  assert.equal(exportResult.exportResult.outputDir, path.join(rootDir, ".ai-index", "exports"));
+
+  const reader = new LibraryExportReader();
+  const binding = createBinding(rootDir);
+  const documents = reader.listDocuments(binding, {
+    browseMode: "folder",
+    selectedFolderPath: "docs",
+    offset: 0,
+    limit: 10,
+  });
+  assert.deepEqual(documents.items.map((document) => document.path), ["docs/a.md", "docs/b.md"]);
+});
+
+test("export 可以优先消费 index 阶段写出的 catalog snapshot", async () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "x-file-export-snapshot-"));
+  fs.mkdirSync(path.join(rootDir, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(rootDir, "docs", "a.md"), "# A", "utf8");
+  fs.writeFileSync(path.join(rootDir, "docs", "b.md"), "# B", "utf8");
+
+  const prepared = prepareLibraryIndexRuntime({
+    rootDir,
+    allowedExtensions: [".md"],
+  });
+  const index = await runLibraryTextIndex({
+    config: prepared.config,
+    allowedExtensions: [".md"],
+  });
+  const snapshotPath = path.join(rootDir, ".ai-index", "runtime", "export-catalog-snapshot.json");
+  assert.equal(fs.existsSync(snapshotPath), true);
+  fs.unlinkSync(prepared.config.dbPath);
+
+  const config = createLibraryRuntimeConfig({
+    rootDir,
+    allowedExtensions: [".md"],
+  });
+  const exportResult = await runLibraryExportOnce({
+    config,
+    dirtyScope: index.dirtyScope,
+    reason: "export_snapshot_test",
+    dataSourceMode: "snapshot",
+  });
+
+  assert.equal(fs.existsSync(path.join(rootDir, ".ai-index", "exports", "manifest.json")), true);
+  assert.equal(exportResult.resolvedDataSourceMode, "snapshot");
+  assert.equal(exportResult.requestedDataSourceMode, "snapshot");
+  assert.equal(exportResult.exportResult.outputDir, path.join(rootDir, ".ai-index", "exports"));
+
+  const reader = new LibraryExportReader();
+  const documents = reader.listDocuments(createBinding(rootDir), {
+    browseMode: "folder",
+    selectedFolderPath: "docs",
+    offset: 0,
+    limit: 10,
+  });
+  assert.deepEqual(documents.items.map((document) => document.path), ["docs/a.md", "docs/b.md"]);
+});
+
+test("snapshot 主路径缺失时 export-only 会报出明确错误，不做静默 sqlite 回退", async () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "x-file-export-snapshot-required-"));
+  fs.mkdirSync(path.join(rootDir, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(rootDir, "docs", "a.md"), "# A", "utf8");
+
+  const prepared = prepareLibraryIndexRuntime({
+    rootDir,
+    allowedExtensions: [".md"],
+  });
+  const index = await runLibraryTextIndex({
+    config: prepared.config,
+    allowedExtensions: [".md"],
+  });
+  fs.rmSync(path.join(rootDir, ".ai-index", "runtime", "export-catalog-snapshot.json"), { force: true });
+
+  await assert.rejects(
+    runLibraryExportOnce({
+      config: prepared.config,
+      dirtyScope: index.dirtyScope,
+      reason: "export_snapshot_required_test",
+      dataSourceMode: "snapshot",
+    }),
+    /export catalog snapshot 不存在/,
+  );
+});
+
+test("只有显式 auto 模式才会在 snapshot 缺失时退回 sqlite", async () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "x-file-export-auto-fallback-"));
+  fs.mkdirSync(path.join(rootDir, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(rootDir, "docs", "a.md"), "# A", "utf8");
+
+  const prepared = prepareLibraryIndexRuntime({
+    rootDir,
+    allowedExtensions: [".md"],
+  });
+  const index = await runLibraryTextIndex({
+    config: prepared.config,
+    allowedExtensions: [".md"],
+  });
+  fs.rmSync(path.join(rootDir, ".ai-index", "runtime", "export-catalog-snapshot.json"), { force: true });
+
+  const exportStage = await runLibraryExportOnce({
+    config: prepared.config,
+    dirtyScope: index.dirtyScope,
+    reason: "export_auto_fallback_test",
+    dataSourceMode: "auto",
+  });
+
+  assert.equal(exportStage.requestedDataSourceMode, "auto");
+  assert.equal(exportStage.resolvedDataSourceMode, "sqlite");
+  assert.equal(fs.existsSync(path.join(rootDir, ".ai-index", "exports", "manifest.json")), true);
 });

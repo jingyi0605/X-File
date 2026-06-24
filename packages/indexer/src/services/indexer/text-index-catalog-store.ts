@@ -18,18 +18,22 @@ import {
 } from "../export/export-data-source.js";
 import type { ParserSkipCatalogRecord } from "../../parser/parser-skip-repository.js";
 import {
+  createRuntimeTextIndexStatusStore,
   createSqliteTextIndexStatusStore,
   type TextIndexStatusStore,
 } from "./text-index-status-store.js";
 import {
+  createRuntimeTextIndexDocumentStore,
   createSqliteTextIndexDocumentStore,
   type TextIndexDocumentStore,
 } from "./text-index-document-store.js";
 import {
+  createRuntimeChunkWriteStore,
   createSqliteChunkWriteStore,
   type ChunkWriteStore,
 } from "./chunk-write-store.js";
 import {
+  createRuntimeTextIndexTagStore,
   createSqliteTextIndexTagStore,
   type TextIndexTagStore,
 } from "./text-index-tag-store.js";
@@ -78,6 +82,7 @@ export interface TextIndexCatalogStore {
   ): { deletedCount: number; deletedPaths: string[] };
   listExportDocumentsByPaths(paths: string[]): ExportDocumentRecord[];
   deleteActiveFilesByPaths(relativePaths: string[], deletedAt?: string): { deletedCount: number; deletedPaths: string[] };
+  listParserSkips(limit?: number): ParserSkipCatalogRecord[];
 }
 
 /**
@@ -112,6 +117,7 @@ export interface TextIndexCatalogWriteStore {
   ): { deletedCount: number; deletedPaths: string[] };
   deleteActiveFilesByPaths(relativePaths: string[], deletedAt?: string): { deletedCount: number; deletedPaths: string[] };
   writeRuntimeIndexStateSnapshot?(config: RuntimeConfig): string;
+  listParserSkips(limit?: number): ParserSkipCatalogRecord[];
 }
 
 export interface CreateTextIndexCatalogStoreOptions {
@@ -129,12 +135,20 @@ export interface DefaultRuntimeBackedTextIndexStores {
   writeStore: TextIndexCatalogWriteStore;
 }
 
+export interface DefaultRuntimeBackedTextIndexStoreOptions {
+  sqliteMirror?: boolean;
+}
+
 function resolveRuntimeActiveFileStateSnapshotPath(config: RuntimeConfig): string {
   return path.join(config.indexDir, "runtime", "active-file-state-snapshot.json");
 }
 
 function resolveRuntimeIndexStateSnapshotPath(config: RuntimeConfig): string {
   return path.join(config.indexDir, "runtime", "index-state.json");
+}
+
+function resolveRuntimeTagStateSnapshotPath(config: RuntimeConfig): string {
+  return path.join(config.indexDir, "runtime", "tag-state-snapshot.json");
 }
 
 function readJsonFile<T>(filePath: string): T | null {
@@ -261,6 +275,9 @@ export function createSqliteTextIndexCatalogStore(
   const tagStore = options.tagStore ?? createSqliteTextIndexTagStore({
     dbPath: options.dbPath,
     dbDriver: options.dbDriver ?? null,
+    runtimeTagStateSnapshotPath: resolveRuntimeTagStateSnapshotPath({
+      indexDir: path.join(path.dirname(options.dbPath), ".."),
+    } as RuntimeConfig),
   });
 
   return {
@@ -301,10 +318,21 @@ export function createSqliteTextIndexCatalogStore(
       const candidatePaths = activeFiles
         .filter((item) => !seenPaths.has(item.path))
         .map((item) => item.path);
-      return statusStore.deleteActiveFilesByPaths(candidatePaths, observedAt);
+      const result = statusStore.deleteActiveFilesByPaths(candidatePaths, observedAt);
+      documentStore.deleteDocumentsByPaths?.(result.deletedPaths);
+      chunkStore.deleteChunksByPaths?.(result.deletedPaths);
+      tagStore.deleteTagsByPaths?.(result.deletedPaths);
+      return result;
     },
     deleteActiveFilesByPaths(relativePaths: string[], deletedAt?: string): { deletedCount: number; deletedPaths: string[] } {
-      return statusStore.deleteActiveFilesByPaths(relativePaths, deletedAt);
+      const result = statusStore.deleteActiveFilesByPaths(relativePaths, deletedAt);
+      documentStore.deleteDocumentsByPaths?.(result.deletedPaths);
+      chunkStore.deleteChunksByPaths?.(result.deletedPaths);
+      tagStore.deleteTagsByPaths?.(result.deletedPaths);
+      return result;
+    },
+    listParserSkips(limit = 200): ParserSkipCatalogRecord[] {
+      return parserSkipStore.listRecent(limit);
     },
     listExportDocumentsByPaths(paths: string[]): ExportDocumentRecord[] {
       return repository.listExportDocumentsByPaths(paths);
@@ -363,6 +391,9 @@ export function createSqliteTextIndexCatalogWriteStore(
     },
     deleteActiveFilesByPaths(relativePaths: string[], deletedAt?: string): { deletedCount: number; deletedPaths: string[] } {
       return store.deleteActiveFilesByPaths(relativePaths, deletedAt);
+    },
+    listParserSkips(limit = 200): ParserSkipCatalogRecord[] {
+      return store.listParserSkips(limit);
     },
   };
 }
@@ -466,6 +497,9 @@ export function createRuntimeMirroredTextIndexCatalogWriteStore(
       }
       persist();
       return result;
+    },
+    listParserSkips(limit = 200): ParserSkipCatalogRecord[] {
+      return baseStore.listParserSkips(limit);
     },
     writeRuntimeIndexStateSnapshot(configArg: RuntimeConfig = config): string {
       if (configArg !== config) {
@@ -580,14 +614,49 @@ export function createRuntimePreferredTextIndexCatalogReadStore(
 export function createDefaultRuntimeBackedTextIndexStores(
   config: RuntimeConfig,
   dbDriver: LibraryIndexerDatabaseDriver | null = null,
+  options: DefaultRuntimeBackedTextIndexStoreOptions = {},
 ): DefaultRuntimeBackedTextIndexStores {
+  const sqliteMirror = options.sqliteMirror ?? false;
+  const sqliteDocumentStore = createSqliteTextIndexDocumentStore({
+    dbPath: config.dbPath,
+    dbDriver,
+  });
+  const sqliteChunkStore = createSqliteChunkWriteStore({
+    dbPath: config.dbPath,
+    dbDriver,
+  });
+  const sqliteTagStore = createSqliteTextIndexTagStore({
+    dbPath: config.dbPath,
+    dbDriver,
+    runtimeTagStateSnapshotPath: resolveRuntimeTagStateSnapshotPath(config),
+  });
   const sqliteReadStore = createSqliteTextIndexCatalogReadStore({
+    dbPath: config.dbPath,
+    dbDriver,
+  });
+  const sqliteStatusStore = createSqliteTextIndexStatusStore({
     dbPath: config.dbPath,
     dbDriver,
   });
   const sqliteWriteStore = createSqliteTextIndexCatalogWriteStore({
     dbPath: config.dbPath,
     dbDriver,
+    statusStore: createRuntimeTextIndexStatusStore(
+      config,
+      sqliteMirror ? sqliteStatusStore : null,
+    ),
+    documentStore: createRuntimeTextIndexDocumentStore(
+      config,
+      sqliteMirror ? sqliteDocumentStore : null,
+    ),
+    chunkStore: createRuntimeChunkWriteStore(
+      config,
+      sqliteMirror ? sqliteChunkStore : null,
+    ),
+    tagStore: createRuntimeTextIndexTagStore(
+      config,
+      sqliteMirror ? sqliteTagStore : null,
+    ),
   });
   return {
     readStore: createRuntimePreferredTextIndexCatalogReadStore(config, sqliteReadStore),

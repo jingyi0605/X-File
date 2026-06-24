@@ -5,9 +5,14 @@ import { APP_ERROR_CODES } from "../../errors/error-codes.js";
 import type { RuntimeConfig } from "../../types/runtime-config.js";
 import { loadRuntimeConfig } from "../../config/load-runtime-config.js";
 import { CatalogWriteRepository } from "../../repositories/catalog-write-repository.js";
-import { ExportBuilder } from "../export/export-builder.js";
+import { buildLibraryExport } from "../export/export-builder.js";
 import { AllowedExtensionsDiffService, type AllowedExtensionsDiffApplyResult } from "../indexer/allowed-extensions-diff-service.js";
-import { TextIndexer, type TextIndexResult } from "../indexer/text-indexer.js";
+import { executeTextIndex, type TextIndexResult } from "../indexer/text-indexer.js";
+import {
+  createDefaultRuntimeBackedTextIndexStores,
+  readRuntimeActiveFileStateSnapshot,
+} from "../indexer/text-index-catalog-store.js";
+import { refreshRuntimeActiveFileStateSnapshot } from "../../library-index-tool.js";
 
 const WATCHER_READY_META_KEY = "watcher.ready_after_initial_export";
 
@@ -91,9 +96,15 @@ export class WatchService {
   constructor(private readonly config: RuntimeConfig) {}
 
   private async runCycleAsync(targetPath?: string): Promise<WatchCycleResult> {
-    const indexer = new TextIndexer(this.config);
-    const indexResult = await indexer.index(targetPath);
-    const exportResult = await new ExportBuilder(this.config).build({ dirtyScope: indexResult.dirtyScope });
+    const stores = createDefaultRuntimeBackedTextIndexStores(this.config);
+    const indexResult = await executeTextIndex({
+      config: this.config,
+      readStore: stores.readStore,
+      writeStore: stores.writeStore,
+      targetPath,
+    });
+    refreshRuntimeActiveFileStateSnapshot(this.config, stores.readStore);
+    const exportResult = await buildLibraryExport(this.config, { dirtyScope: indexResult.dirtyScope });
 
     return {
       scopePath: targetPath,
@@ -151,13 +162,14 @@ export class WatchService {
       };
     }
 
-    const writer = new CatalogWriteRepository(this.config.dbPath);
     const manifest = readJsonFile<{ detail_shards?: unknown[] }>(path.join(this.config.exportDir, "manifest.json"));
-    const indexedDocumentCount = writer.countActiveIndexedDocuments();
+    const runtimeSnapshot = readRuntimeActiveFileStateSnapshot(this.config);
+    const indexedDocumentCount = Array.isArray(runtimeSnapshot?.files) ? runtimeSnapshot.files.length : 0;
     const exportedDocumentCount = Array.isArray(manifest?.detail_shards) ? manifest.detail_shards.length : 0;
     const exportIsStale = exportedDocumentCount < indexedDocumentCount;
     if (!options.targetPath && exportIsStale) {
-      const exportResult = await new ExportBuilder(this.config).build({ light: true });
+      const exportResult = await buildLibraryExport(this.config, { light: true });
+      const writer = new CatalogWriteRepository(this.config.dbPath);
       writer.setSchemaMeta(WATCHER_READY_META_KEY, new Date().toISOString());
       initialCycle.export = {
         metaShardCount: exportResult.metaShardCount,

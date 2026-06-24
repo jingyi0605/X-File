@@ -15,6 +15,7 @@ export interface ParserSkipStore {
   beginSession(): void;
   endSession(): void;
   record(input: ParserSkipRecordInput): ParserSkipCatalogRecord;
+  listRecent(limit?: number): ParserSkipCatalogRecord[];
 }
 
 function makeSkipKey(adapter: string, reasonCode: string, extension: string): string {
@@ -170,6 +171,33 @@ export function createSqliteParserSkipStore(input: {
           throw error;
         }
       });
+    },
+    listRecent(limit = 100): ParserSkipCatalogRecord[] {
+      const db = openConnection();
+      try {
+        const rows = db.prepare(`
+          SELECT skip_key, adapter, reason_code, extension, sample_paths_json, sample_count, total_count, last_message, first_seen_at, last_seen_at, last_run_at
+          FROM parser_skip_catalog
+          ORDER BY last_seen_at DESC, extension ASC
+          LIMIT ?
+        `).all(limit) as Array<Record<string, unknown>>;
+
+        return rows.map((row) => ({
+          skipKey: String(row.skip_key),
+          adapter: String(row.adapter),
+          reasonCode: String(row.reason_code),
+          extension: String(row.extension),
+          samplePaths: normalizeSamplePaths(String(row.sample_paths_json ?? "[]")),
+          sampleCount: Number(row.sample_count ?? 0),
+          totalCount: Number(row.total_count ?? 0),
+          lastMessage: row.last_message ? String(row.last_message) : null,
+          firstSeenAt: String(row.first_seen_at),
+          lastSeenAt: String(row.last_seen_at),
+          lastRunAt: String(row.last_run_at),
+        }));
+      } finally {
+        db.close();
+      }
     },
   };
 }

@@ -40,17 +40,33 @@ import {
   deleteLibraryTag,
   getDocumentTagDetails,
   getFolderTagDetails,
+  getLibraryBinding,
   getLibraryPreview,
+  getLibrarySnapshot,
   getLibraryTagRecomputeTask,
   listLibraryDocuments,
   listLibraryTagDetails,
   requestLibraryTagRecompute,
   saveDocumentTags,
   saveFolderTags,
+  saveLibraryBinding,
   updateLibraryTag,
 } from "../../api/library";
 import { toApiErrorMessage } from "../../api/http";
 import { t } from "../../i18n";
+import { normalizeBaseUrl } from "../../runtime/runtime-config";
+import {
+  getNativeLibraryPreview,
+  getNativeOnlyOfficePreview,
+  syncNativeSidebarLayout,
+} from "../../runtime/native-library-bridge";
+import {
+  beginMacOsTitlebarDragGesture,
+  canHandleMacOsTitlebarPointerGesture,
+  isDesktopWindowDragHandleTarget,
+  toggleDesktopWindowMaximize,
+} from "../../runtime/window-drag";
+import { updateRuntimeConfig } from "../../runtime/runtime-config-store";
 import { formatBytes, formatDateTime, getPathName } from "../../shared/format";
 import {
   DesktopModal,
@@ -61,6 +77,7 @@ import {
   ModalSection,
   ModalTag,
 } from "../../shared/modal";
+import { useTheme } from "../../shared/theme/theme";
 import { resolveDocumentVisual } from "./document-visual";
 import { useDocumentAssistant } from "../assistant/useDocumentAssistant";
 import type { DocumentAssistantContext } from "../assistant/useDocumentAssistant";
@@ -79,9 +96,12 @@ import {
 import { useLibraryState, type LibraryState } from "./useLibraryState";
 import { DocumentAssistantPanel } from "../assistant/components/DocumentAssistantPanel";
 import {
+  DEFAULT_DETAIL,
+  DEFAULT_SIDEBAR,
   WorkbenchPanelResizer,
   useResizablePanels,
 } from "./WorkbenchPanelResizer";
+import type { XFileRuntimeConfig } from "../../runtime/runtime-config-store";
 import {
   DEFAULT_FINDER_COLUMN_WIDTHS,
   FINDER_COLUMN_MIN_WIDTHS,
@@ -103,6 +123,35 @@ export interface WorkbenchPlatformData {
 interface LibraryPageProps {
   onOpenSettings: () => void;
   platformData: WorkbenchPlatformData;
+  runtimeConfig?: XFileRuntimeConfig;
+}
+
+const DEFAULT_RUNTIME_CONFIG: XFileRuntimeConfig = {
+  mode: "local",
+  remoteApiBaseUrl: "http://127.0.0.1:17321",
+  localRootDir: "",
+  updatedAt: new Date(0).toISOString(),
+};
+
+function readCssPixelValue(value: string): number {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function resolveMacOsUnifiedTitlebarGestureHeight(element: HTMLElement): number {
+  const styles = window.getComputedStyle(element);
+  const titlebarHeight = readCssPixelValue(styles.getPropertyValue("--desktop-macos-titlebar-height"));
+
+  return Math.max(titlebarHeight + 28, 56);
+}
+
+function isMacOsUnifiedTitlebarGesture(eventClientY: number, shellElement: HTMLElement): boolean {
+  const shellRect = shellElement.getBoundingClientRect();
+
+  return (
+    eventClientY >= shellRect.top &&
+    eventClientY <= shellRect.top + resolveMacOsUnifiedTitlebarGestureHeight(shellElement)
+  );
 }
 
 type LibraryDocumentEntry = Extract<LibraryEntry, { kind: "document" }>;
@@ -291,9 +340,12 @@ const SIMPLE_PINYIN_MAP: Record<string, string> = {
 export function LibraryPage({
   onOpenSettings,
   platformData,
+  runtimeConfig = DEFAULT_RUNTIME_CONFIG,
 }: LibraryPageProps) {
   const library = useLibraryState();
   const panels = useResizablePanels();
+  const { theme } = useTheme();
+  const workbenchShellRef = useRef<HTMLElement | null>(null);
   const binding = library.snapshot?.binding ?? null;
   const shouldShowInitialization = library.requiresInitialization || !binding;
   const shouldShowDisabled = Boolean(binding && !binding.enabled);
@@ -317,6 +369,111 @@ export function LibraryPage({
   const [tagManagerOpen, setTagManagerOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchDraft, setSearchDraft] = useState("");
+  const overlayMacOsTitlebar = platformData.runtimePlatform === "desktop"
+    && platformData.osFamily === "macos"
+    && platformData.overlayTitlebar;
+
+  useEffect(() => {
+    if (!overlayMacOsTitlebar) {
+      return;
+    }
+
+    const layout = shouldShowInitialization
+      ? {
+          leftWidth: 0,
+          rightWidth: 0,
+          leftCollapsed: true,
+          rightCollapsed: true,
+          prefersDarkAppearance: theme === "dark",
+          isResizing: false,
+        }
+      : shouldShowDisabled
+        ? {
+            leftWidth: DEFAULT_SIDEBAR,
+            rightWidth: DEFAULT_DETAIL,
+            leftCollapsed: false,
+            rightCollapsed: false,
+            prefersDarkAppearance: theme === "dark",
+            isResizing: false,
+          }
+        : {
+            leftWidth: panels.resolvedSidebarWidth,
+            rightWidth: panels.resolvedDetailWidth,
+            leftCollapsed: false,
+            rightCollapsed: false,
+            prefersDarkAppearance: theme === "dark",
+            isResizing: panels.isResizing,
+          };
+
+    void syncNativeSidebarLayout(layout).catch(() => undefined);
+  }, [
+    overlayMacOsTitlebar,
+    panels.isResizing,
+    panels.resolvedDetailWidth,
+    panels.resolvedSidebarWidth,
+    shouldShowDisabled,
+    shouldShowInitialization,
+    theme,
+  ]);
+
+  const handleUnifiedTitlebarMouseDownCapture = useCallback((event: ReactMouseEvent<HTMLElement>) => {
+    if (!overlayMacOsTitlebar) {
+      return;
+    }
+
+    const shellElement = workbenchShellRef.current;
+    if (!shellElement) {
+      return;
+    }
+
+    if (
+      !canHandleMacOsTitlebarPointerGesture(platformData, event.button, event.target)
+    ) {
+      return;
+    }
+
+    const explicitDragHandle = isDesktopWindowDragHandleTarget(event.target);
+    if (!explicitDragHandle && !isMacOsUnifiedTitlebarGesture(event.clientY, shellElement)) {
+      return;
+    }
+
+    event.preventDefault();
+
+    beginMacOsTitlebarDragGesture({
+      platform: platformData,
+      button: event.button,
+      target: event.target,
+      clientX: event.clientX,
+      clientY: event.clientY,
+    });
+  }, [overlayMacOsTitlebar, platformData]);
+
+  const handleUnifiedTitlebarDoubleClickCapture = useCallback((event: ReactMouseEvent<HTMLElement>) => {
+    if (!overlayMacOsTitlebar) {
+      return;
+    }
+
+    const shellElement = workbenchShellRef.current;
+    if (!shellElement) {
+      return;
+    }
+
+    if (
+      !canHandleMacOsTitlebarPointerGesture(platformData, event.button, event.target)
+    ) {
+      return;
+    }
+
+    const explicitDragHandle = isDesktopWindowDragHandleTarget(event.target);
+    if (!explicitDragHandle && !isMacOsUnifiedTitlebarGesture(event.clientY, shellElement)) {
+      return;
+    }
+
+    event.preventDefault();
+
+    void toggleDesktopWindowMaximize();
+  }, [overlayMacOsTitlebar, platformData]);
+
   function openLibraryViewer(entry: LibraryDocumentEntry): void {
     setViewerState({
       filePath: entry.path,
@@ -549,6 +706,7 @@ export function LibraryPage({
         library={library}
         onOpenSettings={onOpenSettings}
         platformData={platformData}
+        runtimeConfig={runtimeConfig}
       />
     );
   }
@@ -568,10 +726,14 @@ export function LibraryPage({
       className="app-shell workbench-shell xfile-workbench-shell"
       data-runtime-platform={platformData.runtimePlatform}
       data-os-family={platformData.osFamily}
-      data-overlay-titlebar={platformData.overlayTitlebar ? "true" : undefined}
+      data-overlay-titlebar={String(platformData.overlayTitlebar)}
+      ref={workbenchShellRef}
+      onMouseDownCapture={handleUnifiedTitlebarMouseDownCapture}
+      onDoubleClickCapture={handleUnifiedTitlebarDoubleClickCapture}
     >
       <section
         className="workbench-window xfile-workbench-window workbench-window-resizable"
+        data-overlay-titlebar={String(platformData.overlayTitlebar)}
         ref={panels.containerRef}
         style={
           panels.gridTemplateColumns
@@ -583,6 +745,7 @@ export function LibraryPage({
           library={library}
           onOpenSettings={onOpenSettings}
           onOpenTagManager={() => setTagManagerOpen(true)}
+          overlayMacOsTitlebar={overlayMacOsTitlebar}
         />
         <WorkbenchPanelResizer
           side="left"
@@ -600,6 +763,7 @@ export function LibraryPage({
           ) : null}
           <LibraryStage
             library={library}
+            platformData={platformData}
             onOpenSettings={onOpenSettings}
             onOpenContextMenu={(event, target) =>
               void handleOpenLibraryContextMenu(event, target)
@@ -626,6 +790,7 @@ export function LibraryPage({
         />
         <LibraryDetail
           library={library}
+          overlayMacOsTitlebar={overlayMacOsTitlebar}
           onRequestRename={(path) =>
             setPendingRename({ path, fileName: getPathName(path) })
           }
@@ -734,9 +899,12 @@ function LibraryDisabledPanel({
       className="app-shell workbench-shell xfile-workbench-shell"
       data-runtime-platform={platformData.runtimePlatform}
       data-os-family={platformData.osFamily}
-      data-overlay-titlebar={platformData.overlayTitlebar ? "true" : undefined}
+      data-overlay-titlebar={String(platformData.overlayTitlebar)}
     >
-      <section className="workbench-window xfile-workbench-window">
+      <section
+        className="workbench-window xfile-workbench-window"
+        data-overlay-titlebar={String(platformData.overlayTitlebar)}
+      >
         <aside className="workbench-sidebar affairs-layout-sidebar">
           <div className="affairs-sidebar-panel">
             <div className="xfile-sidebar-brand" aria-label={t("appTitle")}>
@@ -777,6 +945,9 @@ function LibraryDisabledPanel({
         </section>
         <LibraryDetail
           library={library}
+          overlayMacOsTitlebar={platformData.runtimePlatform === "desktop"
+            && platformData.osFamily === "macos"
+            && platformData.overlayTitlebar}
           onRequestRename={() => undefined}
           onRequestDelete={() => undefined}
           onRequestTagAssignment={() => undefined}
@@ -873,10 +1044,12 @@ function LibraryDesktopSidebar({
   library,
   onOpenSettings,
   onOpenTagManager,
+  overlayMacOsTitlebar,
 }: {
   library: LibraryState;
   onOpenSettings: () => void;
   onOpenTagManager: () => void;
+  overlayMacOsTitlebar: boolean;
 }) {
   const snapshot = library.snapshot;
   const selectedTagPath = library.viewState.selectedTagPath;
@@ -999,7 +1172,12 @@ function LibraryDesktopSidebar({
   return (
     <aside className="workbench-sidebar affairs-layout-sidebar">
       <div className="affairs-sidebar-panel">
-        <div className="xfile-sidebar-brand" aria-label={t("appTitle")}>
+        <div
+          className="xfile-sidebar-brand"
+          aria-label={t("appTitle")}
+          data-window-drag-handle={overlayMacOsTitlebar ? "xfile-sidebar-brand" : undefined}
+          data-tauri-drag-region={overlayMacOsTitlebar ? "" : undefined}
+        >
           <span className="xfile-sidebar-brand-icon" aria-hidden="true">
             {renderXFileBrandIcon()}
           </span>
@@ -1378,14 +1556,20 @@ function LibraryBindingPanel({
   library,
   onOpenSettings,
   platformData,
+  runtimeConfig,
 }: {
   library: LibraryState;
   onOpenSettings: () => void;
   platformData: WorkbenchPlatformData;
+  runtimeConfig: XFileRuntimeConfig;
 }) {
   const [rootDir, setRootDir] = useState("");
+  const [mirrorSourceRootDir, setMirrorSourceRootDir] = useState("");
+  const [mirrorLocalRootDir, setMirrorLocalRootDir] = useState(runtimeConfig.localRootDir);
+  const [remoteApiBaseUrl, setRemoteApiBaseUrl] = useState(runtimeConfig.remoteApiBaseUrl);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
   const [browserOpen, setBrowserOpen] = useState(false);
   const [browserLoading, setBrowserLoading] = useState(false);
   const [browserError, setBrowserError] = useState<string | null>(null);
@@ -1396,9 +1580,14 @@ function LibraryBindingPanel({
   );
   const [browserRoots, setBrowserRoots] = useState<HostDirectoryOption[]>([]);
   const [browserItems, setBrowserItems] = useState<HostDirectoryOption[]>([]);
+  const [browserTarget, setBrowserTarget] = useState<"local" | "mirror-local" | "mirror-source">("local");
+  const [modeDraft, setModeDraft] = useState<"local" | "mirror">(runtimeConfig.mode);
+  const [wizardStep, setWizardStep] = useState<"mode" | "setup">("mode");
+  const [mirrorSourceReady, setMirrorSourceReady] = useState(runtimeConfig.mode === "mirror" ? !library.requiresInitialization : false);
   const pendingBindingRootDir = library.snapshot?.binding?.rootDir ?? "";
   const defaultRootDir = library.snapshot?.defaultRootDir ?? "";
   const busy = saving || browserLoading;
+  const isMirrorMode = modeDraft === "mirror";
 
   useEffect(() => {
     const suggestedRootDir = pendingBindingRootDir || defaultRootDir;
@@ -1406,6 +1595,19 @@ function LibraryBindingPanel({
       setRootDir(suggestedRootDir);
     }
   }, [defaultRootDir, pendingBindingRootDir, rootDir]);
+
+  useEffect(() => {
+    setMirrorLocalRootDir(runtimeConfig.localRootDir);
+    setRemoteApiBaseUrl(runtimeConfig.remoteApiBaseUrl);
+    setModeDraft(runtimeConfig.mode);
+  }, [runtimeConfig.localRootDir, runtimeConfig.mode, runtimeConfig.remoteApiBaseUrl]);
+
+  useEffect(() => {
+    if (runtimeConfig.mode === "mirror" && !library.requiresInitialization) {
+      setWizardStep("setup");
+      setMirrorSourceReady(true);
+    }
+  }, [library.requiresInitialization, runtimeConfig.mode]);
 
   async function loadHostDirectory(targetPath?: string | null): Promise<void> {
     setBrowserLoading(true);
@@ -1430,7 +1632,13 @@ function LibraryBindingPanel({
 
   function openDirectoryBrowser(): void {
     setBrowserOpen(true);
-    void loadHostDirectory(rootDir.trim() || undefined);
+    const targetPath =
+      browserTarget === "mirror-local"
+        ? mirrorLocalRootDir.trim()
+        : browserTarget === "mirror-source"
+          ? mirrorSourceRootDir.trim()
+          : rootDir.trim();
+    void loadHostDirectory(targetPath || undefined);
   }
 
   function closeDirectoryBrowser(): void {
@@ -1447,12 +1655,18 @@ function LibraryBindingPanel({
       return;
     }
 
-    setRootDir(browserCurrentPath);
+    if (browserTarget === "mirror-local") {
+      setMirrorLocalRootDir(browserCurrentPath);
+    } else if (browserTarget === "mirror-source") {
+      setMirrorSourceRootDir(browserCurrentPath);
+    } else {
+      setRootDir(browserCurrentPath);
+    }
     setBrowserOpen(false);
     setBrowserError(null);
   }
 
-  async function submit(event: FormEvent): Promise<void> {
+  async function submitLocalBinding(event: FormEvent): Promise<void> {
     event.preventDefault();
     const nextRootDir = rootDir.trim();
     if (!nextRootDir) {
@@ -1462,7 +1676,13 @@ function LibraryBindingPanel({
 
     setSaving(true);
     setError(null);
+    setMessage(null);
     try {
+      await updateRuntimeConfig({
+        mode: "local",
+        remoteApiBaseUrl,
+        localRootDir: mirrorLocalRootDir,
+      });
       await library.bindLibrary(nextRootDir);
       setRootDir("");
     } catch (err) {
@@ -1472,12 +1692,99 @@ function LibraryBindingPanel({
     }
   }
 
+  async function submitMirrorConnection(event: FormEvent): Promise<void> {
+    event.preventDefault();
+    const normalizedRemoteApiBaseUrl = normalizeBaseUrl(remoteApiBaseUrl);
+    if (!normalizedRemoteApiBaseUrl) {
+      setError(t("runtimeMirrorApiRequired"));
+      return;
+    }
+
+    setSaving(true);
+    setError(null);
+    setMessage(null);
+    try {
+      await updateRuntimeConfig({
+        mode: "mirror",
+        remoteApiBaseUrl: normalizedRemoteApiBaseUrl,
+        localRootDir: mirrorLocalRootDir,
+      });
+      const snapshot = await getLibrarySnapshot();
+      const sourceBinding = await getLibraryBinding();
+      const sourceRootDir = sourceBinding?.rootDir?.trim() ?? snapshot.binding?.rootDir?.trim() ?? "";
+      setMirrorSourceReady(snapshot.requiresInitialization !== true);
+      if (sourceRootDir) {
+        setMirrorSourceRootDir(sourceRootDir);
+      }
+      setMessage(t("libraryInitMirrorSaveSuccess"));
+    } catch (err) {
+      setError(toApiErrorMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function submitMirrorSourceBinding(event: FormEvent): Promise<void> {
+    event.preventDefault();
+    const nextRootDir = mirrorSourceRootDir.trim();
+    if (!nextRootDir) {
+      setError(t("settingsRequiredRootDir"));
+      return;
+    }
+
+    const normalizedRemoteApiBaseUrl = normalizeBaseUrl(remoteApiBaseUrl);
+    if (!normalizedRemoteApiBaseUrl) {
+      setError(t("runtimeMirrorApiRequired"));
+      return;
+    }
+
+    setSaving(true);
+    setError(null);
+    setMessage(null);
+    try {
+      await updateRuntimeConfig({
+        mode: "mirror",
+        remoteApiBaseUrl: normalizedRemoteApiBaseUrl,
+        localRootDir: mirrorLocalRootDir,
+      });
+      await saveLibraryBinding({ rootDir: nextRootDir, completeInitialization: true });
+      setMirrorSourceReady(true);
+      setMessage(t("libraryInitMirrorSaveSuccess"));
+      await library.reload();
+    } catch (err) {
+      setError(toApiErrorMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function openLocalDirectoryBrowser(): void {
+    setBrowserTarget("local");
+    openDirectoryBrowser();
+  }
+
+  function openMirrorLocalDirectoryBrowser(): void {
+    setBrowserTarget("mirror-local");
+    openDirectoryBrowser();
+  }
+
+  function openMirrorSourceDirectoryBrowser(): void {
+    setBrowserTarget("mirror-source");
+    openDirectoryBrowser();
+  }
+
+  function handleSelectMode(nextMode: "local" | "mirror"): void {
+    setModeDraft(nextMode);
+    setError(null);
+    setMessage(null);
+  }
+
   return (
     <main
       className="app-shell workbench-shell xfile-workbench-shell"
       data-runtime-platform={platformData.runtimePlatform}
       data-os-family={platformData.osFamily}
-      data-overlay-titlebar={platformData.overlayTitlebar ? "true" : undefined}
+      data-overlay-titlebar={String(platformData.overlayTitlebar)}
     >
       <section className="library-init-page affairs-binding-shell">
         <div className="library-init-panel affairs-binding-card">
@@ -1488,32 +1795,215 @@ function LibraryBindingPanel({
           </header>
 
           <div className="library-init-body">
-            <form
-              className="library-init-form"
-              onSubmit={(event) => void submit(event)}
-            >
-              <label>
-                <span>{t("settingsRootDir")}</span>
-                <div className="library-init-path-row">
-                  <input
-                    value={rootDir}
-                    placeholder={t("settingsRootDirPlaceholder")}
-                    onChange={(event) => setRootDir(event.target.value)}
-                  />
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    disabled={saving}
-                    onClick={openDirectoryBrowser}
-                  >
-                    {t("hostDirectoryBrowseAction")}
-                  </button>
+            <section className="library-init-form">
+              <div className="library-init-stepbar" aria-label={t("libraryInitTitle")}>
+                <div className="library-init-step" data-active={wizardStep === "mode" ? "true" : undefined}>
+                  <strong>1</strong>
+                  <span>{t("libraryInitStepMode")}</span>
                 </div>
-              </label>
-              <p className="muted-copy">{t("libraryBindingInlineHint")}</p>
-              <p className="muted-copy">
-                {t("libraryInitDefaultRootHint", { rootDir: defaultRootDir || rootDir })}
-              </p>
+                <div className="library-init-step-separator" />
+                <div className="library-init-step" data-active={wizardStep === "setup" ? "true" : undefined}>
+                  <strong>2</strong>
+                  <span>{t("libraryInitStepSetup")}</span>
+                </div>
+              </div>
+
+              <div className="library-init-summary-row">
+                <span className="affairs-inline-pill">{t("libraryInitModeSummaryLabel")}：{isMirrorMode ? t("runtimeModeMirror") : t("runtimeModeLocal")}</span>
+                <span className="affairs-inline-pill">{t("libraryInitStepSummaryLabel")}：{wizardStep === "mode" ? t("libraryInitStepMode") : t("libraryInitStepSetup")}</span>
+              </div>
+
+              {wizardStep === "mode" ? (
+                <>
+                  <section className="library-init-mode-intro">
+                    <h2>{t("libraryInitModeTitle")}</h2>
+                    <p>{t("libraryInitModeSubtitle")}</p>
+                  </section>
+                  <div className="library-init-mode-grid" role="group" aria-label={t("runtimeModeSectionTitle")}>
+                    <button
+                      type="button"
+                      className="library-init-mode-card"
+                      data-active={modeDraft === "local" ? "true" : undefined}
+                      onClick={() => handleSelectMode("local")}
+                    >
+                      <div className="library-init-mode-card-head">
+                        <strong>{t("libraryInitModeLocalTitle")}</strong>
+                        <span className="settings-runtime-badge" data-mode="local">{t("runtimeModeLocal")}</span>
+                      </div>
+                      <p>{t("libraryInitModeLocalCopy")}</p>
+                    </button>
+                    <button
+                      type="button"
+                      className="library-init-mode-card"
+                      data-active={modeDraft === "mirror" ? "true" : undefined}
+                      onClick={() => handleSelectMode("mirror")}
+                    >
+                      <div className="library-init-mode-card-head">
+                        <strong>{t("libraryInitModeMirrorTitle")}</strong>
+                        <span className="settings-runtime-badge" data-mode="mirror">{t("runtimeModeMirror")}</span>
+                      </div>
+                      <p>{t("libraryInitModeMirrorCopy")}</p>
+                    </button>
+                  </div>
+                  <div className="button-row">
+                    <button
+                      type="button"
+                      className="primary-button"
+                      onClick={() => setWizardStep("setup")}
+                    >
+                      {isMirrorMode ? t("libraryInitContinueToMirror") : t("libraryInitContinueToLocal")}
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={onOpenSettings}
+                    >
+                      {t("libraryInitOpenAdvanced")}
+                    </button>
+                  </div>
+                </>
+              ) : isMirrorMode ? (
+                <>
+                  <form className="library-init-wizard-form" onSubmit={(event) => void submitMirrorConnection(event)}>
+                    <section className="library-init-mode-intro">
+                      <h2>{t("libraryInitMirrorStepTitle")}</h2>
+                      <p>{t("libraryInitMirrorStepCopy")}</p>
+                    </section>
+                    <label>
+                      <span>{t("libraryInitMirrorSourceApiLabel")}</span>
+                      <input
+                        value={remoteApiBaseUrl}
+                        placeholder={t("runtimeRemoteApiBaseUrlPlaceholder")}
+                        onChange={(event) => setRemoteApiBaseUrl(event.target.value)}
+                      />
+                    </label>
+                    <p className="muted-copy">{t("libraryInitMirrorSourceApiHint")}</p>
+                    <label>
+                      <span>{t("libraryInitMirrorDirectoryLabel")}</span>
+                      <div className="library-init-path-row">
+                        <input
+                          value={mirrorLocalRootDir}
+                          placeholder={t("runtimeMirrorRootDirPlaceholder")}
+                          onChange={(event) => setMirrorLocalRootDir(event.target.value)}
+                        />
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          disabled={busy}
+                          onClick={openMirrorLocalDirectoryBrowser}
+                        >
+                          {t("hostDirectoryBrowseAction")}
+                        </button>
+                      </div>
+                    </label>
+                    <p className="muted-copy">{t("libraryInitMirrorDirectoryHint")}</p>
+                    <div className="button-row">
+                      <button type="submit" className="primary-button" disabled={busy}>
+                        {saving ? t("settingsSaving") : t("libraryInitMirrorConnectAction")}
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={busy}
+                        onClick={() => setWizardStep("mode")}
+                      >
+                        {t("libraryInitBackToMode")}
+                      </button>
+                    </div>
+                  </form>
+
+                  {mirrorSourceReady ? (
+                    <div className="library-init-ready-card">
+                      <strong>{t("libraryInitMirrorSourceReady")}</strong>
+                    </div>
+                  ) : (
+                    <form className="library-init-wizard-form" onSubmit={(event) => void submitMirrorSourceBinding(event)}>
+                      <section className="library-init-mode-intro">
+                        <h2>{t("libraryInitMirrorSourceRootTitle")}</h2>
+                        <p>{t("libraryInitMirrorSourceRootCopy")}</p>
+                      </section>
+                      <label>
+                        <span>{t("libraryInitMirrorSourceRootLabel")}</span>
+                        <div className="library-init-path-row">
+                          <input
+                            value={mirrorSourceRootDir}
+                            placeholder={t("settingsRootDirPlaceholder")}
+                            onChange={(event) => setMirrorSourceRootDir(event.target.value)}
+                          />
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            disabled={busy}
+                            onClick={openMirrorSourceDirectoryBrowser}
+                          >
+                            {t("hostDirectoryBrowseAction")}
+                          </button>
+                        </div>
+                      </label>
+                      <p className="muted-copy">{t("libraryInitMirrorSourceRootHint")}</p>
+                      <p className="muted-copy">
+                        {t("libraryInitDefaultRootHint", { rootDir: defaultRootDir || mirrorSourceRootDir })}
+                      </p>
+                      <div className="button-row">
+                        <button type="submit" className="primary-button" disabled={busy}>
+                          {saving ? t("settingsSaving") : t("libraryInitMirrorFinishSource")}
+                        </button>
+                      </div>
+                    </form>
+                  )}
+                </>
+              ) : (
+                <form className="library-init-wizard-form" onSubmit={(event) => void submitLocalBinding(event)}>
+                  <section className="library-init-mode-intro">
+                    <h2>{t("libraryInitLocalStepTitle")}</h2>
+                    <p>{t("libraryInitLocalStepCopy")}</p>
+                  </section>
+                  <label>
+                    <span>{t("settingsRootDir")}</span>
+                    <div className="library-init-path-row">
+                      <input
+                        value={rootDir}
+                        placeholder={t("settingsRootDirPlaceholder")}
+                        onChange={(event) => setRootDir(event.target.value)}
+                      />
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={busy}
+                        onClick={openLocalDirectoryBrowser}
+                      >
+                        {t("hostDirectoryBrowseAction")}
+                      </button>
+                    </div>
+                  </label>
+                  <p className="muted-copy">{t("libraryBindingInlineHint")}</p>
+                  <p className="muted-copy">{t("libraryInitLocalModeHint")}</p>
+                  <p className="muted-copy">
+                    {t("libraryInitDefaultRootHint", { rootDir: defaultRootDir || rootDir })}
+                  </p>
+                  <div className="button-row">
+                    <button
+                      type="submit"
+                      className="primary-button"
+                      disabled={busy}
+                    >
+                      {saving ? t("settingsSaving") : t("libraryInitSubmit")}
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={busy}
+                      onClick={() => setWizardStep("mode")}
+                    >
+                      {t("libraryInitBackToMode")}
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {message ? (
+                <div className="inline-success compact">{message}</div>
+              ) : null}
               {error ? (
                 <div className="inline-alert compact">{error}</div>
               ) : null}
@@ -1521,13 +2011,6 @@ function LibraryBindingPanel({
                 <div className="inline-alert compact">{library.error}</div>
               ) : null}
               <div className="button-row">
-                <button
-                  type="submit"
-                  className="primary-button"
-                  disabled={saving}
-                >
-                  {saving ? t("settingsSaving") : t("libraryInitSubmit")}
-                </button>
                 <button
                   type="button"
                   className="secondary-button"
@@ -1543,7 +2026,7 @@ function LibraryBindingPanel({
                   {t("libraryInitOpenAdvanced")}
                 </button>
               </div>
-            </form>
+            </section>
 
             <aside
               className="library-init-logo-panel"
@@ -1691,6 +2174,7 @@ function LibraryBindingPanel({
 
 function LibraryStage({
   library,
+  platformData,
   onOpenSettings,
   onOpenContextMenu,
   onRequestCreate,
@@ -1702,6 +2186,7 @@ function LibraryStage({
   tagAssignmentTask,
 }: {
   library: LibraryState;
+  platformData: WorkbenchPlatformData;
   onOpenSettings: () => void;
   onOpenContextMenu: (
     event: ReactMouseEvent<HTMLElement>,
@@ -1720,12 +2205,16 @@ function LibraryStage({
     kind: "blank",
     folderPath: library.viewState.selectedFolderPath,
   };
+  const shouldShowBlockingSkeleton =
+    library.entries.length === 0 && (library.loading || library.documentsLoading);
 
   return (
     <section className="affairs-stage-panel">
       <LibraryStageToolbar
         library={library}
+        platformData={platformData}
         directoryStatus={directoryStatus}
+        onOpenSettings={onOpenSettings}
         onRequestCreate={onRequestCreate}
         onOpenSearch={onOpenSearch}
         tagAssignmentTask={tagAssignmentTask}
@@ -1735,7 +2224,7 @@ function LibraryStage({
         aria-label={t("libraryDocumentList")}
         onContextMenu={(event) => onOpenContextMenu(event, blankTarget)}
       >
-        {library.loading || library.documentsLoading ? (
+        {shouldShowBlockingSkeleton ? (
           <LibrarySkeleton viewMode={library.viewState.viewMode} />
         ) : library.entries.length === 0 ? (
           <div className="affairs-stage-empty">
@@ -1777,17 +2266,21 @@ function LibraryStage({
 
 function LibraryStageToolbar({
   library,
+  platformData,
   directoryStatus: _directoryStatus,
+  onOpenSettings,
   onRequestCreate,
   onOpenSearch,
   tagAssignmentTask,
 }: {
   library: LibraryState;
+  platformData: WorkbenchPlatformData;
   directoryStatus: {
     state: LibraryDirectoryState;
     source: LibraryDirectorySource;
     errorSummary?: string | null;
   } | null;
+  onOpenSettings: () => void;
   onRequestCreate: (state: PendingCreateState) => void;
   onOpenSearch: () => void;
   tagAssignmentTask: LibraryTagAssignmentTaskState | null;
@@ -1800,32 +2293,53 @@ function LibraryStageToolbar({
     { value: "createdAt", label: t("librarySortCreatedAt") },
   ];
 
+  const overlayTitlebar = platformData.runtimePlatform === "desktop"
+    && platformData.osFamily === "macos"
+    && platformData.overlayTitlebar;
+
   return (
-    <div className="affairs-stage-toolbar">
-      <div className="affairs-stage-toolbar-left">
-        <div className="affairs-stage-breadcrumb" aria-label={t("libraryCurrentFolder")}>
-          <button
-            type="button"
-            className="affairs-stage-breadcrumb-button root"
-            aria-label={t("libraryRootFolder")}
-            title={t("libraryRootFolder")}
-            onClick={() => library.selectFolder(null)}
-          >
-            {renderHomeIcon()}
-          </button>
-          <BreadcrumbItems
-            path={
-              library.viewState.browseMode === "folder"
-                ? library.viewState.selectedFolderPath
-                : library.viewState.selectedTagPath
-            }
-            browseMode={library.viewState.browseMode}
-            onSelectFolder={library.selectFolder}
-            onSelectTag={library.selectTag}
-          />
+    <div
+      className={overlayTitlebar ? "xfile-stage-titlebar overlay" : "xfile-stage-titlebar"}
+      data-window-drag-handle={overlayTitlebar ? "xfile-library-titlebar" : undefined}
+      data-tauri-drag-region={overlayTitlebar ? "" : undefined}
+    >
+      <div className="xfile-stage-titlebar-left">
+        <div
+          className="xfile-stage-titlebar-brand"
+          data-tauri-drag-region={overlayTitlebar ? "" : undefined}
+        >
+          <span className="xfile-stage-titlebar-app">{t("appTitle")}</span>
+          <span className="xfile-stage-titlebar-path">
+            {library.viewState.browseMode === "folder"
+              ? (library.viewState.selectedFolderPath || t("libraryRootFolder"))
+              : (library.viewState.selectedTagPath || t("libraryTagTreeSectionTitle"))}
+          </span>
+        </div>
+        <div className="affairs-stage-toolbar-left" data-window-drag="ignore">
+          <div className="affairs-stage-breadcrumb" aria-label={t("libraryCurrentFolder")}>
+            <button
+              type="button"
+              className="affairs-stage-breadcrumb-button root"
+              aria-label={t("libraryRootFolder")}
+              title={t("libraryRootFolder")}
+              onClick={() => library.selectFolder(null)}
+            >
+              {renderHomeIcon()}
+            </button>
+            <BreadcrumbItems
+              path={
+                library.viewState.browseMode === "folder"
+                  ? library.viewState.selectedFolderPath
+                  : library.viewState.selectedTagPath
+              }
+              browseMode={library.viewState.browseMode}
+              onSelectFolder={library.selectFolder}
+              onSelectTag={library.selectTag}
+            />
+          </div>
         </div>
       </div>
-      <div className="affairs-stage-toolbar-right">
+      <div className="affairs-stage-toolbar-right" data-window-drag="ignore">
         <div className="affairs-stage-toolbar-group">
           <button
             type="button"
@@ -1915,6 +2429,15 @@ function LibraryStageToolbar({
           title={t("librarySearchAction")}
         >
           {renderSearchIcon()}
+        </button>
+        <button
+          type="button"
+          className="affairs-stage-toolbar-icon"
+          onClick={onOpenSettings}
+          aria-label={t("navSettings")}
+          title={t("navSettings")}
+        >
+          {renderSettingsIcon()}
         </button>
         <button
           type="button"
@@ -3040,11 +3563,13 @@ function LibraryFinderRow({
 
 function LibraryDetail({
   library,
+  overlayMacOsTitlebar,
   onRequestRename,
   onRequestDelete,
   onRequestTagAssignment: _onRequestTagAssignment,
 }: {
   library: LibraryState;
+  overlayMacOsTitlebar: boolean;
   onRequestRename: (path: string) => void;
   onRequestDelete: (target: LibraryContextMenuTarget) => void;
   onRequestTagAssignment: (target: LibraryContextMenuTarget) => void;
@@ -3091,7 +3616,12 @@ function LibraryDetail({
       data-assistant-active={activeTab === "assistant" ? "true" : undefined}
       aria-label={t("libraryDetails")}
     >
-      <header className="workbench-auxiliary-header" aria-label={t("libraryDetails")}>
+      <header
+        className="workbench-auxiliary-header"
+        aria-label={t("libraryDetails")}
+        data-window-drag-handle={overlayMacOsTitlebar ? "xfile-detail-header" : undefined}
+        data-tauri-drag-region={overlayMacOsTitlebar ? "" : undefined}
+      >
         <div className="workbench-info-tabs affairs-auxiliary-tabs" role="tablist" aria-label={t("libraryDetails")}>
           <button
             type="button"
@@ -3150,7 +3680,10 @@ function LibraryDetail({
       {activeTab === "assistant" ? (
         <DocumentAssistantPanel library={library} assistant={assistant} />
       ) : !selected && !selectedFolder ? (
-        <div className="affairs-detail-empty">{t("libraryNoSelection")}</div>
+        <div className="affairs-detail-scroll">
+          <div className="affairs-detail-empty">{t("libraryNoSelection")}</div>
+          {import.meta.env.DEV ? <LibraryNativeDebugPanel library={library} /> : null}
+        </div>
       ) : selectedFolder ? (
         <div className="affairs-detail-scroll">
           <section className="affairs-detail-block affairs-detail-hero-block">
@@ -3200,6 +3733,7 @@ function LibraryDetail({
               />
             </div>
           </section>
+          {import.meta.env.DEV ? <LibraryNativeDebugPanel library={library} /> : null}
         </div>
       ) : selected ? (
         <div className="affairs-detail-scroll">
@@ -3312,6 +3846,7 @@ function LibraryDetail({
               compact
             />
           </section>
+          {import.meta.env.DEV ? <LibraryNativeDebugPanel library={library} /> : null}
         </div>
       ) : null}
       <AssistantHistoryModal
@@ -3344,8 +3879,171 @@ function LibraryDetail({
   );
 }
 
+function LibraryNativeDebugPanel({ library }: { library: LibraryState }) {
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const debug = library.debug;
+  const channels = [
+    ["watcher", debug.watcher],
+    ["snapshot", debug.snapshot],
+    ["documents", debug.documents],
+    ["files", debug.files],
+    ["preview", debug.preview],
+    ["refresh", debug.refresh],
+  ] as const;
+
+  const debugSummary = JSON.stringify(
+    {
+      runtime: debug.runtime,
+      mode: debug.mode,
+      nativeBridgeEligible: debug.nativeBridgeEligible,
+      nativeBridgeAvailable: debug.nativeBridgeAvailable,
+      channels: Object.fromEntries(
+        channels.map(([channel, state]) => [
+          channel,
+          {
+            transport: state.transport,
+            detail: state.detail,
+            updatedAt: state.updatedAt,
+          },
+        ])
+      ),
+    },
+    null,
+    2
+  );
+
+  if (!panelOpen) {
+    return (
+      <button
+        type="button"
+        className="library-native-debug-collapsed-button"
+        data-testid="library-native-debug-toggle"
+        aria-label="展开 Native 调试命中"
+        title="展开 Native 调试命中"
+        onClick={() => setPanelOpen(true)}
+      >
+        <DebugBugIcon />
+        <span className="library-native-debug-runtime-badge" data-transport={debug.nativeBridgeAvailable ? "native" : "http"}>
+          {debug.runtime === "desktop-tauri" ? "Tauri" : "Web"}
+        </span>
+      </button>
+    );
+  }
+
+  return (
+    <section className="affairs-detail-block library-native-debug-panel" data-testid="library-native-debug-panel">
+      <div className="affairs-detail-viewer-header library-native-debug-toolbar">
+        <span className="affairs-detail-viewer-title">Native 调试命中</span>
+        <div className="library-native-debug-toolbar-actions">
+          <span className="library-native-debug-runtime-badge" data-transport={debug.nativeBridgeAvailable ? "native" : "http"}>
+            {debug.runtime === "desktop-tauri" ? "Tauri" : "Web"}
+          </span>
+          <button
+            type="button"
+            className="library-native-debug-icon-button"
+            aria-label={copied ? "已复制调试结果" : "复制调试结果"}
+            title={copied ? "已复制调试结果" : "复制调试结果"}
+            onClick={() => {
+              void copyContextText(debugSummary);
+              setCopied(true);
+              window.setTimeout(() => setCopied(false), 1200);
+            }}
+          >
+            <DebugCopyIcon />
+          </button>
+          <button
+            type="button"
+            className="library-native-debug-icon-button"
+            aria-label="收起调试命中"
+            title="收起调试命中"
+            onClick={() => setPanelOpen(false)}
+          >
+            <DebugCollapseIcon collapsed={false} />
+          </button>
+        </div>
+      </div>
+      <div className="library-native-debug-summary-grid">
+        <div className="library-native-debug-summary-card">
+          <span className="library-native-debug-summary-label">运行模式</span>
+          <strong>{debug.mode}</strong>
+        </div>
+        <div className="library-native-debug-summary-card">
+          <span className="library-native-debug-summary-label">native 资格</span>
+          <strong>{debug.nativeBridgeEligible ? "local 可走 native" : "mirror 只走 HTTP"}</strong>
+        </div>
+        <div className="library-native-debug-summary-card">
+          <span className="library-native-debug-summary-label">宿主桥</span>
+          <strong>{debug.nativeBridgeAvailable ? "已检测到 __TAURI_INTERNALS__" : "当前不是 Tauri 宿主"}</strong>
+        </div>
+      </div>
+      <div className="library-native-debug-channel-list">
+        {channels.map(([channel, state]) => (
+          <article key={channel} className="library-native-debug-channel-card">
+            <div className="library-native-debug-channel-head">
+              <strong>{channel}</strong>
+              <span className="library-native-debug-runtime-badge" data-transport={state.transport}>
+                {state.transport}
+              </span>
+            </div>
+            <p className="library-native-debug-channel-detail">{state.detail}</p>
+            <p className="library-native-debug-channel-time">
+              {state.updatedAt ? formatDateTime(state.updatedAt) : "尚无命中记录"}
+            </p>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function DebugBugIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M9 7.5h6M10 4.5h4M8.5 10.5h7a2.5 2.5 0 0 1 2.5 2.5v3a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4v-3a2.5 2.5 0 0 1 2.5-2.5Zm-3 1.5 2 1.5m11-1.5-2 1.5m-11 6 2-1.5m9 1.5-2-1.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function DebugCopyIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M9 9.5V6.8A1.8 1.8 0 0 1 10.8 5h6.4A1.8 1.8 0 0 1 19 6.8v8.4a1.8 1.8 0 0 1-1.8 1.8H14m-5 2H6.8A1.8 1.8 0 0 1 5 17.2v-8.4A1.8 1.8 0 0 1 6.8 7H13a1.8 1.8 0 0 1 1.8 1.8v8.4A1.8 1.8 0 0 1 13 19Z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function DebugCollapseIcon({ collapsed }: { collapsed: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d={collapsed ? "m9 6 6 6-6 6" : "m15 18-6-6 6-6"}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.9"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 function isLibraryDirectoryEntry(entry: LibraryEntry): entry is LibraryDirectoryEntry {
-  return entry.kind === "folder" || entry.kind === "tag-directory";
+	return entry.kind === "folder" || entry.kind === "tag-directory";
 }
 
 const DETAIL_SUMMARY_COLLAPSE_LENGTH = 96;
@@ -5900,6 +6598,10 @@ function LibraryFileViewerModal({
   const useForcedFullSize = preview?.kind === "office" || isPresentationFile(viewerState.filePath);
   const activeModalSizePreset: ViewerModalSizePreset = useForcedFullSize ? "full" : modalSizePreset;
   const isOfficeViewer = preview?.kind === "office";
+  const absoluteFilePath = useMemo(
+    () => resolveLibraryLocalPath(library, viewerState.filePath),
+    [library, viewerState.filePath],
+  );
 
   useEffect(() => {
     if (!viewerTabs.length) {
@@ -6073,6 +6775,7 @@ function LibraryFileViewerModal({
       <LibraryFileViewerSurface
         preview={preview}
         filePath={viewerState.filePath}
+        absoluteFilePath={absoluteFilePath}
         mode={mode}
         editorContent={editorContent}
         loading={loading}
@@ -6095,6 +6798,7 @@ function LibraryFileViewerModal({
 function LibraryFileViewerSurface({
   preview,
   filePath,
+  absoluteFilePath,
   mode,
   editorContent,
   loading,
@@ -6107,6 +6811,7 @@ function LibraryFileViewerSurface({
 }: {
   preview: LibraryPreview | null;
   filePath: string;
+  absoluteFilePath: string | null;
   mode: ViewerMode;
   editorContent: string;
   loading: boolean;
@@ -6119,6 +6824,35 @@ function LibraryFileViewerSurface({
 }) {
   if (!loading && !error && preview?.supported && preview.kind === "office" && preview.onlyOffice) {
     return <OnlyOfficePreview onlyOffice={preview.onlyOffice} filePath={preview.path} />;
+  }
+
+  if (!loading && !error && preview?.supported && preview.kind === "office" && !preview.onlyOffice) {
+    return (
+      <div className="library-file-viewer-fallback office-native-fallback">
+        <div className="preview-box">
+          <strong>{t("fileViewerOfficeUnavailable")}</strong>
+          <p>{preview.reason || "当前桌面本地模式下，Office 预览已切到原生替代路径。"}</p>
+          <div className="button-row">
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={!absoluteFilePath}
+              onClick={() => void openPathInDesktop(absoluteFilePath ?? preview.path)}
+            >
+              {t("libraryContextOpenLocalApp")}
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={!absoluteFilePath}
+              onClick={() => void revealPathInDesktop(absoluteFilePath ?? preview.path)}
+            >
+              {t("libraryContextRevealInFinder")}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   if (loading || error || !preview || !preview.supported) {
@@ -6200,7 +6934,19 @@ function LibraryFileViewerSurface({
 }
 
 function getLibraryPreviewForViewer(path: string): Promise<LibraryPreview> {
-  return getLibraryPreview(path);
+  return (async () => {
+    const nativePreview = await getNativeLibraryPreview(path, "reading").catch(() => null);
+    if (nativePreview?.kind === "office" && !nativePreview.onlyOffice) {
+      const officePreview = await getNativeOnlyOfficePreview(path, "reading", true).catch(() => null);
+      if (officePreview) {
+        return officePreview;
+      }
+    }
+    if (nativePreview) {
+      return nativePreview;
+    }
+    return getLibraryPreview(path);
+  })();
 }
 
 interface HtmlPresentationModeInput {
@@ -6996,10 +7742,16 @@ function buildIndexStatusPopoverModel(
   documentCount: number,
   directoryStatus: LibraryDirectoryStatus | null,
 ): IndexStatusPopoverModel {
+  const normalizedStatus = status
+    ? {
+        ...status,
+        dirtyReasons: Array.isArray(status.dirtyReasons) ? status.dirtyReasons : [],
+      }
+    : null;
   const primaryRows: IndexStatusPopoverRow[] = [
     {
       label: t("libraryIndexStatusCurrentLabel"),
-      value: resolveIndexStatusLabel(status?.state),
+      value: resolveIndexStatusLabel(normalizedStatus?.state),
     },
   ];
   const overviewRows: IndexStatusPopoverRow[] = [];
@@ -7008,13 +7760,13 @@ function buildIndexStatusPopoverModel(
   const directoryRows: IndexStatusPopoverRow[] = [];
   const workerRows: IndexStatusPopoverRow[] = [];
 
-  if (!status) {
+  if (!normalizedStatus) {
     return { summaryMetrics: [], primaryRows, technicalSections: [] };
   }
 
   // 摘要指标（四栏网格）：优先用实时进度，缺失时用导出文档计数兜底，
   // 保证稳态下面板一定能展示“索引总数/当前数量/问题数量/更新数量”，不再出现空白。
-  const progress = status.progress ?? deriveSteadyProgressFallback(documentCount);
+  const progress = normalizedStatus.progress ?? deriveSteadyProgressFallback(documentCount);
   const summaryMetrics: IndexStatusPopoverMetric[] = progress
     ? [
         {
@@ -7039,25 +7791,25 @@ function buildIndexStatusPopoverModel(
     : [];
 
   // 时间线
-  pushIndexStatusDetail(timelineRows, t("libraryStatusLastRequestedAtLabel"), status.lastRequestedAt);
-  pushIndexStatusDetail(timelineRows, t("libraryStatusLastStartedAtLabel"), status.lastStartedAt);
-  pushIndexStatusDetail(timelineRows, t("libraryStatusLastCompletedAtLabel"), status.lastCompletedAt);
-  pushIndexStatusDetail(timelineRows, t("libraryStatusLastFailedAtLabel"), status.lastFailedAt);
-  pushIndexStatusDetail(timelineRows, t("libraryStatusNextAllowedAtLabel"), status.nextAllowedAt);
+  pushIndexStatusDetail(timelineRows, t("libraryStatusLastRequestedAtLabel"), normalizedStatus.lastRequestedAt);
+  pushIndexStatusDetail(timelineRows, t("libraryStatusLastStartedAtLabel"), normalizedStatus.lastStartedAt);
+  pushIndexStatusDetail(timelineRows, t("libraryStatusLastCompletedAtLabel"), normalizedStatus.lastCompletedAt);
+  pushIndexStatusDetail(timelineRows, t("libraryStatusLastFailedAtLabel"), normalizedStatus.lastFailedAt);
+  pushIndexStatusDetail(timelineRows, t("libraryStatusNextAllowedAtLabel"), normalizedStatus.nextAllowedAt);
 
   // 概览
-  if (status.runningTaskId?.trim()) {
+  if (normalizedStatus.runningTaskId?.trim()) {
     overviewRows.push({
       label: t("libraryStatusRunningTaskIdLabel"),
-      value: status.runningTaskId.trim(),
+      value: normalizedStatus.runningTaskId.trim(),
       multiline: true,
     });
   }
 
-  if (status.runningStage?.trim()) {
+  if (normalizedStatus.runningStage?.trim()) {
     primaryRows.push({
       label: t("libraryStatusRunningStageLabel"),
-      value: resolveIndexStageLabel(status.runningStage.trim()),
+      value: resolveIndexStageLabel(normalizedStatus.runningStage.trim()),
     });
   }
 
@@ -7077,18 +7829,18 @@ function buildIndexStatusPopoverModel(
     });
   }
 
-  if (status.dirtyReasons.length > 0) {
+  if (normalizedStatus.dirtyReasons.length > 0) {
     overviewRows.push({
       label: t("libraryStatusDirtyReasonsLabel"),
-      value: status.dirtyReasons.join("、"),
+      value: normalizedStatus.dirtyReasons.join("、"),
       multiline: true,
     });
   }
 
-  if (status.errorSummary?.trim()) {
+  if (normalizedStatus.errorSummary?.trim()) {
     primaryRows.push({
       label: t("libraryStatusErrorSummaryLabel"),
-      value: status.errorSummary.trim(),
+      value: normalizedStatus.errorSummary.trim(),
       multiline: true,
     });
   }
@@ -7159,8 +7911,8 @@ function buildIndexStatusPopoverModel(
   }
 
   // 工作器健康状态
-  if (status.workerHealth) {
-    const wh = status.workerHealth;
+  if (normalizedStatus.workerHealth) {
+    const wh = normalizedStatus.workerHealth;
     workerRows.push({
       label: t("libraryWorkerHealthStateLabel"),
       value: resolveWorkerHealthStateLabel(wh.state),
@@ -8223,15 +8975,7 @@ function renderDocumentShape(filePath: string, mode: "grid" | "row" = "grid") {
 
 function renderXFileBrandIcon() {
   return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        d="M4 7.5A2.5 2.5 0 0 1 6.5 5H10l2 2h5.5A2.5 2.5 0 0 1 20 9.5v8A2.5 2.5 0 0 1 17.5 20h-11A2.5 2.5 0 0 1 4 17.5z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.9"
-      />
-      <path d="M4 9h16" fill="none" stroke="currentColor" strokeWidth="1.9" />
-    </svg>
+    <img src="/x-file-logo.svg" alt="" />
   );
 }
 

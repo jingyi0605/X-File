@@ -1,7 +1,10 @@
 import crypto from "node:crypto";
 import path from "node:path";
 import type { ExportDocumentRecord } from "../../repositories/catalog-repository.js";
-import { CatalogRepository } from "../../repositories/catalog-repository.js";
+
+export interface DirtyScopeDocumentReader {
+  listExportDocumentsByPaths(paths: string[]): ExportDocumentRecord[];
+}
 
 export interface DirtyScope {
   trigger: "full" | "incremental";
@@ -21,6 +24,10 @@ export interface ResolveDirtyScopeInput {
   skippedPaths?: string[];
   deletedPaths?: string[];
   failedPaths?: string[];
+  /**
+   * 优先使用本轮索引刚产出的文档摘要，避免默认增量链为了 dirty scope
+   * 又回头从 SQLite/catalog store 读取一次相同文档。
+   */
   changedDocuments?: ExportDocumentRecord[];
   triggerOverride?: "full" | "incremental";
 }
@@ -67,7 +74,7 @@ function collectDirtyPostingBuckets(tagPaths: string[]): string[] {
  * 第二阶段扩成正式传播规则的第一版：目录、tag ancestor、detail/meta shard、posting bucket、relation 文档集都能列清楚。
  */
 export class DirtyScopeResolver {
-  constructor(private readonly repository: CatalogRepository) {}
+  constructor(private readonly repository: DirtyScopeDocumentReader) {}
 
   resolve(input: ResolveDirtyScopeInput): DirtyScope {
     const indexedPaths = input.indexedPaths ?? [];

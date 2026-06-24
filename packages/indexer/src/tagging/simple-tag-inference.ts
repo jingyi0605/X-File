@@ -16,6 +16,7 @@ export interface TagInferenceResult {
 
 const EXTENSION_TYPE_TAGS = new Map<string, string>([
   [".md", "类型/文本/Markdown"],
+  [".markdown", "类型/文本/Markdown"],
   [".mdx", "类型/文本/Markdown"],
   [".txt", "类型/文本/纯文本"],
   [".rtf", "类型/文本/RTF"],

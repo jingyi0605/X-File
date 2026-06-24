@@ -1,11 +1,17 @@
 import type { RuntimeConfig } from "../../types/runtime-config.js";
 import type { ExportDocumentRecord } from "../../repositories/catalog-repository.js";
-import { CatalogRepository } from "../../repositories/catalog-repository.js";
-import { CatalogWriteRepository } from "../../repositories/catalog-write-repository.js";
 import { SUPPORTED_INDEX_EXTENSION_LIST } from "../../scanner/file-scanner.js";
-import { ExportBuilder } from "../export/export-builder.js";
+import { buildLibraryExport } from "../export/export-builder.js";
 import { DirtyScopeResolver, type DirtyScope } from "../dirty/dirty-scope-resolver.js";
-import { TextIndexer } from "./text-indexer.js";
+import { executeTextIndex } from "./text-indexer.js";
+import {
+  createDefaultRuntimeBackedTextIndexStores,
+} from "./text-index-catalog-store.js";
+import {
+  createSqliteAllowedExtensionsStore,
+  type AllowedExtensionsStore,
+} from "./allowed-extensions-store.js";
+import { refreshRuntimeActiveFileStateSnapshot } from "../../library-index-tool.js";
 
 const APPLIED_ALLOWED_EXTENSIONS_META_KEY = "config.allowed_extensions.applied";
 
@@ -33,7 +39,7 @@ function uniqueDocuments(documents: ExportDocumentRecord[]): ExportDocumentRecor
 
 function createExportSummary(
   dirtyScope: DirtyScope,
-  exportResult: Awaited<ReturnType<ExportBuilder["build"]>>,
+  exportResult: Awaited<ReturnType<typeof buildLibraryExport>>,
 ) {
   return {
     exportResult: {
@@ -51,7 +57,7 @@ async function buildConfiguredExports(
   dirtyScope: DirtyScope,
   signal?: AbortSignal,
 ) {
-  const exportResult = await new ExportBuilder(config).build({ dirtyScope, signal });
+  const exportResult = await buildLibraryExport(config, { dirtyScope, signal });
   return createExportSummary(dirtyScope, exportResult);
 }
 
@@ -113,8 +119,15 @@ export interface AllowedExtensionsDiffApplyResult {
   exportResult: ReturnType<typeof createExportSummary>["exportResult"] | null;
 }
 
+export interface AllowedExtensionsDiffDependencies {
+  store?: AllowedExtensionsStore;
+}
+
 export class AllowedExtensionsDiffService {
-  constructor(private readonly config: RuntimeConfig) {}
+  constructor(
+    private readonly config: RuntimeConfig,
+    private readonly dependencies: AllowedExtensionsDiffDependencies = {},
+  ) {}
 
   private resolveEffectiveAllowedExtensions(): string[] {
     return normalizeExtensions(
@@ -124,16 +137,15 @@ export class AllowedExtensionsDiffService {
     );
   }
 
-  private inferPreviouslyAppliedExtensions(repository: CatalogRepository): string[] {
-    const extensions = normalizeExtensions(repository.listActiveFileExtensions());
+  private inferPreviouslyAppliedExtensions(store: AllowedExtensionsStore): string[] {
+    const extensions = normalizeExtensions(store.listActiveFileExtensions());
     return extensions.length > 0 ? extensions : normalizeExtensions(SUPPORTED_INDEX_EXTENSION_LIST);
   }
 
   private loadPreviouslyAppliedExtensions(
-    writer: CatalogWriteRepository,
-    repository: CatalogRepository,
+    store: AllowedExtensionsStore,
   ): string[] {
-    const raw = writer.getSchemaMeta(APPLIED_ALLOWED_EXTENSIONS_META_KEY);
+    const raw = store.getSchemaMeta(APPLIED_ALLOWED_EXTENSIONS_META_KEY);
     if (typeof raw === "string" && raw.trim()) {
       try {
         const parsed = JSON.parse(raw) as unknown;
@@ -145,26 +157,31 @@ export class AllowedExtensionsDiffService {
       }
     }
 
-    return this.inferPreviouslyAppliedExtensions(repository);
+    return this.inferPreviouslyAppliedExtensions(store);
   }
 
   syncCurrentAsApplied(): void {
-    const writer = new CatalogWriteRepository(this.config.dbPath);
-    writer.setSchemaMeta(
+    const store = this.dependencies.store ?? createSqliteAllowedExtensionsStore({
+      dbPath: this.config.dbPath,
+    });
+    store.setSchemaMeta(
       APPLIED_ALLOWED_EXTENSIONS_META_KEY,
       JSON.stringify(this.resolveEffectiveAllowedExtensions()),
     );
   }
 
   async applyIfNeeded(signal?: AbortSignal): Promise<AllowedExtensionsDiffApplyResult> {
-    const writer = new CatalogWriteRepository(this.config.dbPath);
-    const repository = new CatalogRepository(this.config.dbPath);
+    const store = this.dependencies.store ?? createSqliteAllowedExtensionsStore({
+      dbPath: this.config.dbPath,
+    });
     const effectiveCurrent = this.resolveEffectiveAllowedExtensions();
-    const previous = this.loadPreviouslyAppliedExtensions(writer, repository);
+    const previous = this.loadPreviouslyAppliedExtensions(store);
     const addedExtensions = subtractExtensions(effectiveCurrent, previous);
     const removedExtensions = subtractExtensions(previous, effectiveCurrent);
 
-    const resolver = new DirtyScopeResolver(repository);
+    const resolver = new DirtyScopeResolver({
+      listExportDocumentsByPaths: (paths: string[]) => store.listExportDocumentsByPaths(paths),
+    });
     const emptyDirtyScope = resolver.resolve({
       indexedPaths: [],
       skippedPaths: [],
@@ -175,7 +192,7 @@ export class AllowedExtensionsDiffService {
     });
 
     if (addedExtensions.length === 0 && removedExtensions.length === 0) {
-      writer.setSchemaMeta(APPLIED_ALLOWED_EXTENSIONS_META_KEY, JSON.stringify(effectiveCurrent));
+      store.setSchemaMeta(APPLIED_ALLOWED_EXTENSIONS_META_KEY, JSON.stringify(effectiveCurrent));
       const exportSummary = await buildConfiguredExports(this.config, emptyDirtyScope, signal);
       return {
         changed: false,
@@ -188,7 +205,10 @@ export class AllowedExtensionsDiffService {
     }
 
     const addedIndexResult = addedExtensions.length > 0
-      ? await new TextIndexer(this.config).index(undefined, {
+      ? await executeTextIndex({
+        config: this.config,
+        ...createDefaultRuntimeBackedTextIndexStores(this.config),
+        targetPath: undefined,
         allowedExtensionsOverride: addedExtensions,
         reconcileMode: "none",
         collectChangedPaths: true,
@@ -196,18 +216,21 @@ export class AllowedExtensionsDiffService {
         signal,
       })
       : createEmptyIncrementalIndexResult(emptyDirtyScope);
+    if (addedExtensions.length > 0) {
+      refreshRuntimeActiveFileStateSnapshot(this.config);
+    }
 
     const deletedDocuments = removedExtensions.length > 0
-      ? repository.listExportDocumentsByExtensions(removedExtensions)
+      ? store.listExportDocumentsByExtensions(removedExtensions)
       : [];
     const deletionResult = removedExtensions.length > 0
-      ? writer.deleteActiveFilesByExtensions(removedExtensions)
+      ? store.deleteActiveFilesByExtensions(removedExtensions)
       : { deletedCount: 0, deletedPaths: [] as string[] };
 
-    writer.setSchemaMeta(APPLIED_ALLOWED_EXTENSIONS_META_KEY, JSON.stringify(effectiveCurrent));
+    store.setSchemaMeta(APPLIED_ALLOWED_EXTENSIONS_META_KEY, JSON.stringify(effectiveCurrent));
 
     const changedDocuments = uniqueDocuments([
-      ...repository.listExportDocumentsByPaths(addedIndexResult.indexedPaths),
+      ...store.listExportDocumentsByPaths(addedIndexResult.indexedPaths),
       ...deletedDocuments,
     ]);
 

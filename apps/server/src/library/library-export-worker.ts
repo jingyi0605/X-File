@@ -67,6 +67,7 @@ async function main(): Promise<void> {
       taskId: runningTaskId,
       deduped: false,
       status,
+      exportResult: exportStage.exportResult,
       dirtyScope: payload.dirtyScope,
       dirtyScopeSummary: describeDirtyScope(payload.dirtyScope),
       exportDataSourceMode: exportStage.resolvedDataSourceMode,

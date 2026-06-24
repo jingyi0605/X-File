@@ -61,7 +61,7 @@ describe("第 5 批：文档库设置、启用状态与侧栏状态", () => {
     expect(screen.queryByText("还没有收藏的目录或标签。")).not.toBeInTheDocument();
   });
 
-  it("可以切换文档库启用状态", async () => {
+  it("保存索引设置时不再暴露资料库启用开关，并始终保持启用", async () => {
     libraryApiMock.getLibraryConfig.mockResolvedValue(
       createLibraryConfig({
         enabled: true,
@@ -73,12 +73,12 @@ describe("第 5 批：文档库设置、启用状态与侧栏状态", () => {
     render(<SettingsPage />);
 
     await userEvent.click(await screen.findByRole("tab", { name: /资料库/ }));
-    await userEvent.click(screen.getByRole("switch", { name: "启用资料库" }));
+    expect(screen.queryByRole("switch", { name: "启用资料库" })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "保存索引设置" }));
 
     await waitFor(() => {
       expect(libraryApiMock.saveLibraryConfig).toHaveBeenCalledWith(
-        expect.objectContaining({ enabled: false }),
+        expect.objectContaining({ enabled: true }),
       );
     });
   });

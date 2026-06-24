@@ -15,6 +15,7 @@ export interface FileScanResult {
 
 const SUPPORTED_INDEX_EXTENSIONS = new Set([
   ".md",
+  ".markdown",
   ".mdx",
   ".txt",
   ".rtf",

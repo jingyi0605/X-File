@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   LibraryBinding,
   LibraryDocumentRecord,
   LibraryDocumentList,
   LibraryFavoriteRecord,
   LibraryFileNode,
+  LibraryIndexStatus,
   LibraryOperationType,
   LibraryPreview,
   LibrarySnapshot,
@@ -24,6 +25,17 @@ import {
   updateLibraryFavorites
 } from "../../api/library";
 import { toApiErrorMessage } from "../../api/http";
+import {
+  fetchNativeLibrarySnapshot,
+  getNativeLibraryPreview,
+  getNativeOnlyOfficePreview,
+  listNativeLibraryDocuments,
+  listNativeLibraryFiles,
+  requestNativeLibraryRefresh,
+  startNativeLibraryWatcher,
+  stopNativeLibraryWatcher,
+} from "../../runtime/native-library-bridge";
+import { getRuntimeConfigSnapshot } from "../../runtime/runtime-config-store";
 import { getPathName } from "../../shared/format";
 import {
   createDefaultLibraryViewState,
@@ -36,6 +48,50 @@ import {
 
 const DOCUMENT_PAGE_LIMIT = 60;
 const FILE_LIST_LIMIT = 200;
+let activeNativeWatcherRootDir: string | null = null;
+
+function normalizeLibraryIndexStatus(
+  status: Partial<LibraryIndexStatus> | null | undefined,
+): LibraryIndexStatus {
+  return {
+    state: typeof status?.state === "string" && status.state.trim() ? status.state : "fresh",
+    dirtyReasons: Array.isArray(status?.dirtyReasons) ? status.dirtyReasons : [],
+    lastRequestedAt: status?.lastRequestedAt ?? null,
+    lastStartedAt: status?.lastStartedAt ?? null,
+    lastCompletedAt: status?.lastCompletedAt ?? null,
+    lastFailedAt: status?.lastFailedAt ?? null,
+    nextAllowedAt: status?.nextAllowedAt ?? null,
+    runningTaskId: status?.runningTaskId ?? null,
+    runningStage: status?.runningStage ?? null,
+    errorSummary: status?.errorSummary ?? null,
+    workerHealth: status?.workerHealth ?? null,
+    progress: status?.progress ?? null,
+    runtimeIndexState: status?.runtimeIndexState ?? null,
+  };
+}
+
+type LibraryDebugTransport = "native" | "http" | "idle";
+
+interface LibraryDebugChannelState {
+  transport: LibraryDebugTransport;
+  detail: string;
+  updatedAt: string | null;
+}
+
+interface LibraryDebugState {
+  enabled: boolean;
+  runtime: "desktop-tauri" | "web";
+  mode: "local" | "mirror";
+  nativeBridgeEligible: boolean;
+  nativeBridgeAvailable: boolean;
+  watcher: LibraryDebugChannelState;
+  health: LibraryDebugChannelState;
+  snapshot: LibraryDebugChannelState;
+  documents: LibraryDebugChannelState;
+  files: LibraryDebugChannelState;
+  preview: LibraryDebugChannelState;
+  refresh: LibraryDebugChannelState;
+}
 
 export interface LibraryState {
   viewState: LibraryViewState;
@@ -58,6 +114,7 @@ export interface LibraryState {
   selectedDocument: LibraryEntry & { kind: "document" } | null;
   selectedDocuments: Array<LibraryEntry & { kind: "document" }>;
   selectedFolderEntries: Array<Extract<LibraryEntry, { kind: "folder" | "tag-directory" }>>;
+  debug: LibraryDebugState;
   setViewState: (updater: LibraryViewState | ((current: LibraryViewState) => LibraryViewState)) => void;
   bindLibrary: (rootDir: string) => Promise<LibraryBinding>;
   reload: () => Promise<void>;
@@ -96,6 +153,16 @@ export function useLibraryState(): LibraryState {
   const [refreshPending, setRefreshPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const nativeWatcherRootDirRef = useRef<string | null>(activeNativeWatcherRootDir);
+  const [debugChannels, setDebugChannels] = useState<Record<keyof Omit<LibraryDebugState, "enabled" | "runtime" | "mode" | "nativeBridgeEligible" | "nativeBridgeAvailable">, LibraryDebugChannelState>>(() => ({
+    watcher: createIdleDebugChannelState("未尝试"),
+    health: createIdleDebugChannelState("未读取"),
+    snapshot: createIdleDebugChannelState("未读取"),
+    documents: createIdleDebugChannelState("未读取"),
+    files: createIdleDebugChannelState("未读取"),
+    preview: createIdleDebugChannelState("未读取"),
+    refresh: createIdleDebugChannelState("未触发"),
+  }));
 
   const entries = useMemo(
     () => buildVisibleEntries(snapshot, documentPage, fileItems, viewState),
@@ -139,6 +206,76 @@ export function useLibraryState(): LibraryState {
     });
   }
 
+  const runtimeConfig = getRuntimeConfigSnapshot().config;
+  const nativeBridgeEligible = runtimeConfig.mode === "local";
+  const nativeBridgeAvailable = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+  function shouldUseNativeLibraryBridge(): boolean {
+    return nativeBridgeEligible && nativeBridgeAvailable;
+  }
+
+  function updateDebugChannel(
+    channel: keyof typeof debugChannels,
+    transport: LibraryDebugTransport,
+    detail: string,
+  ): void {
+    setDebugChannels((current) => ({
+      ...current,
+      [channel]: {
+        transport,
+        detail,
+        updatedAt: new Date().toISOString(),
+      },
+    }));
+  }
+
+  const debug = useMemo<LibraryDebugState>(() => ({
+    enabled: import.meta.env.DEV,
+    runtime: nativeBridgeAvailable ? "desktop-tauri" : "web",
+    mode: runtimeConfig.mode,
+    nativeBridgeEligible,
+    nativeBridgeAvailable,
+    ...debugChannels,
+  }), [debugChannels, nativeBridgeAvailable, nativeBridgeEligible, runtimeConfig.mode]);
+
+  async function syncNativeLibraryWatcher(rootDir: string | null): Promise<void> {
+    if (!shouldUseNativeLibraryBridge()) {
+      return;
+    }
+
+    const nextRootDir = rootDir?.trim() || null;
+    const currentRootDir = nativeWatcherRootDirRef.current;
+    if (nextRootDir === currentRootDir) {
+      return;
+    }
+
+    if (!nextRootDir) {
+      if (currentRootDir) {
+        await stopNativeLibraryWatcher().catch(() => null);
+      }
+      nativeWatcherRootDirRef.current = null;
+      activeNativeWatcherRootDir = null;
+      updateDebugChannel("watcher", "idle", "当前没有已绑定 rootDir，native watcher 已停止");
+      return;
+    }
+
+    if (currentRootDir && currentRootDir !== nextRootDir) {
+      await stopNativeLibraryWatcher().catch(() => null);
+    }
+
+    const watcher = await startNativeLibraryWatcher(nextRootDir).catch(() => null);
+    if (watcher) {
+      nativeWatcherRootDirRef.current = nextRootDir;
+      activeNativeWatcherRootDir = nextRootDir;
+      updateDebugChannel("watcher", "native", `native watcher 已监控: ${nextRootDir}`);
+      return;
+    }
+
+    nativeWatcherRootDirRef.current = null;
+    activeNativeWatcherRootDir = null;
+    updateDebugChannel("watcher", "http", "native watcher 启动失败，当前未拿到原生监控状态");
+  }
+
   async function bindLibrary(rootDir: string): Promise<LibraryBinding> {
     setLoading(true);
     setError(null);
@@ -146,6 +283,7 @@ export function useLibraryState(): LibraryState {
       const binding = await saveLibraryBinding({ rootDir, completeInitialization: true });
       setSnapshot((current) => current ? { ...current, binding } : current);
       setViewState(readLibraryViewState(binding.libraryId));
+      await syncNativeLibraryWatcher(binding.enabled ? binding.rootDir : null);
       await reload();
       await reloadDocuments(true);
       return binding;
@@ -161,11 +299,24 @@ export function useLibraryState(): LibraryState {
     setLoading(true);
     setError(null);
     try {
-      const nextSnapshot = await getLibrarySnapshot();
+      const nativeSnapshot = shouldUseNativeLibraryBridge()
+        ? await fetchNativeLibrarySnapshot().catch(() => null)
+        : null;
+      updateDebugChannel(
+        "snapshot",
+        nativeSnapshot ? "native" : "http",
+        nativeSnapshot
+          ? "snapshot 直接由 Rust 读取本地 binding/runtime-status/exports 组装"
+          : shouldUseNativeLibraryBridge()
+            ? "native snapshot 不可用，已回退 HTTP /api/library/snapshot"
+            : "当前模式不走 native snapshot",
+      );
+      const nextSnapshot = nativeSnapshot?.snapshot ?? await getLibrarySnapshot();
       const nextTags = nextSnapshot.requiresInitialization || !nextSnapshot.binding?.enabled
         ? []
         : await listLibraryTags().catch(() => [] as LibraryTagNode[]);
       setSnapshot(nextSnapshot);
+      await syncNativeLibraryWatcher(nextSnapshot.binding?.enabled ? nextSnapshot.binding?.rootDir ?? null : null);
       setTags(mergeTagSources(nextSnapshot.tags, nextTags));
       const nextLibraryId = nextSnapshot.binding?.libraryId ?? "default";
       if (nextLibraryId !== viewState.libraryId) {
@@ -190,19 +341,69 @@ export function useLibraryState(): LibraryState {
     try {
       const offset = reset ? 0 : documentPage?.items.length ?? 0;
       const [nextDocuments, nextFiles] = await Promise.all([
-        listLibraryDocuments({
-          browseMode: viewState.browseMode,
-          selectedFolderPath: viewState.selectedFolderPath,
-          selectedTagPath: viewState.selectedTagPath,
-          selectedTagPaths: viewState.selectedTagPaths,
-          selectedFavoriteId: viewState.selectedFavoriteId,
-          offset,
-          limit: DOCUMENT_PAGE_LIMIT
-        }),
+        shouldUseNativeLibraryBridge()
+          ? listNativeLibraryDocuments({
+              browseMode: viewState.browseMode,
+              selectedFolderPath: viewState.selectedFolderPath,
+              selectedTagPath: viewState.selectedTagPath,
+              selectedTagPaths: viewState.selectedTagPaths,
+              selectedFavoriteId: viewState.selectedFavoriteId,
+              offset,
+              limit: DOCUMENT_PAGE_LIMIT
+            }).then((result) => {
+              updateDebugChannel(
+                "documents",
+                result ? "native" : "http",
+                result
+                  ? `documents 由 Rust 本地读取 export 清单，browseMode=${viewState.browseMode}`
+                  : "native documents 不可用，已回退 HTTP /api/library/documents",
+              );
+              return result ?? listLibraryDocuments({
+                browseMode: viewState.browseMode,
+                selectedFolderPath: viewState.selectedFolderPath,
+                selectedTagPath: viewState.selectedTagPath,
+                selectedTagPaths: viewState.selectedTagPaths,
+                selectedFavoriteId: viewState.selectedFavoriteId,
+                offset,
+                limit: DOCUMENT_PAGE_LIMIT
+              });
+            })
+          : listLibraryDocuments({
+              browseMode: viewState.browseMode,
+              selectedFolderPath: viewState.selectedFolderPath,
+              selectedTagPath: viewState.selectedTagPath,
+              selectedTagPaths: viewState.selectedTagPaths,
+              selectedFavoriteId: viewState.selectedFavoriteId,
+              offset,
+              limit: DOCUMENT_PAGE_LIMIT
+            }),
         viewState.browseMode === "folder"
-          ? listLibraryFiles(viewState.selectedFolderPath, FILE_LIST_LIMIT)
+          ? shouldUseNativeLibraryBridge()
+            ? listNativeLibraryFiles(viewState.selectedFolderPath, FILE_LIST_LIMIT)
+                .then((result) => {
+                  updateDebugChannel(
+                    "files",
+                    result ? "native" : "http",
+                    result
+                      ? `files 由 Rust 直接遍历本地目录: ${viewState.selectedFolderPath ?? "."}`
+                      : "native files 不可用，已回退 HTTP /api/library/files",
+                  );
+                  return result ?? listLibraryFiles(viewState.selectedFolderPath, FILE_LIST_LIMIT);
+                })
+            : listLibraryFiles(viewState.selectedFolderPath, FILE_LIST_LIMIT)
           : Promise.resolve({ items: [] })
       ]);
+
+      if (!shouldUseNativeLibraryBridge()) {
+        updateDebugChannel("documents", "http", "当前运行模式不走 native documents");
+        updateDebugChannel(
+          "files",
+          viewState.browseMode === "folder" ? "http" : "idle",
+          viewState.browseMode === "folder" ? "当前运行模式不走 native files" : "标签视图不读取目录文件列表",
+        );
+      } else if (viewState.browseMode !== "folder") {
+        updateDebugChannel("files", "idle", "标签视图不读取目录文件列表");
+      }
 
       setDocumentPage((current) => {
         if (reset || !current) {
@@ -233,11 +434,31 @@ export function useLibraryState(): LibraryState {
     setRefreshPending(true);
     setError(null);
     try {
-      const result = await requestLibraryRefresh({
+      const nativeResult = shouldUseNativeLibraryBridge()
+        ? await requestNativeLibraryRefresh({
+            mode: "full",
+            reason: "manual_refresh",
+            targetPath: viewState.browseMode === "folder" ? viewState.selectedFolderPath : null
+          }).catch(() => null)
+        : null;
+      updateDebugChannel(
+        "refresh",
+        nativeResult ? "native" : "http",
+        nativeResult
+          ? `refresh 入口命中 Rust；桌面宿主先跑 index-only，再用 dirtyScope 驱动 export-only，reason=manual_refresh`
+          : shouldUseNativeLibraryBridge()
+            ? "native refresh 不可用，已直连 HTTP /api/library/refresh"
+            : "当前运行模式不走 native refresh",
+      );
+      const result = nativeResult?.backendResponse ?? await requestLibraryRefresh({
         reason: "manual_refresh",
         targetPath: viewState.browseMode === "folder" ? viewState.selectedFolderPath : null
       });
-      setSnapshot((current) => current ? { ...current, status: result.status } : current);
+      setSnapshot((current) =>
+        current
+          ? { ...current, status: normalizeLibraryIndexStatus(result.status) }
+          : current,
+      );
       await reload();
       await reloadDocuments(true);
     } catch (err) {
@@ -375,7 +596,22 @@ export function useLibraryState(): LibraryState {
     setPreviewLoading(true);
     setPreviewError(null);
     try {
-      setPreview(await getLibraryPreview(path, "reading"));
+      const nativePreview = shouldUseNativeLibraryBridge()
+        ? await getNativeLibraryPreview(path, "reading").catch(() => null)
+        : null;
+      const resolvedNativePreview = nativePreview?.kind === "office" && !nativePreview.onlyOffice
+        ? await getNativeOnlyOfficePreview(path, "reading", true).catch(() => nativePreview)
+        : nativePreview;
+      updateDebugChannel(
+        "preview",
+        resolvedNativePreview ? "native" : "http",
+        resolvedNativePreview
+          ? `preview 命中 Rust，kind=${resolvedNativePreview.kind}${resolvedNativePreview.onlyOffice ? " onlyoffice=native" : ""}`
+          : shouldUseNativeLibraryBridge()
+            ? `native preview 不可用，已回退 HTTP /api/library/preview (${path})`
+            : "当前运行模式不走 native preview",
+      );
+      setPreview(resolvedNativePreview ?? await getLibraryPreview(path, "reading"));
     } catch (err) {
       setPreview(null);
       setPreviewError(toApiErrorMessage(err));
@@ -425,6 +661,12 @@ export function useLibraryState(): LibraryState {
 
   useEffect(() => {
     void reload();
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      nativeWatcherRootDirRef.current = activeNativeWatcherRootDir;
+    };
   }, []);
 
   useEffect(() => {
@@ -487,6 +729,7 @@ export function useLibraryState(): LibraryState {
     selectedDocument,
     selectedDocuments,
     selectedFolderEntries,
+    debug,
     setViewState,
     bindLibrary,
     reload,
@@ -504,6 +747,14 @@ export function useLibraryState(): LibraryState {
     downloadSelected,
     toggleFavorite,
     operateFile
+  };
+}
+
+function createIdleDebugChannelState(detail: string): LibraryDebugChannelState {
+  return {
+    transport: "idle",
+    detail,
+    updatedAt: null,
   };
 }
 

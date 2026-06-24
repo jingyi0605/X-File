@@ -1,9 +1,9 @@
 import process from "node:process";
 
 import {
-  buildLibrarySearchIndex,
   createLibraryRuntimeConfig,
   createExportCatalogDataSource,
+  executeSearchIndex,
 } from "@x-file/indexer";
 
 import {
@@ -25,10 +25,6 @@ async function main(): Promise<void> {
   if (payload.mode !== "search-only") {
     throw new Error("search worker 现在只接受 search-only");
   }
-  if (!payload.dirtyScope) {
-    throw new Error("search worker 缺少 dirtyScope");
-  }
-
   const lastRequestedAt = payload.queuedAt ?? new Date().toISOString();
   const runningTaskId = payload.taskId?.trim() || null;
   const lastStartedAt = new Date().toISOString();
@@ -49,8 +45,8 @@ async function main(): Promise<void> {
       includedHiddenPaths: payload.includedHiddenPaths,
     });
     const dataSource = createExportCatalogDataSource(config, dataSourceMode, null);
-    const searchResult = await buildLibrarySearchIndex(config, {
-      dirtyScope: payload.dirtyScope,
+    const searchResult = await executeSearchIndex(config, {
+      dirtyScope: payload.dirtyScope ?? undefined,
       reason: payload.reason,
       targetPath: payload.targetPath ?? undefined,
     }, dataSource);
@@ -66,8 +62,11 @@ async function main(): Promise<void> {
       status,
       dirtyScope: payload.dirtyScope,
       dirtyScopeSummary: describeDirtyScope(payload.dirtyScope),
+      index: null,
       searchBucketCount: searchResult.bucketCount,
       searchManifestPath: searchResult.manifestPath,
+      filesWritten: searchResult.filesWritten,
+      exportedAt: searchResult.exportedAt,
       exportDataSourceMode: dataSourceMode,
       sqliteDriver,
     })}\n`);

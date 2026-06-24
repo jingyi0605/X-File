@@ -21,7 +21,6 @@ const SUPPORTED_COMPLEX_EXTENSIONS = new Set([
   ".ods",
   ".et",
   ".numbers",
-  ".csv",
 ]);
 
 /**

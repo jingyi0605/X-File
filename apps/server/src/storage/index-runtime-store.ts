@@ -47,6 +47,17 @@ function cloneStatus(status: LibraryIndexStatus): LibraryIndexStatus {
     ...status,
     dirtyReasons: [...status.dirtyReasons],
     workerHealth: status.workerHealth ? { ...status.workerHealth } : status.workerHealth,
-    progress: status.progress ? { ...status.progress } : status.progress
+    progress: status.progress ? { ...status.progress } : status.progress,
+    runtimeIndexState: status.runtimeIndexState
+      ? {
+        ...status.runtimeIndexState,
+        failedDocuments: status.runtimeIndexState.failedDocuments.map((item) => ({ ...item })),
+        skippedDocuments: status.runtimeIndexState.skippedDocuments.map((item) => ({ ...item })),
+        parserSkips: status.runtimeIndexState.parserSkips.map((item) => ({
+          ...item,
+          samplePaths: [...item.samplePaths],
+        })),
+      }
+      : status.runtimeIndexState,
   };
 }

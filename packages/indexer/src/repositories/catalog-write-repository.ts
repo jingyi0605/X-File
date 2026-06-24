@@ -1,7 +1,13 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { openDatabase, type LibraryIndexerDatabase, type LibraryIndexerStatement } from "../sqlite/open-database.js";
+import {
+  openDatabase,
+  type LibraryIndexerDatabase,
+  type LibraryIndexerDatabaseDriver,
+  type LibraryIndexerStatement,
+} from "../sqlite/open-database.js";
+import type { ParserSkipCatalogRecord } from "../parser/parser-skip-repository.js";
 import type { FileScanResult } from "../scanner/file-scanner.js";
 import type { ParsedDocument } from "../parser/plain-text-parser.js";
 import type { TagAssignment } from "../tagging/simple-tag-inference.js";
@@ -187,13 +193,22 @@ export class CatalogWriteRepository {
   private activeStatements: PreparedStatements | null = null;
   private activeBootstrapSession = false;
 
-  constructor(private readonly dbPath: string) {}
+  constructor(
+    private readonly dbPath: string,
+    private readonly dbDriver: LibraryIndexerDatabaseDriver | null = null,
+  ) {}
+
+  private openConnection(): LibraryIndexerDatabase {
+    return this.dbDriver
+      ? this.dbDriver.open(this.dbPath)
+      : openDatabase(this.dbPath);
+  }
 
   beginSession(): void {
     if (this.activeDb) {
       return;
     }
-    this.activeDb = openDatabase(this.dbPath);
+    this.activeDb = this.openConnection();
     this.activeStatements = this.prepareStatements(this.activeDb);
     this.activeBootstrapSession = this.detectBootstrapSession(this.activeDb);
   }
@@ -213,7 +228,7 @@ export class CatalogWriteRepository {
       return handler(this.activeDb, this.activeStatements);
     }
 
-    const db = openDatabase(this.dbPath);
+    const db = this.openConnection();
     const statements = this.prepareStatements(db);
     try {
       return handler(db, statements);
@@ -268,6 +283,24 @@ export class CatalogWriteRepository {
           AND d.index_status = 'indexed'
       `).get() as { count?: number } | undefined;
       return Number(row?.count ?? 0);
+    });
+  }
+
+  listActiveFiles(scope: ReconcileScope = { kind: "all" }): ActiveIndexedFileState[] {
+    return this.withConnection((_, statements) => {
+      let rows: Array<{ path: string; last_seen_at: string | null }> = [];
+      if (scope.kind === "exact" && scope.value) {
+        rows = statements.listActiveFilesExact.all(this.normalizeRelativePath(scope.value)) as Array<{ path: string; last_seen_at: string | null }>;
+      } else if (scope.kind === "prefix" && scope.value) {
+        const normalizedPrefix = this.normalizeRelativePath(scope.value).replace(/\/+$/, "");
+        rows = statements.listActiveFilesPrefix.all(normalizedPrefix, `${normalizedPrefix}/%`) as Array<{ path: string; last_seen_at: string | null }>;
+      } else {
+        rows = statements.listActiveFilesAll.all() as Array<{ path: string; last_seen_at: string | null }>;
+      }
+
+      return rows
+        .map((row) => this.getActiveIndexedFileState(row.path))
+        .filter((item): item is ActiveIndexedFileState => Boolean(item));
     });
   }
 
@@ -1081,6 +1114,40 @@ export class CatalogWriteRepository {
     return true;
   }
 
+  deleteActiveFilesByPaths(
+    relativePaths: string[],
+    deletedAt = new Date().toISOString(),
+  ): { deletedCount: number; deletedPaths: string[] } {
+    const uniquePaths = [...new Set(relativePaths.map(item => this.normalizeRelativePath(item)).filter(Boolean))];
+    if (uniquePaths.length === 0) {
+      return {
+        deletedCount: 0,
+        deletedPaths: [],
+      };
+    }
+
+    return this.withConnection((db, statements) => {
+      try {
+        db.exec("BEGIN IMMEDIATE");
+        const deletedPaths: string[] = [];
+        for (const relativePath of uniquePaths) {
+          if (this.deleteDocumentInConnection(db, statements, relativePath, deletedAt)) {
+            deletedPaths.push(relativePath);
+          }
+        }
+        this.cleanupOrphanTagsInConnection(db);
+        db.exec("COMMIT");
+        return {
+          deletedCount: deletedPaths.length,
+          deletedPaths,
+        };
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    });
+  }
+
   private upsertDocumentInConnection(
     db: LibraryIndexerDatabase,
     statements: PreparedStatements,
@@ -1556,6 +1623,31 @@ export class CatalogWriteRepository {
     });
   }
 
+  listParserSkips(limit = 200): ParserSkipCatalogRecord[] {
+    return this.withConnection((db) => {
+      const rows = db.prepare(`
+        SELECT skip_key, adapter, reason_code, extension, sample_paths_json, sample_count, total_count, last_message, first_seen_at, last_seen_at, last_run_at
+        FROM parser_skip_catalog
+        ORDER BY last_seen_at DESC, extension ASC
+        LIMIT ?
+      `).all(limit) as Array<Record<string, unknown>>;
+
+      return rows.map((row) => ({
+        skipKey: String(row.skip_key),
+        adapter: String(row.adapter),
+        reasonCode: String(row.reason_code),
+        extension: String(row.extension),
+        samplePaths: parseSamplePaths(row.sample_paths_json),
+        sampleCount: Number(row.sample_count ?? 0),
+        totalCount: Number(row.total_count ?? 0),
+        lastMessage: row.last_message ? String(row.last_message) : null,
+        firstSeenAt: String(row.first_seen_at),
+        lastSeenAt: String(row.last_seen_at),
+        lastRunAt: String(row.last_run_at),
+      }));
+    });
+  }
+
   recomputeDocumentTags(
     entries: Array<{
       documentId: string;
@@ -1947,6 +2039,21 @@ export class CatalogWriteRepository {
         throw error;
       }
     });
+  }
+}
+
+function parseSamplePaths(raw: unknown): string[] {
+  if (typeof raw !== "string" || raw.trim().length === 0) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+  } catch {
+    return [];
   }
 }
 

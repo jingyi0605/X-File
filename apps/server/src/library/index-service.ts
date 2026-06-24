@@ -75,7 +75,7 @@ export class LibraryIndexService {
   getStatus(rootDir: string): LibraryIndexStatus {
     const task = this.taskManager.get(LIBRARY_INDEX_TASK_TYPE, rootDir);
     if (task && task.state !== "fresh") {
-      const status = this.statusFromTask(rootDir, task);
+      const status = this.withRuntimeIndexState(rootDir, this.statusFromTask(rootDir, task));
       if (task.state === "queued" || task.state === "running" || task.state === "queue_timeout" || task.state === "failed") {
         this.runtimeStore.setStatus(rootDir, status);
       }
@@ -88,26 +88,26 @@ export class LibraryIndexService {
     if (storedStatus?.state === "cooldown" && storedStatus.nextAllowedAt) {
       const nextAllowedAt = Date.parse(storedStatus.nextAllowedAt);
       if (Number.isFinite(nextAllowedAt) && nextAllowedAt <= Date.now()) {
-        const freshStatus = createStatus("fresh", {
+        const freshStatus = this.withRuntimeIndexState(rootDir, createStatus("fresh", {
           ...storedStatus,
           state: "fresh",
           nextAllowedAt: null,
           runningTaskId: null,
           runningStage: null,
           dirtyReasons: this.runtimeStore.listDirtyReasons(rootDir)
-        });
+        }));
         this.applyStatus(rootDir, freshStatus);
         return freshStatus;
       }
     }
 
     if (storedStatus) {
-      return storedStatus;
+      return this.withRuntimeIndexState(rootDir, storedStatus);
     }
 
-    return createStatus("fresh", {
+    return this.withRuntimeIndexState(rootDir, createStatus("fresh", {
       dirtyReasons: this.runtimeStore.listDirtyReasons(rootDir)
-    });
+    }));
   }
 
   markDirty(rootDir: string, reason: string, targetPath: string | null = null): void {
@@ -124,8 +124,16 @@ export class LibraryIndexService {
 
   /** 统一写入：内存缓存 + 磁盘持久化，保证重启后面板仍能读取进度与时间线。 */
   private applyStatus(rootDir: string, status: LibraryIndexStatus): void {
-    this.runtimeStore.setStatus(rootDir, status);
-    this.runtimeStatusStore.write(rootDir, status);
+    const nextStatus = this.withRuntimeIndexState(rootDir, status);
+    this.runtimeStore.setStatus(rootDir, nextStatus);
+    this.runtimeStatusStore.write(rootDir, nextStatus);
+  }
+
+  private withRuntimeIndexState(rootDir: string, status: LibraryIndexStatus): LibraryIndexStatus {
+    return {
+      ...status,
+      runtimeIndexState: this.runtimeStatusStore.readRuntimeIndexState(rootDir),
+    };
   }
 
   private registerTasks(): void {

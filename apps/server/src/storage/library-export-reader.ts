@@ -153,6 +153,7 @@ export class LibraryExportReader {
         // 让“总文件数 / 已扫描 / 已更新”等指标即使未重新索引也能正常展示。
         progress: fallbackStatus.progress ?? deriveSteadyProgress(documentCount),
         dirtyReasons: fallbackStatus.dirtyReasons,
+        runtimeIndexState: fallbackStatus.runtimeIndexState ?? null,
       },
       tags: readTags(exportDir, manifest, tagCounts),
       favorites,

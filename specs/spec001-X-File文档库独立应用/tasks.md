@@ -468,7 +468,7 @@
     2. Windows 构建命令有明确说明或 CI 配置
     3. 原生依赖打包策略写清楚
   - 怎么验证：
-    - `pnpm --dir apps/desktop exec tauri build --ci --bundles app`
+    - `pnpm --dir apps/desktop exec tauri build --bundles app`
     - macOS 本地打包命令
     - `node scripts/prepare-bundled-server.mjs`
     - 包内 Node 启动 `x-file-server/dist/main.js` 后访问 `/api/health`

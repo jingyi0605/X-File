@@ -1,7 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import type { LibraryIndexProgress, LibraryIndexStatus } from "@x-file/shared";
+import type {
+  LibraryIndexProgress,
+  LibraryIndexStatus,
+  LibraryRuntimeIndexState,
+} from "@x-file/shared";
+import { readRuntimeIndexStateSnapshot, type RuntimeIndexStateSnapshot } from "@x-file/indexer";
 
 /**
  * 索引运行时状态在磁盘上的持久化快照。
@@ -36,7 +41,7 @@ export class LibraryRuntimeStatusStore {
       }
       const raw = fs.readFileSync(filePath, "utf8");
       const parsed = JSON.parse(raw) as Partial<PersistedRuntimeStatus>;
-      return normalizePersistedStatus(parsed);
+      return normalizePersistedStatus(parsed, this.readRuntimeIndexState(rootDir));
     } catch {
       return null;
     }
@@ -67,6 +72,21 @@ export class LibraryRuntimeStatusStore {
     }
   }
 
+  readRuntimeIndexState(rootDir: string): LibraryRuntimeIndexState | null {
+    const normalized = rootDir?.trim();
+    if (!normalized) {
+      return null;
+    }
+    try {
+      const snapshot = readRuntimeIndexStateSnapshot({
+        indexDir: path.join(normalized, ".ai-index"),
+      } as Parameters<typeof readRuntimeIndexStateSnapshot>[0]);
+      return normalizeRuntimeIndexState(snapshot);
+    } catch {
+      return null;
+    }
+  }
+
   private resolveFilePath(rootDir: string): string | null {
     const normalized = rootDir?.trim();
     if (!normalized) {
@@ -79,6 +99,7 @@ export class LibraryRuntimeStatusStore {
 /** 把磁盘上的部分字段还原为完整的 LibraryIndexStatus，补齐默认值。 */
 function normalizePersistedStatus(
   parsed: Partial<PersistedRuntimeStatus>,
+  runtimeIndexState: LibraryRuntimeIndexState | null,
 ): LibraryIndexStatus | null {
   if (!parsed || !parsed.state) {
     return null;
@@ -96,5 +117,44 @@ function normalizePersistedStatus(
     errorSummary: parsed.errorSummary ?? null,
     workerHealth: null,
     progress: parsed.progress ?? null,
+    runtimeIndexState,
+  };
+}
+
+function normalizeRuntimeIndexState(
+  snapshot: RuntimeIndexStateSnapshot | null,
+): LibraryRuntimeIndexState | null {
+  if (!snapshot) {
+    return null;
+  }
+  return {
+    generatedAt: snapshot.generatedAt,
+    failedDocuments: snapshot.failedDocuments.map((item) => ({
+      path: item.path,
+      extension: item.extension,
+      size: item.size,
+      mtime: item.mtime,
+      indexStatus: item.indexStatus,
+    })),
+    skippedDocuments: snapshot.skippedDocuments.map((item) => ({
+      path: item.path,
+      extension: item.extension,
+      size: item.size,
+      mtime: item.mtime,
+      indexStatus: item.indexStatus,
+    })),
+    parserSkips: snapshot.parserSkips.map((item) => ({
+      skipKey: item.skipKey,
+      adapter: item.adapter,
+      reasonCode: item.reasonCode,
+      extension: item.extension,
+      samplePaths: [...item.samplePaths],
+      sampleCount: item.sampleCount,
+      totalCount: item.totalCount,
+      lastMessage: item.lastMessage,
+      firstSeenAt: item.firstSeenAt,
+      lastSeenAt: item.lastSeenAt,
+      lastRunAt: item.lastRunAt,
+    })),
   };
 }

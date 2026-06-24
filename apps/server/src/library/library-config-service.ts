@@ -8,6 +8,7 @@ const DEFAULT_ALLOWED_EXTENSIONS = [
   ".md",
   ".markdown",
   ".txt",
+  ".csv",
   ".pdf",
   ".doc",
   ".docx",

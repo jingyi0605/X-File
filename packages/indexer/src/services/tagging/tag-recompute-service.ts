@@ -3,23 +3,23 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import type { RuntimeConfig } from "../../types/runtime-config.js";
 import {
-  CatalogRepository,
   type RecomputeScope,
   type ResolvedDocumentTagRow,
   type TagRuleRow,
   type TagRecomputeDocumentRow,
   type TagResolvedSourceType,
 } from "../../repositories/catalog-repository.js";
-import {
-  CatalogWriteRepository,
-  type RecomputedResolvedTagEntry,
-} from "../../repositories/catalog-write-repository.js";
+import { type RecomputedResolvedTagEntry } from "../../repositories/catalog-write-repository.js";
 import { SimpleTagInferenceEngine } from "../../tagging/simple-tag-inference.js";
 import type { FileScanResult } from "../../scanner/file-scanner.js";
 import type { ParsedDocument } from "../../parser/plain-text-parser.js";
-import { ExportBuilder } from "../export/export-builder.js";
+import { buildLibraryExport } from "../export/export-builder.js";
 import type { DirtyScope } from "../dirty/dirty-scope-resolver.js";
 import { throwIfAborted, yieldToEventLoop } from "../../utils/abort.js";
+import {
+  createRuntimePreferredTagRecomputeStore,
+  type TagRecomputeStore,
+} from "./tag-recompute-store.js";
 
 export interface TagRecomputeRunInput {
   scope?: RecomputeScope;
@@ -54,6 +54,10 @@ export interface TagRecomputeProgressSnapshot {
   current: number;
   total: number;
   percent: number;
+}
+
+export interface TagRecomputeDependencies {
+  store?: TagRecomputeStore;
 }
 
 interface ResolvedTagAccumulator {
@@ -122,14 +126,16 @@ function setResolvedTag(
  * 当前只合并人工绑定、文件夹绑定和系统派生结果。
  */
 export class TagRecomputeService {
-  constructor(private readonly config: RuntimeConfig) {}
+  constructor(
+    private readonly config: RuntimeConfig,
+    private readonly dependencies: TagRecomputeDependencies = {},
+  ) {}
 
   async run(input: TagRecomputeRunInput = {}): Promise<TagRecomputeResult> {
     const startedAt = performance.now();
-    const repository = new CatalogRepository(this.config.dbPath, {
-      tempStore: "MEMORY",
+    const store = this.dependencies.store ?? createRuntimePreferredTagRecomputeStore({
+      config: this.config,
     });
-    const writer = new CatalogWriteRepository(this.config.dbPath);
     const tagger = new SimpleTagInferenceEngine();
     const observedAt = new Date().toISOString();
     const scope = input.scope ?? { kind: "full" as const };
@@ -141,7 +147,7 @@ export class TagRecomputeService {
     let writeMs = 0;
     const folderBindingOnly = isFolderBindingOnlyScope(scope);
 
-    const documents = repository.listRecomputeCandidateDocuments(scope);
+    const documents = store.listRecomputeCandidateDocuments(scope);
     const documentIds = documents.map(item => item.documentId);
     const documentPaths = documents.map(item => item.path);
     const totalDocuments = documents.length;
@@ -153,12 +159,12 @@ export class TagRecomputeService {
       total: Math.max(totalDocuments, 1),
       percent: totalDocuments === 0 ? 100 : 2,
     });
-    const manualBindingsByDocument = this.resolveManualAssignments(repository, documentIds);
-    const folderBindingsByDocument = this.resolveFolderAssignments(repository, scope, documentPaths);
+    const manualBindingsByDocument = this.resolveManualAssignments(store, documentIds);
+    const folderBindingsByDocument = this.resolveFolderAssignments(store, scope, documentPaths);
     const retainedResolvedByDocument = folderBindingOnly
-      ? this.resolveRetainedResolvedAssignments(repository, documentIds)
+      ? this.resolveRetainedResolvedAssignments(store, documentIds)
       : new Map<string, ResolvedDocumentTagRow[]>();
-    const smartRules = folderBindingOnly ? [] : repository.listAllEnabledTagRules();
+    const smartRules = folderBindingOnly ? [] : store.listAllEnabledTagRules();
 
     const accumulators = new Map<string, ResolvedTagAccumulator>();
 
@@ -217,7 +223,7 @@ export class TagRecomputeService {
       percent: resolveProgressPercent("write", totalDocuments, totalDocuments),
     });
     const writeStartedAt = performance.now();
-    const written = writer.recomputeResolvedTags(
+    const written = store.recomputeResolvedTags(
       [...accumulators.values()].flatMap(item => item.entries),
       observedAt,
       documentIds,
@@ -238,7 +244,7 @@ export class TagRecomputeService {
       updatedEntries,
       dirtyTagPathsForChanges,
     );
-    const hasTagDefinitionDrift = this.hasTagDefinitionDriftSinceLastExport(repository);
+    const hasTagDefinitionDrift = this.hasTagDefinitionDriftSinceLastExport(store);
     const shouldRefreshExport = updatedCount > 0 || !isDirtyScopeEmpty(dirtyScope) || hasTagDefinitionDrift;
     let exportResult: TagRecomputeResult["exportResult"] = null;
     let exportMs = 0;
@@ -252,7 +258,7 @@ export class TagRecomputeService {
         percent: resolveProgressPercent("export", totalDocuments, totalDocuments),
       });
       const exportStartedAt = performance.now();
-      const exported = await new ExportBuilder(this.config).build({
+      const exported = await buildLibraryExport(this.config, {
         dirtyScope: {
           ...dirtyScope,
           trigger: "full",
@@ -293,8 +299,8 @@ export class TagRecomputeService {
     };
   }
 
-  private resolveManualAssignments(repository: CatalogRepository, documentIds: string[]) {
-    const rows = repository.listManualDocumentTagBindingsByDocumentIds(documentIds);
+  private resolveManualAssignments(store: TagRecomputeStore, documentIds: string[]) {
+    const rows = store.listManualDocumentTagBindingsByDocumentIds(documentIds);
     const byDocument = new Map<string, typeof rows>();
     rows.forEach(row => {
       const current = byDocument.get(row.documentId) ?? [];
@@ -304,10 +310,10 @@ export class TagRecomputeService {
     return byDocument;
   }
 
-  private resolveFolderAssignments(repository: CatalogRepository, scope: RecomputeScope, documentPaths: string[]) {
+  private resolveFolderAssignments(store: TagRecomputeStore, scope: RecomputeScope, documentPaths: string[]) {
     const rows = scope.kind === "folder" && scope.folderPath
-      ? repository.listEffectiveFolderTagBindingsForFolderScope(scope.folderPath)
-      : repository.listEffectiveFolderTagBindingsForDocumentPaths(documentPaths);
+      ? store.listEffectiveFolderTagBindingsForFolderScope(scope.folderPath)
+      : store.listEffectiveFolderTagBindingsForDocumentPaths(documentPaths);
     const byDocument = new Map<string, EffectiveFolderTagAssignment[]>();
     rows.forEach(row => {
       const current = byDocument.get(row.documentId) ?? [];
@@ -321,8 +327,8 @@ export class TagRecomputeService {
     return byDocument;
   }
 
-  private resolveRetainedResolvedAssignments(repository: CatalogRepository, documentIds: string[]) {
-    const rows = repository.listResolvedDocumentTagsByDocumentIds(documentIds)
+  private resolveRetainedResolvedAssignments(store: TagRecomputeStore, documentIds: string[]) {
+    const rows = store.listResolvedDocumentTagsByDocumentIds(documentIds)
       .filter((row) => row.sourceType !== "manual_document" && row.sourceType !== "folder_binding");
     const byDocument = new Map<string, ResolvedDocumentTagRow[]>();
     rows.forEach((row) => {
@@ -489,7 +495,7 @@ export class TagRecomputeService {
     input.onProgress?.(progress);
   }
 
-  private hasTagDefinitionDriftSinceLastExport(repository: CatalogRepository): boolean {
+  private hasTagDefinitionDriftSinceLastExport(store: TagRecomputeStore): boolean {
     const statusPath = path.join(this.config.exportDir, "status.json");
     if (!fs.existsSync(statusPath)) {
       return true;
@@ -500,7 +506,7 @@ export class TagRecomputeService {
       if (!exportedAt) {
         return true;
       }
-      return repository.listTagDefinitions(true).some((definition) => definition.updatedAt > exportedAt);
+      return store.listTagDefinitions(true).some((definition) => definition.updatedAt > exportedAt);
     } catch {
       return true;
     }

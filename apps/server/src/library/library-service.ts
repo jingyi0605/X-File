@@ -40,6 +40,7 @@ const DEFAULT_ALLOWED_EXTENSIONS = [
   ".md",
   ".markdown",
   ".txt",
+  ".csv",
   ".pdf",
   ".doc",
   ".docx",
@@ -550,6 +551,8 @@ export class LibraryService {
       return null;
     }
 
+    // 这是 Node sidecar 服务面唯一允许触达数据面的入口。
+    // 像 ONLYOFFICE 这类回写链只能上报“文件已变化”，不能直接驱动 index/export 执行实现。
     return this.indexService.requestRefresh(binding, {
       reason,
       targetPath

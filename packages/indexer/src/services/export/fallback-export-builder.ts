@@ -4,15 +4,10 @@ import path from "node:path";
 
 import { FileScanner, type FileScanResult } from "../../scanner/file-scanner.js";
 import type { RuntimeConfig } from "../../types/runtime-config.js";
+import type { DirtyScope } from "../dirty/dirty-scope-resolver.js";
 import { throwIfAborted } from "../../utils/abort.js";
-
-export interface FallbackExportResult {
-  outputDir: string;
-  manifestPath: string;
-  documentCount: number;
-  filesWritten: string[];
-  exportedAt: string;
-}
+import { buildLibraryExport, type ExportBuildResult } from "./export-builder.js";
+import type { ExportCatalogDataSource, ExportCatalogSnapshot } from "./export-data-source.js";
 
 export interface FallbackExportIndexResult {
   scannedCount: number;
@@ -30,13 +25,7 @@ export interface FallbackExportIndexResult {
   failureOverflowCount: number;
   deletedCount: number;
   deletedPaths: string[];
-  dirtyScope: {
-    trigger: "full" | "incremental";
-    changedPaths: string[];
-    dirtyDirectories: string[];
-    dirtyTagPaths: string[];
-    dirtyRelations: string[];
-  };
+  dirtyScope: DirtyScope;
   timingsMs: Record<string, number>;
   batchStats: {
     writeBatchSize: number;
@@ -56,113 +45,71 @@ export interface FallbackExportIndexResult {
   };
 }
 
+export interface FallbackExportResult extends ExportBuildResult {
+  documentCount: number;
+}
+
 interface FallbackDocument {
-  document_id: string;
+  documentId: string;
   path: string;
   title: string;
   summary: string;
+  tags: string[];
+  derivedTags: string[];
   mtime: string;
-  direct_tags: string[];
-  derived_tags: string[];
-}
-
-interface FallbackFolder {
-  path: string;
-  name: string;
-  parent_path: string | null;
-  direct_document_count: number;
-  document_count: number;
 }
 
 const MAX_SUMMARY_CHARS = 240;
 
+function createFullDirtyScope(): DirtyScope {
+  return {
+    trigger: "full",
+    changedPaths: [],
+    deletedPaths: [],
+    dirtyDirectories: [],
+    dirtyTagPaths: [],
+    dirtyMetaShards: [],
+    dirtyDetailShards: [],
+    dirtyPostingBuckets: [],
+    dirtyRelations: [],
+  };
+}
+
+/**
+ * better-sqlite3 绑定不可用时的应急导出。
+ * 这里不再手搓第二套 manifest/meta/search 格式，而是把扫描结果收成最小 data source，
+ * 复用正式 ExportBuilder / SearchIndexBuilder 产物契约。
+ */
 export async function buildFallbackExport(
   config: RuntimeConfig,
   options: {
     targetPath?: string;
     reason?: string;
     signal?: AbortSignal;
-  } = {}
+  } = {},
 ): Promise<{
   index: FallbackExportIndexResult;
   exportResult: FallbackExportResult;
 }> {
-  const exportedAt = new Date().toISOString();
   const scanner = new FileScanner(config.rootDir, {
     allowedExtensions: config.allowedExtensions,
-    includedHiddenPaths: config.includedHiddenPaths
+    includedHiddenPaths: config.includedHiddenPaths,
   });
-  const files = scanner.scan(options.targetPath, options.signal);
+
+  // fallback 不再尝试“局部导出”特殊语义。
+  // 只要走到这条应急路径，就直接扫描允许扩展名下的全部文件，保证最终导出是自洽的完整快照。
+  const files = scanner.scan(undefined, options.signal);
   const indexableFiles = files.filter((file) => config.maxFileSizeBytes <= 0 || file.size <= config.maxFileSizeBytes);
   const skippedFiles = files.filter((file) => config.maxFileSizeBytes > 0 && file.size > config.maxFileSizeBytes);
   const documents = indexableFiles.map((file) => toFallbackDocument(config.rootDir, file));
-  const filesWritten: string[] = [];
-
-  fs.mkdirSync(config.exportDir, { recursive: true });
-  fs.mkdirSync(path.join(config.exportDir, "meta"), { recursive: true });
-
-  const statusPath = path.join(config.exportDir, "status.json");
-  writeJson(statusPath, {
-    version: 2,
-    exported_at: exportedAt,
-    document_count: documents.length,
-    reason: options.reason ?? "fallback_export"
-  });
-  filesWritten.push(statusPath);
-
-  const taxonomyPath = path.join(config.exportDir, "taxonomy.json");
-  writeJson(taxonomyPath, {
-    version: 2,
-    root_types: [],
-    nodes: [],
-    tree: []
-  });
-  filesWritten.push(taxonomyPath);
-
-  const bootstrapPath = path.join(config.exportDir, "bootstrap.json");
-  writeJson(bootstrapPath, {
-    version: 2,
-    folders: buildFolders(documents)
-  });
-  filesWritten.push(bootstrapPath);
-
-  const metaPath = path.join(config.exportDir, "meta", "fallback.json");
-  writeJson(metaPath, {
-    version: 2,
-    shard_type: "meta",
-    exported_at: exportedAt,
-    documents
-  });
-  filesWritten.push(metaPath);
-
-  const manifestPath = path.join(config.exportDir, "manifest.json");
-  writeJson(manifestPath, {
-    version: 2,
-    format: "static-v2",
-    generated_at: exportedAt,
-    fallback: true,
-    entries: {
-      status: "status.json",
-      taxonomy: "taxonomy.json",
-      bootstrap: "bootstrap.json"
-    },
-    meta_shards: [
-      {
-        id: "meta_fallback",
-        directory: ".",
-        path: "meta/fallback.json",
-        document_count: documents.length
-      }
-    ],
-    detail_shards: [],
-    tag_shards: [],
-    relation_shards: [],
-    search_buckets: []
-  });
-  filesWritten.push(manifestPath);
+  const dataSource = createFallbackExportCatalogDataSource(documents);
 
   throwIfAborted(options.signal, "文档库兜底导出已取消");
-  await Promise.resolve();
+  const exportResult = await buildLibraryExport(config, {
+    dirtyScope: createFullDirtyScope(),
+    reason: options.reason ?? "fallback_export",
+    signal: options.signal,
+  }, dataSource);
 
   const indexedPaths = documents.map((document) => document.path);
   const skippedPaths = skippedFiles.map((file) => file.relativePath);
@@ -180,49 +127,159 @@ export async function buildFallbackExport(
       deletedCount: 0,
       deletedPaths: [],
       dirtyScope: {
-        trigger: options.targetPath ? "incremental" : "full",
+        ...createFullDirtyScope(),
         changedPaths: [...indexedPaths, ...skippedPaths].sort((left, right) => left.localeCompare(right, "zh-Hans-CN")),
         dirtyDirectories: [...new Set([...documents.map((document) => directoryOf(document.path)), ...skippedPaths.map(directoryOf)])],
-        dirtyTagPaths: [],
-        dirtyRelations: []
       },
       timingsMs: {},
       batchStats: {
         writeBatchSize: documents.length,
         successBatchCount: documents.length > 0 ? 1 : 0,
-        failureBatchCount: 0
+        failureBatchCount: 0,
       },
       tagStats: {
         directAssignedCount: 0,
         derivedAssignedCount: 0,
         avgDirectPerIndexedDocument: 0,
-        avgDerivedPerIndexedDocument: 0
+        avgDerivedPerIndexedDocument: 0,
       },
       skipStats: {
         skippedCount: skippedPaths.length,
         skippedByExtension: countSkippedByExtension(skippedFiles),
-        skipCatalogRecords: skippedPaths.length > 0 ? 1 : 0
-      }
+        skipCatalogRecords: skippedPaths.length > 0 ? 1 : 0,
+      },
     },
     exportResult: {
-      outputDir: config.exportDir,
-      manifestPath,
+      ...exportResult,
       documentCount: documents.length,
-      filesWritten,
-      exportedAt
+    },
+  };
+}
+
+export function createFallbackExportCatalogDataSource(
+  documents: Array<{
+    documentId: string;
+    path: string;
+    title: string;
+    summary: string;
+    tags?: string[];
+    derivedTags?: string[];
+    mtime: string;
+  }>,
+): ExportCatalogDataSource {
+  const snapshot: ExportCatalogSnapshot = {
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    tags: [],
+    documents: documents
+      .map((document) => ({
+        documentId: document.documentId,
+        path: document.path,
+        title: document.title,
+        summary: document.summary,
+        tags: [...(document.tags ?? [])],
+        derivedTags: [...(document.derivedTags ?? [])],
+        mtime: document.mtime,
+      }))
+      .sort((left, right) => left.path.localeCompare(right.path, "zh-Hans-CN")),
+  };
+  return createSnapshotBackedExportCatalogDataSource(snapshot);
+}
+
+function createSnapshotBackedExportCatalogDataSource(snapshot: ExportCatalogSnapshot): ExportCatalogDataSource {
+  const documentMap = new Map(snapshot.documents.map((document) => [document.documentId, cloneDocument(document)]));
+  const documents = [...documentMap.values()].sort((left, right) => left.path.localeCompare(right.path, "zh-Hans-CN"));
+  const tags = [...snapshot.tags].map((tag) => ({ ...tag }));
+  const tagMap = new Map(tags.map((tag) => [tag.path, tag]));
+
+  return {
+    listExportTags() {
+      return tags.map((tag) => ({ ...tag }));
+    },
+    *iterateExportDocumentRecords(batchSize = 1000) {
+      for (let index = 0; index < documents.length; index += batchSize) {
+        yield documents.slice(index, index + batchSize).map(cloneDocument);
+      }
+    },
+    *iterateTagPostingRows(batchSize = 5000) {
+      const rows = [
+        ...buildTagPostingRows(documents, tagMap, false),
+        ...buildTagPostingRows(documents, tagMap, true),
+      ];
+      for (let index = 0; index < rows.length; index += batchSize) {
+        yield rows.slice(index, index + batchSize).map((row) => ({ ...row }));
+      }
+    },
+    *iterateDirectTagPostingRows(batchSize = 5000) {
+      const rows = buildTagPostingRows(documents, tagMap, false);
+      for (let index = 0; index < rows.length; index += batchSize) {
+        yield rows.slice(index, index + batchSize).map((row) => ({ ...row }));
+      }
+    },
+    listExportDocumentsByPaths(paths: string[]) {
+      const wanted = new Set(paths.map((item) => item.trim()).filter(Boolean));
+      return documents
+        .filter((document) => wanted.has(document.path))
+        .map(cloneDocument);
+    },
+  };
+}
+
+function buildTagPostingRows(
+  documents: FallbackDocument[],
+  tagMap: Map<string, { rootType: string }>,
+  derived: boolean,
+) {
+  const rows: Array<{
+    rootType: string;
+    tagPath: string;
+    documentId: string;
+    path: string;
+    title: string;
+    derived: boolean;
+  }> = [];
+  for (const document of documents) {
+    const tagPaths = derived ? document.derivedTags : document.tags;
+    for (const tagPath of tagPaths) {
+      rows.push({
+        rootType: tagMap.get(tagPath)?.rootType ?? inferRootType(tagPath),
+        tagPath,
+        documentId: document.documentId,
+        path: document.path,
+        title: document.title,
+        derived,
+      });
     }
+  }
+  return rows.sort((left, right) => (
+    left.rootType.localeCompare(right.rootType, "zh-Hans-CN")
+    || left.tagPath.localeCompare(right.tagPath, "zh-Hans-CN")
+    || left.path.localeCompare(right.path, "zh-Hans-CN")
+    || left.documentId.localeCompare(right.documentId, "zh-Hans-CN")
+  ));
+}
+
+function inferRootType(tagPath: string): string {
+  return tagPath.split("/").filter(Boolean)[0] ?? "";
+}
+
+function cloneDocument(document: FallbackDocument): FallbackDocument {
+  return {
+    ...document,
+    tags: [...document.tags],
+    derivedTags: [...document.derivedTags],
   };
 }
 
 function toFallbackDocument(rootDir: string, file: FileScanResult): FallbackDocument {
   return {
-    document_id: stableDocumentId(file.relativePath),
+    documentId: stableDocumentId(file.relativePath),
     path: file.relativePath,
     title: path.posix.basename(file.relativePath),
     summary: readSummary(path.join(rootDir, file.relativePath)),
+    tags: [],
+    derivedTags: [],
     mtime: file.mtime,
-    direct_tags: [],
-    derived_tags: []
   };
 }
 
@@ -242,54 +299,9 @@ function readSummary(filePath: string): string {
   }
 }
 
-function buildFolders(documents: FallbackDocument[]): FallbackFolder[] {
-  const folders = new Map<string, FallbackFolder>();
-  ensureFolder(folders, ".");
-
-  for (const document of documents) {
-    const directory = directoryOf(document.path);
-    ensureFolder(folders, directory).direct_document_count += 1;
-    let current: string | null = directory;
-    while (current) {
-      ensureFolder(folders, current).document_count += 1;
-      current = parentOf(current);
-    }
-  }
-
-  return [...folders.values()].sort((left, right) => left.path.localeCompare(right.path, "zh-Hans-CN"));
-}
-
-function ensureFolder(
-  folders: Map<string, FallbackFolder>,
-  folderPath: string
-): FallbackFolder {
-  const normalized = folderPath || ".";
-  const existing = folders.get(normalized);
-  if (existing) {
-    return existing;
-  }
-  const folder = {
-    path: normalized,
-    name: normalized === "." ? "资料库" : path.posix.basename(normalized),
-    parent_path: parentOf(normalized),
-    direct_document_count: 0,
-    document_count: 0
-  };
-  folders.set(normalized, folder);
-  return folder;
-}
-
 function directoryOf(filePath: string): string {
   const directory = path.posix.dirname(filePath);
   return directory && directory !== "" ? directory : ".";
-}
-
-function parentOf(folderPath: string): string | null {
-  if (!folderPath || folderPath === ".") {
-    return null;
-  }
-  const parent = path.posix.dirname(folderPath);
-  return parent && parent !== "" ? parent : ".";
 }
 
 function stableDocumentId(value: string): string {
@@ -304,9 +316,4 @@ function countSkippedByExtension(files: FileScanResult[]): Record<string, number
   return Object.fromEntries(
     [...values.entries()].sort((left, right) => left[0].localeCompare(right[0], "zh-Hans-CN")),
   );
-}
-
-function writeJson(filePath: string, value: unknown): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }

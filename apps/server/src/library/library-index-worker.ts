@@ -2,7 +2,6 @@ import process from "node:process";
 
 import {
   prepareLibraryIndexRuntime,
-  refreshLibraryExportCatalogSnapshot,
   runLibraryTextIndex,
   type RunLibraryIndexStage,
   type TextIndexProgress,
@@ -80,7 +79,6 @@ async function main(): Promise<void> {
       },
     });
     const status = createCooldownStatus(lastRequestedAt, lastStartedAt, latestProgress);
-    const exportCatalogSnapshotPath = refreshLibraryExportCatalogSnapshot(prepared.config, sqliteDriver);
     writeWorkerStatus(rootDir, status);
     process.stdout.write(`${JSON.stringify({
       accepted: true,
@@ -90,9 +88,10 @@ async function main(): Promise<void> {
       taskId: runningTaskId,
       deduped: false,
       status,
+      index: index,
       dirtyScope: index.dirtyScope,
       dirtyScopeSummary: describeDirtyScope(index.dirtyScope),
-      exportCatalogSnapshotPath: exportCatalogSnapshotPath || resolveExportCatalogSnapshotPath(rootDir),
+      exportCatalogSnapshotPath: resolveExportCatalogSnapshotPath(rootDir),
       sqliteDriver: resolveWorkerSqliteDriver(payload.sqliteDriver),
     })}\n`);
   } catch (error) {

@@ -1,5 +1,11 @@
+import fs from "node:fs";
+import path from "node:path";
 import type { IndexedDocumentBatchEntry, ManualDocumentBindingTarget } from "../../repositories/catalog-write-repository.js";
+import type { ExportTagRecord } from "../../repositories/catalog-repository.js";
 import type { FileScanResult } from "../../scanner/file-scanner.js";
+import type { RuntimeConfig } from "../../types/runtime-config.js";
+import type { ExportCatalogSnapshot } from "../export/export-data-source.js";
+import { resolveExportCatalogSnapshotPath } from "../export/export-data-source.js";
 import {
   openDatabase,
   type LibraryIndexerDatabase,
@@ -22,6 +28,7 @@ import {
 
 export interface TextIndexTagWriteContext {
   previousManualBindingTarget: ManualDocumentBindingTarget | null;
+  resolvedManualTagPaths?: string[];
 }
 
 export interface TextIndexTagStore {
@@ -32,6 +39,145 @@ export interface TextIndexTagStore {
     contexts?: Map<string, TextIndexTagWriteContext>,
   ): Array<{ fileId: string; documentId: string }>;
   cleanupOrphanTags(): void;
+  deleteTagsByPaths?(relativePaths: string[]): void;
+}
+
+interface RuntimeTagDocumentIdentityRecord {
+  path: string;
+  documentId: string;
+  inodeKey: string | null;
+  contentHash: string | null;
+  size: number;
+  extension: string;
+  resolvedManualTagPaths?: string[];
+}
+
+interface RuntimeTagStateSnapshot {
+  version: 1;
+  generatedAt: string;
+  documents: RuntimeTagDocumentIdentityRecord[];
+}
+
+interface RuntimeTagIdentityIndexes {
+  documentsByPath: Map<string, RuntimeTagDocumentIdentityRecord>;
+  documentsByDocumentId: Map<string, RuntimeTagDocumentIdentityRecord>;
+  documentsByInodeKey: Map<string, RuntimeTagDocumentIdentityRecord[]>;
+  documentsByContentKey: Map<string, RuntimeTagDocumentIdentityRecord[]>;
+}
+
+function normalizeTagPathList(values: Iterable<string>): string[] {
+  return [...new Set(
+    [...values]
+      .map((item) => item.trim())
+      .filter(Boolean),
+  )].sort((left, right) => left.localeCompare(right, "zh-Hans-CN"));
+}
+
+function appendRuntimeIdentityRecord(
+  map: Map<string, RuntimeTagDocumentIdentityRecord[]>,
+  key: string | null,
+  record: RuntimeTagDocumentIdentityRecord,
+): void {
+  if (!key) {
+    return;
+  }
+  const list = map.get(key) ?? [];
+  list.push(record);
+  map.set(key, list);
+}
+
+function buildRuntimeTagIdentityIndexes(
+  snapshotPath: string | null | undefined,
+): RuntimeTagIdentityIndexes {
+  const documentsByPath = new Map<string, RuntimeTagDocumentIdentityRecord>();
+  const documentsByDocumentId = new Map<string, RuntimeTagDocumentIdentityRecord>();
+  const documentsByInodeKey = new Map<string, RuntimeTagDocumentIdentityRecord[]>();
+  const documentsByContentKey = new Map<string, RuntimeTagDocumentIdentityRecord[]>();
+
+  if (!snapshotPath) {
+    return {
+      documentsByPath,
+      documentsByDocumentId,
+      documentsByInodeKey,
+      documentsByContentKey,
+    };
+  }
+
+  const runtimeState = readRuntimeTagStateSnapshot(snapshotPath);
+  runtimeState.documents.forEach((rawRecord) => {
+    const record: RuntimeTagDocumentIdentityRecord = {
+      ...rawRecord,
+      path: normalizeRelativePath(rawRecord.path),
+      inodeKey: normalizeFileIdentityValue(rawRecord.inodeKey),
+      contentHash: typeof rawRecord.contentHash === "string" && rawRecord.contentHash.trim()
+        ? rawRecord.contentHash
+        : null,
+      resolvedManualTagPaths: normalizeTagPathList(rawRecord.resolvedManualTagPaths ?? []),
+    };
+    documentsByPath.set(record.path, record);
+    documentsByDocumentId.set(record.documentId, record);
+    appendRuntimeIdentityRecord(documentsByInodeKey, record.inodeKey, record);
+    appendRuntimeIdentityRecord(
+      documentsByContentKey,
+      buildIdentityContentKey(record.contentHash, record.size, record.extension),
+      record,
+    );
+  });
+
+  return {
+    documentsByPath,
+    documentsByDocumentId,
+    documentsByInodeKey,
+    documentsByContentKey,
+  };
+}
+
+function resolveRuntimeMigrationCandidate(
+  indexes: RuntimeTagIdentityIndexes,
+  file: FileScanResult,
+  fingerprint: FileIdentityFingerprint,
+): FileIdentityMigrationCandidate | null {
+  const normalizedPath = normalizeRelativePath(file.relativePath);
+  if (fingerprint.inodeKey) {
+    const inodeMatches = (indexes.documentsByInodeKey.get(fingerprint.inodeKey) ?? [])
+      .filter((record) => record.path !== normalizedPath);
+    if (inodeMatches.length === 1) {
+      const match = inodeMatches[0];
+      return {
+        fileId: makeStableId("file", match.path),
+        path: match.path,
+        documentId: match.documentId,
+        inodeKey: match.inodeKey,
+        contentHash: match.contentHash,
+        size: match.size,
+        extension: match.extension,
+      };
+    }
+    if (inodeMatches.length > 1) {
+      return null;
+    }
+  }
+
+  const contentKey = buildIdentityContentKey(fingerprint.contentHash, file.size, file.extension);
+  if (!contentKey) {
+    return null;
+  }
+  const contentMatches = (indexes.documentsByContentKey.get(contentKey) ?? [])
+    .filter((record) => record.path !== normalizedPath)
+    .filter((record) => !doesSiblingPathStillExist(file, record.path));
+  if (contentMatches.length !== 1) {
+    return null;
+  }
+  const match = contentMatches[0];
+  return {
+    fileId: makeStableId("file", match.path),
+    path: match.path,
+    documentId: match.documentId,
+    inodeKey: match.inodeKey,
+    contentHash: match.contentHash,
+    size: match.size,
+    extension: match.extension,
+  };
 }
 
 interface ManualFileBindingRow {
@@ -40,6 +186,12 @@ interface ManualFileBindingRow {
   source: string;
   createdAt: string;
   updatedAt: string;
+}
+
+interface ManualFileBindingResolveOptions {
+  runtimeIndexes?: RuntimeTagIdentityIndexes | null;
+  tagCache?: Map<string, string>;
+  observedAt?: string;
 }
 
 interface FileIdentityMigrationCandidate {
@@ -338,9 +490,17 @@ function resolveMigrationCandidateInConnection(
   file: FileScanResult,
   fingerprint: FileIdentityFingerprint,
   observedAt: string,
+  runtimeIndexes?: RuntimeTagIdentityIndexes | null,
 ): FileIdentityMigrationCandidate | null {
   if (!fingerprint.inodeKey && !fingerprint.contentHash) {
     return null;
+  }
+
+  const runtimeCandidate = runtimeIndexes
+    ? resolveRuntimeMigrationCandidate(runtimeIndexes, file, fingerprint)
+    : null;
+  if (runtimeCandidate) {
+    return runtimeCandidate;
   }
 
   const normalizedPath = normalizeRelativePath(file.relativePath);
@@ -534,11 +694,90 @@ function listActiveDocumentIdentityRowsInConnection(
   }));
 }
 
+function resolveRuntimeManualTagPathsForTarget(
+  target: ManualDocumentBindingTarget,
+  runtimeIndexes?: RuntimeTagIdentityIndexes | null,
+): string[] {
+  const directRecord = runtimeIndexes?.documentsByDocumentId.get(target.documentId);
+  if (directRecord?.resolvedManualTagPaths?.length) {
+    return [...directRecord.resolvedManualTagPaths];
+  }
+
+  if (target.inodeKey) {
+    const inodeMatches = (runtimeIndexes?.documentsByInodeKey.get(target.inodeKey) ?? [])
+      .filter((record) => record.resolvedManualTagPaths?.length);
+    if (inodeMatches.length === 1) {
+      return [...(inodeMatches[0]?.resolvedManualTagPaths ?? [])];
+    }
+    if (inodeMatches.length > 1) {
+      return [];
+    }
+  }
+
+  const contentKey = buildIdentityContentKey(target.contentHash, target.size, target.extension);
+  if (!contentKey) {
+    return [];
+  }
+  const contentMatches = (runtimeIndexes?.documentsByContentKey.get(contentKey) ?? [])
+    .filter((record) => record.resolvedManualTagPaths?.length);
+  if (contentMatches.length !== 1) {
+    return [];
+  }
+  return [...(contentMatches[0]?.resolvedManualTagPaths ?? [])];
+}
+
+function materializeRuntimeManualBindingsInConnection(
+  statements: TagStatements,
+  target: ManualDocumentBindingTarget,
+  runtimeTagPaths: string[],
+  tagCache: Map<string, string>,
+  observedAt: string,
+): ManualFileBindingRow[] {
+  if (runtimeTagPaths.length === 0 || (!target.inodeKey && !target.contentHash)) {
+    return [];
+  }
+
+  return normalizeTagPathList(runtimeTagPaths).map((tagPath) => {
+    const tagId = ensureTag(statements, tagCache, tagPath, "manual_document");
+    const bindingId = makeStableId("manual_file_binding", serializeManualFileBindingIdentity(target, tagId));
+    statements.insertManualFileBinding.run(
+      bindingId,
+      target.inodeKey,
+      target.contentHash,
+      target.size,
+      target.extension,
+      tagId,
+      "manual_document",
+      observedAt,
+      observedAt,
+    );
+    return {
+      id: bindingId,
+      tagId,
+      source: "manual_document",
+      createdAt: observedAt,
+      updatedAt: observedAt,
+    };
+  });
+}
+
 function resolveManualFileBindingsForTargetInConnection(
   db: LibraryIndexerDatabase,
   statements: TagStatements,
   target: ManualDocumentBindingTarget,
+  options: ManualFileBindingResolveOptions = {},
 ): ManualFileBindingRow[] {
+  const runtimeTagPaths = resolveRuntimeManualTagPathsForTarget(target, options.runtimeIndexes);
+  if (runtimeTagPaths.length > 0) {
+    return materializeRuntimeManualBindingsInConnection(
+      statements,
+      target,
+      runtimeTagPaths,
+      options.tagCache ?? new Map<string, string>(),
+      options.observedAt ?? new Date().toISOString(),
+    );
+  }
+
   if (!target.inodeKey && !target.contentHash) {
     return [];
   }
@@ -653,12 +892,18 @@ function syncManualResolvedTagsForDocumentInConnection(
   statements: TagStatements,
   target: ManualDocumentBindingTarget,
   observedAt: string,
+  runtimeIndexes?: RuntimeTagIdentityIndexes | null,
+  tagCache: Map<string, string> = new Map(),
 ): void {
   const existingManualTagRows = statements.selectManualDocumentTagsByDocumentId.all(target.documentId) as Array<Record<string, unknown>>;
   backfillManualFileBindingsFromLegacyDocumentBindingsInConnection(statements, target, observedAt);
   statements.deleteDocumentTagByDocumentAndSource.run(target.documentId, "manual_document");
 
-  let manualBindings = resolveManualFileBindingsForTargetInConnection(db, statements, target);
+  let manualBindings = resolveManualFileBindingsForTargetInConnection(db, statements, target, {
+    runtimeIndexes,
+    tagCache,
+    observedAt,
+  });
   if (manualBindings.length === 0 && existingManualTagRows.length > 0 && (target.inodeKey || target.contentHash)) {
     existingManualTagRows.forEach((row) => {
       const tagId = String(row.tag_id);
@@ -674,7 +919,11 @@ function syncManualResolvedTagsForDocumentInConnection(
         observedAt,
       );
     });
-    manualBindings = resolveManualFileBindingsForTargetInConnection(db, statements, target);
+    manualBindings = resolveManualFileBindingsForTargetInConnection(db, statements, target, {
+      runtimeIndexes,
+      tagCache,
+      observedAt,
+    });
   }
 
   manualBindings.forEach((binding) => {
@@ -692,6 +941,42 @@ function syncManualResolvedTagsForDocumentInConnection(
   });
 }
 
+function resolveManualTagPathsForTargetInConnection(
+  db: LibraryIndexerDatabase,
+  statements: TagStatements,
+  target: ManualDocumentBindingTarget,
+  runtimeIndexes?: RuntimeTagIdentityIndexes | null,
+): string[] {
+  const runtimeTagPaths = resolveRuntimeManualTagPathsForTarget(target, runtimeIndexes);
+  if (runtimeTagPaths.length > 0) {
+    return normalizeTagPathList(runtimeTagPaths);
+  }
+
+  const manualFileBindings = resolveManualFileBindingsForTargetInConnection(db, statements, target, {
+    runtimeIndexes,
+  });
+  if (manualFileBindings.length > 0) {
+    const tagPaths = manualFileBindings.map((binding) => {
+      const row = db.prepare(`SELECT path FROM tags WHERE id = ?`).get(binding.tagId) as { path?: string } | undefined;
+      return typeof row?.path === "string" ? row.path : null;
+    }).filter((value): value is string => Boolean(value));
+    if (tagPaths.length > 0) {
+      return [...new Set(tagPaths)].sort((left, right) => left.localeCompare(right, "zh-Hans-CN"));
+    }
+  }
+
+  const legacyRows = statements.selectManualDocumentTagsByDocumentId.all(target.documentId) as Array<Record<string, unknown>>;
+  const legacyTagIds = [...new Set(legacyRows.map((row) => String(row.tag_id ?? "")).filter(Boolean))];
+  const tagPaths: string[] = [];
+  for (const tagId of legacyTagIds) {
+    const row = db.prepare(`SELECT path FROM tags WHERE id = ?`).get(tagId) as { path?: string } | undefined;
+    if (typeof row?.path === "string" && row.path.trim()) {
+      tagPaths.push(row.path);
+    }
+  }
+  return [...new Set(tagPaths)].sort((left, right) => left.localeCompare(right, "zh-Hans-CN"));
+}
+
 function applyTags(
   db: LibraryIndexerDatabase,
   statements: TagStatements,
@@ -699,6 +984,7 @@ function applyTags(
   observedAt: string,
   tagCache: Map<string, string>,
   context: TextIndexTagWriteContext | undefined,
+  runtimeIndexes?: RuntimeTagIdentityIndexes | null,
 ): void {
   const documentId = makeStableId("doc", entry.file.relativePath);
   const normalizedPath = normalizeRelativePath(entry.file.relativePath);
@@ -717,6 +1003,7 @@ function applyTags(
     entry.file,
     fingerprint,
     observedAt,
+    runtimeIndexes,
   );
   if (migrationCandidate) {
     migrateManualBindingsInConnection(
@@ -739,6 +1026,8 @@ function applyTags(
     statements,
     manualBindingTarget,
     observedAt,
+    runtimeIndexes,
+    tagCache,
   );
 
   entry.tags.forEach((tag) => {
@@ -805,16 +1094,30 @@ function getActiveManualBindingTargetByPath(
 export function createSqliteTextIndexTagStore(input: {
   dbPath: string;
   dbDriver?: LibraryIndexerDatabaseDriver | null;
+  runtimeTagStateSnapshotPath?: string | null;
 }): TextIndexTagStore {
   return {
     captureBatchUpsertContexts(entries): Map<string, TextIndexTagWriteContext> {
-      const db = openConnection(input.dbPath, input.dbDriver ?? null);
+    const db = openConnection(input.dbPath, input.dbDriver ?? null);
       const statements = prepareStatements(db);
+      const runtimeIndexes = buildRuntimeTagIdentityIndexes(input.runtimeTagStateSnapshotPath);
       try {
         const result = new Map<string, TextIndexTagWriteContext>();
         entries.forEach((entry) => {
+          const previousManualBindingTarget = getActiveManualBindingTargetByPath(statements, entry.file.relativePath);
+          const runtimeRecord = runtimeIndexes.documentsByPath.get(normalizeRelativePath(entry.file.relativePath));
           result.set(entry.file.relativePath, {
-            previousManualBindingTarget: getActiveManualBindingTargetByPath(statements, entry.file.relativePath),
+            previousManualBindingTarget,
+            resolvedManualTagPaths: runtimeRecord?.resolvedManualTagPaths?.length
+              ? [...runtimeRecord.resolvedManualTagPaths]
+              : previousManualBindingTarget
+                ? resolveManualTagPathsForTargetInConnection(
+                  db,
+                  statements,
+                  previousManualBindingTarget,
+                  runtimeIndexes,
+                )
+                : [],
           });
         });
         return result;
@@ -830,6 +1133,7 @@ export function createSqliteTextIndexTagStore(input: {
       const db = openConnection(input.dbPath, input.dbDriver ?? null);
       const statements = prepareStatements(db);
       const tagCache = new Map<string, string>();
+      const runtimeIndexes = buildRuntimeTagIdentityIndexes(input.runtimeTagStateSnapshotPath);
       try {
         db.exec("BEGIN IMMEDIATE");
         const results = entries.map((entry) => {
@@ -840,6 +1144,7 @@ export function createSqliteTextIndexTagStore(input: {
             observedAt,
             tagCache,
             contexts.get(entry.file.relativePath),
+            runtimeIndexes,
           );
           return {
             fileId: makeStableId("file", entry.file.relativePath),
@@ -863,6 +1168,234 @@ export function createSqliteTextIndexTagStore(input: {
       } finally {
         db.close();
       }
+    },
+  };
+}
+
+function readTagSnapshot(snapshotPath: string): ExportCatalogSnapshot {
+  if (!fs.existsSync(snapshotPath)) {
+    return {
+      version: 1,
+      generatedAt: new Date().toISOString(),
+      tags: [],
+      documents: [],
+    };
+  }
+  return JSON.parse(fs.readFileSync(snapshotPath, "utf-8")) as ExportCatalogSnapshot;
+}
+
+function writeTagSnapshot(snapshotPath: string, snapshot: ExportCatalogSnapshot): void {
+  fs.mkdirSync(path.dirname(snapshotPath), { recursive: true });
+  fs.writeFileSync(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf-8");
+}
+
+function resolveRuntimeTagStateSnapshotPath(config: RuntimeConfig): string {
+  return path.join(config.indexDir, "runtime", "tag-state-snapshot.json");
+}
+
+function readRuntimeTagStateSnapshot(snapshotPath: string): RuntimeTagStateSnapshot {
+  if (!fs.existsSync(snapshotPath)) {
+    return {
+      version: 1,
+      generatedAt: new Date().toISOString(),
+      documents: [],
+    };
+  }
+  return JSON.parse(fs.readFileSync(snapshotPath, "utf-8")) as RuntimeTagStateSnapshot;
+}
+
+function writeRuntimeTagStateSnapshot(snapshotPath: string, snapshot: RuntimeTagStateSnapshot): void {
+  fs.mkdirSync(path.dirname(snapshotPath), { recursive: true });
+  fs.writeFileSync(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf-8");
+}
+
+function buildRuntimeTagDocumentMap(snapshotPath: string): Map<string, RuntimeTagDocumentIdentityRecord> {
+  const runtimeState = readRuntimeTagStateSnapshot(snapshotPath);
+  return new Map(
+    runtimeState.documents.map((item) => [normalizeRelativePath(item.path), {
+      ...item,
+      path: normalizeRelativePath(item.path),
+      resolvedManualTagPaths: normalizeTagPathList(item.resolvedManualTagPaths ?? []),
+    }]),
+  );
+}
+
+function buildTagTree(tagPaths: Iterable<string>): ExportTagRecord[] {
+  const tagMap = new Map<string, ExportTagRecord>();
+  for (const tagPath of tagPaths) {
+    const segments = tagPath.split("/").map((item) => item.trim()).filter(Boolean);
+    for (let index = 0; index < segments.length; index += 1) {
+      const currentPath = segments.slice(0, index + 1).join("/");
+      if (tagMap.has(currentPath)) {
+        continue;
+      }
+      tagMap.set(currentPath, {
+        path: currentPath,
+        name: segments[index]!,
+        rootType: segments[0]!,
+        parentPath: index === 0 ? null : segments.slice(0, index).join("/"),
+        depth: index,
+      });
+    }
+  }
+  return [...tagMap.values()].sort((left, right) => left.path.localeCompare(right.path, "zh-Hans-CN"));
+}
+
+export function createRuntimeTextIndexTagStore(
+  config: RuntimeConfig,
+  mirrorStore: TextIndexTagStore | null = null,
+): TextIndexTagStore {
+  const snapshotPath = resolveExportCatalogSnapshotPath(config);
+  const runtimeTagStateSnapshotPath = resolveRuntimeTagStateSnapshotPath(config);
+  return {
+    captureBatchUpsertContexts(entries) {
+      const runtimeDocumentMap = buildRuntimeTagDocumentMap(runtimeTagStateSnapshotPath);
+      const fallbackContexts = mirrorStore?.captureBatchUpsertContexts(entries) ?? new Map();
+      const contexts = new Map<string, TextIndexTagWriteContext>();
+      for (const entry of entries) {
+        const relativePath = normalizeRelativePath(entry.file.relativePath);
+        const runtimeRecord = runtimeDocumentMap.get(relativePath);
+        if (runtimeRecord) {
+          contexts.set(entry.file.relativePath, {
+            previousManualBindingTarget: {
+              documentId: runtimeRecord.documentId,
+              inodeKey: runtimeRecord.inodeKey,
+              contentHash: runtimeRecord.contentHash,
+              size: runtimeRecord.size,
+              extension: runtimeRecord.extension,
+            },
+            resolvedManualTagPaths: [...(runtimeRecord.resolvedManualTagPaths ?? [])],
+          });
+          continue;
+        }
+        contexts.set(
+          entry.file.relativePath,
+          fallbackContexts.get(entry.file.relativePath) ?? {
+            previousManualBindingTarget: null,
+          },
+        );
+      }
+      return contexts;
+    },
+    batchUpsertDocuments(entries, observedAt = new Date().toISOString(), contexts) {
+      const snapshot = readTagSnapshot(snapshotPath);
+      const runtimeState = readRuntimeTagStateSnapshot(runtimeTagStateSnapshotPath);
+      const documentMap = new Map(snapshot.documents.map((item) => [normalizeRelativePath(item.path), item]));
+      const runtimeDocumentMap = new Map(
+        runtimeState.documents.map((item) => [normalizeRelativePath(item.path), item]),
+      );
+      for (const entry of entries) {
+        const relativePath = normalizeRelativePath(entry.file.relativePath);
+        const current = documentMap.get(relativePath);
+        if (!current) {
+          continue;
+        }
+        const documentId = makeStableId("doc", entry.file.relativePath);
+        const fingerprint = buildDocumentIdentityFingerprint(entry.file, entry.document);
+        const mergedManualTagPaths = [
+          ...(runtimeDocumentMap.get(relativePath)?.resolvedManualTagPaths ?? []),
+          ...(contexts?.get(entry.file.relativePath)?.resolvedManualTagPaths ?? []),
+        ];
+        const normalizedManualTagPaths = normalizeTagPathList(mergedManualTagPaths);
+        current.tags = [...new Set([
+          ...entry.tags.map((item) => item.tagPath),
+          ...normalizedManualTagPaths,
+        ])].sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
+        current.derivedTags = entry.derivedTags.map((item) => item.tagPath).sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
+        runtimeDocumentMap.set(relativePath, {
+          path: relativePath,
+          documentId,
+          inodeKey: fingerprint.inodeKey,
+          contentHash: fingerprint.contentHash,
+          size: entry.file.size,
+          extension: entry.file.extension,
+          resolvedManualTagPaths: normalizedManualTagPaths,
+        });
+      }
+      const allTagPaths = new Set<string>();
+      for (const document of documentMap.values()) {
+        for (const tagPath of document.tags) {
+          allTagPaths.add(tagPath);
+        }
+        for (const tagPath of document.derivedTags) {
+          allTagPaths.add(tagPath);
+        }
+      }
+      writeTagSnapshot(snapshotPath, {
+        version: 1,
+        generatedAt: observedAt,
+        tags: buildTagTree(allTagPaths),
+        documents: [...documentMap.values()].sort((left, right) => left.path.localeCompare(right.path, "zh-Hans-CN")),
+      });
+      writeRuntimeTagStateSnapshot(runtimeTagStateSnapshotPath, {
+        version: 1,
+        generatedAt: observedAt,
+        documents: [...runtimeDocumentMap.values()]
+          .map((item) => ({
+            ...item,
+            resolvedManualTagPaths: normalizeTagPathList(item.resolvedManualTagPaths ?? []),
+          }))
+          .sort((left, right) => left.path.localeCompare(right.path, "zh-Hans-CN")),
+      });
+      return mirrorStore?.batchUpsertDocuments(entries, observedAt, contexts) ?? entries.map((entry) => ({
+        fileId: makeStableId("file", entry.file.relativePath),
+        documentId: makeStableId("doc", entry.file.relativePath),
+      }));
+    },
+    cleanupOrphanTags(): void {
+      const snapshot = readTagSnapshot(snapshotPath);
+      const allTagPaths = new Set<string>();
+      for (const document of snapshot.documents) {
+        for (const tagPath of document.tags) {
+          allTagPaths.add(tagPath);
+        }
+        for (const tagPath of document.derivedTags) {
+          allTagPaths.add(tagPath);
+        }
+      }
+      writeTagSnapshot(snapshotPath, {
+        version: 1,
+        generatedAt: new Date().toISOString(),
+        tags: buildTagTree(allTagPaths),
+        documents: snapshot.documents
+          .slice()
+          .sort((left, right) => left.path.localeCompare(right.path, "zh-Hans-CN")),
+      });
+      mirrorStore?.cleanupOrphanTags();
+    },
+    deleteTagsByPaths(relativePaths: string[]): void {
+      const deleted = new Set(relativePaths.map((item) => normalizeRelativePath(item)).filter(Boolean));
+      if (deleted.size === 0) {
+        return;
+      }
+      const snapshot = readTagSnapshot(snapshotPath);
+      const runtimeState = readRuntimeTagStateSnapshot(runtimeTagStateSnapshotPath);
+      const documents = snapshot.documents
+        .filter((item) => !deleted.has(normalizeRelativePath(item.path)))
+        .sort((left, right) => left.path.localeCompare(right.path, "zh-Hans-CN"));
+      const allTagPaths = new Set<string>();
+      for (const document of documents) {
+        for (const tagPath of document.tags) {
+          allTagPaths.add(tagPath);
+        }
+        for (const tagPath of document.derivedTags) {
+          allTagPaths.add(tagPath);
+        }
+      }
+      writeTagSnapshot(snapshotPath, {
+        version: 1,
+        generatedAt: new Date().toISOString(),
+        tags: buildTagTree(allTagPaths),
+        documents,
+      });
+      writeRuntimeTagStateSnapshot(runtimeTagStateSnapshotPath, {
+        version: 1,
+        generatedAt: new Date().toISOString(),
+        documents: runtimeState.documents
+          .filter((item) => !deleted.has(normalizeRelativePath(item.path)))
+          .sort((left, right) => left.path.localeCompare(right.path, "zh-Hans-CN")),
+      });
+      mirrorStore?.deleteTagsByPaths?.(relativePaths);
     },
   };
 }

@@ -5,11 +5,18 @@ import { performance } from "node:perf_hooks";
 import type { RuntimeConfig } from "../../types/runtime-config.js";
 import type { DirtyScope } from "../dirty/dirty-scope-resolver.js";
 import {
-  CatalogRepository,
   type ExportDocumentRecord,
   type ExportTagRecord,
 } from "../../repositories/catalog-repository.js";
-import { SearchIndexBuilder } from "../search/search-index-builder.js";
+import {
+  createExportCatalogDataSource,
+  type ExportCatalogDataSource,
+} from "./export-data-source.js";
+import { resolveDefaultExportBuilderExecutor } from "./export-builder-executor-registry.js";
+import {
+  executeSearchIndex,
+  type SearchIndexExecutor,
+} from "../search/search-index-builder.js";
 import {
   createJsonArrayFileWriter,
   iterateNdjsonFileSync,
@@ -27,6 +34,7 @@ export interface ExportBuildOptions {
   commandName?: string;
   reason?: string;
   targetPath?: string;
+  searchExecutor?: SearchIndexExecutor;
 }
 
 export type ExportBuildStage =
@@ -83,6 +91,10 @@ interface FolderBootstrapNode {
 
 const RELATION_MAX_POSTING = 128;
 const META_SHARD_TARGET_DOCUMENTS = 64;
+
+function createDefaultExportCatalogDataSource(config: RuntimeConfig): ExportCatalogDataSource {
+  return createExportCatalogDataSource(config, "auto");
+}
 
 function ensureDir(dirPath: string): void {
   fs.mkdirSync(dirPath, { recursive: true });
@@ -246,13 +258,15 @@ function isRelationEligibleTag(tagPath: string): boolean {
  * 避免把 documents / relations / search 全量堆进内存。
  */
 export class ExportBuilder {
-  constructor(private readonly config: RuntimeConfig) {}
+  constructor(
+    private readonly config: RuntimeConfig,
+    private readonly dataSource: ExportCatalogDataSource = createDefaultExportCatalogDataSource(config),
+  ) {}
 
   async build(options: ExportBuildOptions = {}): Promise<ExportBuildResult> {
     const exportedAt = new Date().toISOString();
     const stageStartedAt = new Map<ExportBuildStage, number>();
-    const repository = new CatalogRepository(this.config.dbPath);
-    const tags = repository.listExportTags();
+    const tags = this.dataSource.listExportTags();
     const taxonomy = makeTagTree(tags);
 
     ensureDir(this.config.exportDir);
@@ -367,7 +381,7 @@ export class ExportBuilder {
       dirtyDirectoryCount: dirtyDirectories.size,
       changedPathCount: changedPaths.size
     });
-    for (const batch of repository.iterateExportDocumentRecords(2000)) {
+    for (const batch of this.dataSource.iterateExportDocumentRecords(2000)) {
       throwIfAborted(options.signal, "事务文档库导出已取消");
       for (const document of batch) {
         throwIfAborted(options.signal, "事务文档库导出已取消");
@@ -521,7 +535,7 @@ export class ExportBuilder {
     startStage("export_tag", {
       dirtyTagPathCount: dirtyTagPaths.size
     });
-    for (const batch of repository.iterateTagPostingRows(10000)) {
+    for (const batch of this.dataSource.iterateTagPostingRows(10000)) {
       throwIfAborted(options.signal, "事务文档库导出已取消");
       for (const row of batch) {
         throwIfAborted(options.signal, "事务文档库导出已取消");
@@ -610,7 +624,7 @@ export class ExportBuilder {
       dirtyRelationCount: dirtyRelationIds.size
     });
     if (!lightBuild) {
-      for (const batch of repository.iterateDirectTagPostingRows(10000)) {
+      for (const batch of this.dataSource.iterateDirectTagPostingRows(10000)) {
         throwIfAborted(options.signal, "事务文档库导出已取消");
         for (const row of batch) {
           throwIfAborted(options.signal, "事务文档库导出已取消");
@@ -697,15 +711,16 @@ export class ExportBuilder {
       dirtyTagPathCount: options.dirtyScope?.dirtyTagPaths.length ?? 0,
       dirtyRelationCount: options.dirtyScope?.dirtyRelations.length ?? 0
     });
+    const searchExecutor = options.searchExecutor ?? executeSearchIndex;
     const searchIndexResult = lightBuild
       ? { bucketCount: 0, filesWritten: [] as string[], manifestPath: path.join(this.config.exportDir, "search", "manifest.json") }
-      : await new SearchIndexBuilder(this.config).build({
+      : await searchExecutor(this.config, {
         dirtyScope: options.dirtyScope,
         signal: options.signal,
         commandName: options.commandName,
         reason: options.reason,
         targetPath: options.targetPath
-      });
+      }, this.dataSource);
     logLibraryIndexerRss(this.config, "export.search_complete", {
       rootDir: this.config.rootDir,
       searchBucketCount: searchIndexResult.bucketCount,
@@ -830,4 +845,20 @@ export class ExportBuilder {
       exportedAt,
     };
   }
+}
+
+async function buildLibraryExportInProcess(
+  config: RuntimeConfig,
+  options: ExportBuildOptions = {},
+  dataSource: ExportCatalogDataSource = createDefaultExportCatalogDataSource(config),
+): Promise<ExportBuildResult> {
+  return new ExportBuilder(config, dataSource).build(options);
+}
+
+export async function buildLibraryExport(
+  config: RuntimeConfig,
+  options: ExportBuildOptions = {},
+  dataSource: ExportCatalogDataSource = createDefaultExportCatalogDataSource(config),
+): Promise<ExportBuildResult> {
+  return resolveDefaultExportBuilderExecutor(buildLibraryExportInProcess)(config, options, dataSource);
 }

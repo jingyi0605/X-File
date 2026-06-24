@@ -5,9 +5,13 @@ import { StringDecoder } from "node:string_decoder";
 import type { RuntimeConfig } from "../../types/runtime-config.js";
 import type { DirtyScope } from "../dirty/dirty-scope-resolver.js";
 import {
-  CatalogRepository,
   type ExportDocumentRecord,
 } from "../../repositories/catalog-repository.js";
+import {
+  createExportCatalogDataSource,
+  type ExportCatalogDataSource,
+} from "../export/export-data-source.js";
+import { resolveDefaultSearchIndexExecutor } from "./search-index-executor-registry.js";
 import {
   iterateNdjsonFileSync,
 } from "../../utils/file-streaming.js";
@@ -22,6 +26,12 @@ export interface SearchIndexBuildOptions {
   reason?: string;
   targetPath?: string;
 }
+
+export type SearchIndexExecutor = (
+  config: RuntimeConfig,
+  options?: SearchIndexBuildOptions,
+  dataSource?: ExportCatalogDataSource,
+) => Promise<SearchIndexBuildResult>;
 
 export interface SearchIndexBuildResult {
   outputDir: string;
@@ -248,9 +258,13 @@ function resolveBucketFilePath(exportDir: string, bucket: SearchManifest["bucket
   return path.join(exportDir, bucket.path);
 }
 
+function createDefaultSearchCatalogDataSource(config: RuntimeConfig): ExportCatalogDataSource {
+  return createExportCatalogDataSource(config, "auto");
+}
+
 function buildIncrementalSearchPlan(input: {
   config: RuntimeConfig;
-  repository: CatalogRepository;
+  dataSource: ExportCatalogDataSource;
   dirtyScope?: DirtyScope;
 }): IncrementalSearchPlan | null {
   const dirtyScope = input.dirtyScope;
@@ -270,7 +284,7 @@ function buildIncrementalSearchPlan(input: {
   }
 
   const targetBuckets = new Set<string>();
-  const currentChangedDocuments = input.repository.listExportDocumentsByPaths(changedPaths);
+  const currentChangedDocuments = input.dataSource.listExportDocumentsByPaths(changedPaths);
   for (const document of currentChangedDocuments) {
     for (const bucket of collectDocumentBucketTerms(document).keys()) {
       targetBuckets.add(bucket);
@@ -305,14 +319,18 @@ function buildIncrementalSearchPlan(input: {
  * 离线关键词倒排构建器。
  * 改成两阶段流式：第一阶段按 bucket 写临时 NDJSON，第二阶段逐 bucket 汇总为静态 JSON，
  * 避免把全部 documents / terms 一次性挂在内存里。
+ * 当前这份 TypeScript/Node 实现已经退成兼容 fallback；
+ * 默认正式主路径会优先由宿主注册的 worker/native executor 接管。
  */
 export class SearchIndexBuilder {
-  constructor(private readonly config: RuntimeConfig) {}
+  constructor(
+    private readonly config: RuntimeConfig,
+    private readonly dataSource: ExportCatalogDataSource = createDefaultSearchCatalogDataSource(config),
+  ) {}
 
   async build(options: SearchIndexBuildOptions = {}): Promise<SearchIndexBuildResult> {
     const exportedAt = new Date().toISOString();
     const startedAt = performance.now();
-    const repository = new CatalogRepository(this.config.dbPath);
     const outputDir = path.join(this.config.exportDir, "search");
     const tempDir = path.join(outputDir, ".tmp");
     ensureDir(outputDir);
@@ -320,7 +338,7 @@ export class SearchIndexBuilder {
     ensureDir(tempDir);
     const incrementalPlan = buildIncrementalSearchPlan({
       config: this.config,
-      repository,
+      dataSource: this.dataSource,
       dirtyScope: options.dirtyScope,
     });
 
@@ -344,7 +362,7 @@ export class SearchIndexBuilder {
       }
     });
 
-    for (const batch of repository.iterateExportDocumentRecords(2000)) {
+    for (const batch of this.dataSource.iterateExportDocumentRecords(2000)) {
       throwIfAborted(options.signal, "事务文档库搜索索引构建已取消");
       for (const document of batch) {
         throwIfAborted(options.signal, "事务文档库搜索索引构建已取消");
@@ -561,4 +579,28 @@ export class SearchIndexBuilder {
       exportedAt,
     };
   }
+}
+
+export async function buildLibrarySearchIndex(
+  config: RuntimeConfig,
+  options: SearchIndexBuildOptions = {},
+  dataSource: ExportCatalogDataSource = createDefaultSearchCatalogDataSource(config),
+): Promise<SearchIndexBuildResult> {
+  return executeSearchIndex(config, options, dataSource);
+}
+
+export async function executeSearchIndex(
+  config: RuntimeConfig,
+  options: SearchIndexBuildOptions = {},
+  dataSource: ExportCatalogDataSource = createDefaultSearchCatalogDataSource(config),
+): Promise<SearchIndexBuildResult> {
+  return resolveDefaultSearchIndexExecutor(executeSearchIndexInProcess)(config, options, dataSource);
+}
+
+async function executeSearchIndexInProcess(
+  config: RuntimeConfig,
+  options: SearchIndexBuildOptions = {},
+  dataSource: ExportCatalogDataSource = createDefaultSearchCatalogDataSource(config),
+): Promise<SearchIndexBuildResult> {
+  return new SearchIndexBuilder(config, dataSource).build(options);
 }

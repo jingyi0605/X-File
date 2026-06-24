@@ -16,8 +16,8 @@ const DETAIL_MIN = 240;
 const MAIN_MIN = 420;
 
 // 未自定义时的默认宽度，需与 styles.css 里 .workbench-window 的默认列宽一致。
-const DEFAULT_SIDEBAR = 272;
-const DEFAULT_DETAIL = 340;
+export const DEFAULT_SIDEBAR = 272;
+export const DEFAULT_DETAIL = 340;
 
 const STORAGE_KEY = "x-file.library.panel-sizes";
 
@@ -43,8 +43,11 @@ interface ResizablePanels {
   // null = 未自定义，沿用 CSS；非 null = 用户拖拽过的宽度
   sidebarWidth: number | null;
   detailWidth: number | null;
+  resolvedSidebarWidth: number;
+  resolvedDetailWidth: number;
   hasCustomLayout: boolean;
   activeSide: PanelSide | null;
+  isResizing: boolean;
   // 仅在用户自定义过布局时给出 5 列模板，否则 undefined 让 CSS 接管
   gridTemplateColumns: string | undefined;
   startResize: (side: PanelSide, event: ReactMouseEvent) => void;
@@ -120,10 +123,12 @@ export function useResizablePanels(): ResizablePanels {
 
   const sidebarWidth = stored.sidebar;
   const detailWidth = stored.detail;
+  const resolvedSidebarWidth = sidebarWidth ?? DEFAULT_SIDEBAR;
+  const resolvedDetailWidth = detailWidth ?? DEFAULT_DETAIL;
   const hasCustomLayout = sidebarWidth !== null || detailWidth !== null;
   const gridTemplateColumns = hasCustomLayout
-    ? `${sidebarWidth ?? DEFAULT_SIDEBAR}px var(--workbench-resizer-gutter) minmax(${MAIN_MIN}px, 1fr) var(--workbench-resizer-gutter) ${
-        detailWidth ?? DEFAULT_DETAIL
+    ? `${resolvedSidebarWidth}px var(--workbench-resizer-gutter) minmax(${MAIN_MIN}px, 1fr) var(--workbench-resizer-gutter) ${
+        resolvedDetailWidth
       }px`
     : undefined;
 
@@ -198,8 +203,11 @@ export function useResizablePanels(): ResizablePanels {
     containerRef,
     sidebarWidth,
     detailWidth,
+    resolvedSidebarWidth,
+    resolvedDetailWidth,
     hasCustomLayout,
     activeSide,
+    isResizing: activeSide !== null,
     gridTemplateColumns,
     startResize,
     resetSize,

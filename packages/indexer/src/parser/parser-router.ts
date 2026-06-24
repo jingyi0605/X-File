@@ -1,10 +1,12 @@
 import path from "node:path";
 import { AppError } from "../errors/app-error.js";
 import { APP_ERROR_CODES } from "../errors/error-codes.js";
+import type { RuntimeConfig } from "../types/runtime-config.js";
 import type { ParserAdapter } from "./parser-adapter.js";
 import { ComplexDocumentSkipAdapter } from "./complex-document-skip-adapter.js";
 import { CsvParserAdapter } from "./csv-parser-adapter.js";
 import { DocxParserAdapter } from "./docx-parser-adapter.js";
+import { NativeComplexParserAdapter } from "./native-complex-parser-adapter.js";
 import { PdfParserAdapter } from "./pdf-parser-adapter.js";
 import { PlainTextParserAdapter } from "./plain-text-parser-adapter.js";
 import { PptxParserAdapter } from "./pptx-parser-adapter.js";
@@ -18,12 +20,22 @@ export function createDefaultParserAdapters(): ParserAdapter[] {
   return [
     new PlainTextParserAdapter(),
     new CsvParserAdapter(),
+    new NativeComplexParserAdapter(),
     new XlsxParserAdapter(),
     new DocxParserAdapter(),
     new PdfParserAdapter(),
     new PptxParserAdapter(),
     new ComplexDocumentSkipAdapter(),
   ];
+}
+
+export function createDefaultParserRouter(
+  config?: Pick<RuntimeConfig, "disabledParserExtensions">,
+  adapters: ParserAdapter[] = createDefaultParserAdapters(),
+): ParserRouter {
+  return new ParserRouter(adapters, {
+    disabledExtensions: config?.disabledParserExtensions,
+  });
 }
 
 /**

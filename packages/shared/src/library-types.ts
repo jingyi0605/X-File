@@ -85,6 +85,36 @@ export interface LibraryIndexStatus {
   errorSummary: string | null;
   workerHealth?: LibraryWorkerHealth | null;
   progress?: LibraryIndexProgress | null;
+  runtimeIndexState?: LibraryRuntimeIndexState | null;
+}
+
+export interface LibraryRuntimeIndexedDocumentState {
+  path: string;
+  extension: string;
+  size: number;
+  mtime: string;
+  indexStatus: string;
+}
+
+export interface LibraryParserSkipState {
+  skipKey: string;
+  adapter: string;
+  reasonCode: string;
+  extension: string;
+  samplePaths: string[];
+  sampleCount: number;
+  totalCount: number;
+  lastMessage: string | null;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  lastRunAt: string;
+}
+
+export interface LibraryRuntimeIndexState {
+  generatedAt: string;
+  failedDocuments: LibraryRuntimeIndexedDocumentState[];
+  skippedDocuments: LibraryRuntimeIndexedDocumentState[];
+  parserSkips: LibraryParserSkipState[];
 }
 
 export interface LibraryWorkerHealth {
@@ -389,8 +419,14 @@ export interface SaveHttpServerStateInput {
 
 export interface LibraryHealth {
   ok: true;
-  app: "X-File";
+  app: string;
   version: string;
+  native?: {
+    watcherActive: boolean;
+    watcherRootDir: string | null;
+    lastRefreshReason: string | null;
+    lastError: string | null;
+  };
 }
 
 export interface LibraryErrorResponse {

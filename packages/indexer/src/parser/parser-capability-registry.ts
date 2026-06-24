@@ -38,6 +38,7 @@ export class ParserCapabilityRegistry {
   static createDefault(config?: Pick<RuntimeConfig, "disabledParserExtensions">): ParserCapabilityRegistry {
     return new ParserCapabilityRegistry(createDefaultParserAdapters(), [
       ".md",
+      ".markdown",
       ".mdx",
       ".txt",
       ".rtf",

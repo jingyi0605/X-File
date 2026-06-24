@@ -1,21 +1,24 @@
 import type { RuntimeConfig } from "../types/runtime-config.js";
 import type { ParsedDocument as ParsedDocumentResult } from "./plain-text-parser.js";
 import type { ParseSkip } from "./parser-adapter.js";
-import { ParserRouter, createDefaultParserAdapters } from "./parser-router.js";
+import { ParserRouter, createDefaultParserRouter } from "./parser-router.js";
 import type { ParserAdapter } from "./parser-adapter.js";
 import { throwIfAborted } from "../utils/abort.js";
+
+export interface DocumentParseExecutor {
+  parse(filePath: string, signal?: AbortSignal): Promise<ParsedDocumentResult>;
+  parseWithOutcome(filePath: string, signal?: AbortSignal): Promise<ParsedDocumentResult | ParseSkip>;
+}
 
 /**
  * 统一解析入口。
  * 第二阶段改为依赖 ParserRouter，避免解析策略继续散在索引流程里。
  */
-export class DocumentParser {
+export class DocumentParser implements DocumentParseExecutor {
   private readonly router: ParserRouter;
 
   constructor(options: { config: RuntimeConfig; router?: ParserRouter; adapters?: ParserAdapter[] }) {
-    this.router = options.router ?? new ParserRouter(options.adapters ?? createDefaultParserAdapters(), {
-      disabledExtensions: options.config.disabledParserExtensions,
-    });
+    this.router = options.router ?? createDefaultParserRouter(options.config, options.adapters);
   }
 
   async parse(filePath: string, signal?: AbortSignal): Promise<ParsedDocumentResult> {
@@ -41,4 +44,12 @@ export class DocumentParser {
       extension,
     }) as ParsedDocumentResult | ParseSkip;
   }
+}
+
+export function createDefaultDocumentParseExecutor(options: {
+  config: RuntimeConfig;
+  router?: ParserRouter;
+  adapters?: ParserAdapter[];
+}): DocumentParseExecutor {
+  return new DocumentParser(options);
 }
