@@ -323,6 +323,108 @@ describe("LibraryPage 高风险交互", () => {
     expect(screen.queryByText("正在加载")).not.toBeInTheDocument();
     expect(await screen.findByText("刷新后文件.md")).toBeInTheDocument();
   });
+
+  it("网格视图在中间区域宽度变化后会实时重排列数", async () => {
+    const originalClientWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
+    const originalClientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+    const originalScrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+    const originalScrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
+    let viewportWidth = 560;
+    let viewportScrollTop = 0;
+
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+      configurable: true,
+      get() {
+        if ((this as HTMLElement).classList?.contains("affairs-doc-grid-scroll")) {
+          return viewportWidth;
+        }
+        return originalClientWidth?.get?.call(this) ?? 0;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get() {
+        if ((this as HTMLElement).classList?.contains("affairs-doc-grid-scroll")) {
+          return 720;
+        }
+        return originalClientHeight?.get?.call(this) ?? 0;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+      configurable: true,
+      get() {
+        if ((this as HTMLElement).classList?.contains("affairs-doc-grid-scroll")) {
+          return 3200;
+        }
+        return originalScrollHeight?.get?.call(this) ?? 0;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+      configurable: true,
+      get() {
+        if ((this as HTMLElement).classList?.contains("affairs-doc-grid-scroll")) {
+          return viewportScrollTop;
+        }
+        return originalScrollTop?.get?.call(this) ?? 0;
+      },
+      set(value) {
+        if ((this as HTMLElement).classList?.contains("affairs-doc-grid-scroll")) {
+          viewportScrollTop = Number(value) || 0;
+          return;
+        }
+        originalScrollTop?.set?.call(this, value);
+      },
+    });
+
+    try {
+      libraryApiMock.listLibraryDocuments.mockResolvedValue(
+        createDocumentList(
+          Array.from({ length: 96 }, (_, index) =>
+            createDocumentRecord({
+              documentId: `doc-${index + 1}`,
+              path: `docs/文档-${index + 1}.md`,
+            }),
+          ),
+        ),
+      );
+
+      const { LibraryPage } = await import("../LibraryPage");
+      render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
+
+      await screen.findByText("文档-1.md");
+
+      const scroll = document.querySelector(".affairs-doc-grid-scroll") as HTMLDivElement | null;
+      expect(scroll).not.toBeNull();
+
+      await waitFor(() => {
+        const grid = document.querySelector(".affairs-doc-grid-virtual") as HTMLDivElement | null;
+        expect(grid?.style.gridTemplateColumns).toBe("repeat(4, minmax(116px, 1fr))");
+      });
+
+      viewportWidth = 300;
+      await act(async () => {
+        fireEvent.scroll(scroll as HTMLDivElement, { target: { scrollTop: 24 } });
+      });
+
+      await waitFor(() => {
+        const grid = document.querySelector(".affairs-doc-grid-virtual") as HTMLDivElement | null;
+        expect(grid?.style.gridTemplateColumns).toBe("repeat(2, minmax(116px, 1fr))");
+      });
+    } finally {
+      if (originalClientWidth) {
+        Object.defineProperty(HTMLElement.prototype, "clientWidth", originalClientWidth);
+      }
+      if (originalClientHeight) {
+        Object.defineProperty(HTMLElement.prototype, "clientHeight", originalClientHeight);
+      }
+      if (originalScrollHeight) {
+        Object.defineProperty(HTMLElement.prototype, "scrollHeight", originalScrollHeight);
+      }
+      if (originalScrollTop) {
+        Object.defineProperty(HTMLElement.prototype, "scrollTop", originalScrollTop);
+      }
+    }
+  });
 });
 
 function createLibraryStateMock(

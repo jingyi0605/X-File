@@ -2559,7 +2559,6 @@ function VirtualLibraryGrid({
     height: 0,
     scrollTop: 0,
   });
-  const [measuredColumns, setMeasuredColumns] = useState<number | null>(null);
   const [measuredItemHeight, setMeasuredItemHeight] = useState(
     VIRTUAL_GRID_ITEM_HEIGHT,
   );
@@ -2587,9 +2586,6 @@ function VirtualLibraryGrid({
     if (!element) return;
     const syncMeasurements = () => {
       const next = measureAffairsGridLayout(element);
-      if (next.columns && next.columns !== measuredColumns) {
-        setMeasuredColumns(next.columns);
-      }
       if (
         next.itemHeight &&
         Math.abs(next.itemHeight - measuredItemHeight) > 0.5
@@ -2618,15 +2614,14 @@ function VirtualLibraryGrid({
       window.cancelAnimationFrame(frameId);
       window.clearTimeout(timeoutId);
     };
-  }, [entries.length, measuredColumns, measuredItemHeight, measuredRowGap]);
+  }, [entries.length, measuredItemHeight, measuredRowGap]);
 
   const columns = Math.max(
     1,
-    measuredColumns ??
-      resolveAffairsGridColumnCount(viewport.width, {
-        trackMinWidth: VIRTUAL_GRID_TRACK_MIN_WIDTH,
-        columnGap: VIRTUAL_GRID_COLUMN_GAP,
-      }),
+    resolveAffairsGridColumnCount(viewport.width, {
+      trackMinWidth: VIRTUAL_GRID_TRACK_MIN_WIDTH,
+      columnGap: VIRTUAL_GRID_COLUMN_GAP,
+    }),
   );
   const virtualItemCount = Math.max(entries.length, library.visibleEntryTotal);
   const metrics = computeVirtualGridMetrics(
