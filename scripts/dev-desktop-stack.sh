@@ -20,6 +20,21 @@ cleanup() {
 
 trap cleanup INT TERM EXIT
 
+echo "预编译 X-File 开发依赖包"
+pnpm --filter @x-file/shared build
+pnpm --filter @x-file/indexer build
+pnpm --filter @x-file/library-engine build
+
+echo "启动共享包监听编译"
+pnpm --filter @x-file/shared dev &
+children+=("$!")
+
+pnpm --filter @x-file/indexer dev &
+children+=("$!")
+
+pnpm --filter @x-file/library-engine dev &
+children+=("$!")
+
 bash scripts/dev-server.sh &
 children+=("$!")
 

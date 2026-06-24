@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "dev": "node --import tsx src/main.ts",
+    "dev": "node --import tsx --watch src/main.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --import tsx --test",
     "start": "node dist/main.js"
