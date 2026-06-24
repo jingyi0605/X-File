@@ -140,7 +140,27 @@ describe("第 3 批：macOS 原生右键菜单与桌面本地动作", () => {
     });
   });
 
-  it("详情区在有镜像路径时会提供本地文件动作，并显示完整元信息", async () => {
+  it("macOS 原生右键菜单会包含按扩展名生效的打开方式子菜单", async () => {
+    libraryApiMock.listLibraryDocuments.mockResolvedValue(
+      createDocumentList([createDocumentRecord({ path: "docs/合同.md" })]),
+    );
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={vi.fn()} platformData={desktopPlatformData} />);
+
+    fireEvent.contextMenu(await screen.findByRole("button", { name: /合同\.md/ }), { clientX: 10, clientY: 10 });
+
+    await waitFor(() => expect(tauriInvokeMock).toHaveBeenCalled());
+    const request = tauriInvokeMock.mock.calls.find(([command]) => command === "show_library_context_menu")?.[1]?.request;
+    const openModeGroup = request.items.find((item: { id: string }) => item.id === "open-mode-group");
+    expect(openModeGroup).toBeTruthy();
+    expect(openModeGroup.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "set-open-mode-preview", label: expect.stringContaining("内置预览工具") }),
+      expect.objectContaining({ id: "set-open-mode-local-app", label: expect.stringContaining("本地应用程序") }),
+    ]));
+  });
+
+  it("详情区在有镜像路径时会显示本地镜像路径与完整元信息", async () => {
     libraryApiMock.getLibrarySnapshot.mockResolvedValue(
       createLibrarySnapshot({
         binding: createLibraryBinding({ rootDir: "/remote/library", mirrorRoot: "/Users/test/Mirror" }),
@@ -156,7 +176,6 @@ describe("第 3 批：macOS 原生右键菜单与桌面本地动作", () => {
     await userEvent.click(await screen.findByRole("button", { name: /合同\.docx/ }));
 
     const detailPanel = screen.getByRole("complementary", { name: "详情" });
-    expect(within(detailPanel).getByRole("button", { name: "使用本地应用打开" })).toBeInTheDocument();
     expect(within(detailPanel).getByText("本地镜像路径")).toBeInTheDocument();
     expect(within(detailPanel).getByText("/Users/test/Mirror/客户资料/合同.docx")).toBeInTheDocument();
     expect(within(detailPanel).getByText("大小")).toBeInTheDocument();

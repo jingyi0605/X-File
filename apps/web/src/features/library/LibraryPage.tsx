@@ -56,6 +56,7 @@ import { toApiErrorMessage } from "../../api/http";
 import { t } from "../../i18n";
 import { normalizeBaseUrl } from "../../runtime/runtime-config";
 import {
+  notifyWindowReadyForNativeSidebar,
   getNativeLibraryPreview,
   getNativeOnlyOfficePreview,
   syncNativeSidebarLayout,
@@ -67,6 +68,11 @@ import {
   toggleDesktopWindowMaximize,
 } from "../../runtime/window-drag";
 import { updateRuntimeConfig } from "../../runtime/runtime-config-store";
+import {
+  getFileOpenModeForPath,
+  getFileOpenPreferenceItems,
+  saveFileOpenPreferenceItems,
+} from "../../preferences/file-open-preference-store";
 import { formatBytes, formatDateTime, getPathName } from "../../shared/format";
 import {
   DesktopModal,
@@ -145,6 +151,36 @@ function resolveMacOsUnifiedTitlebarGestureHeight(element: HTMLElement): number 
   return Math.max(titlebarHeight + 28, 56);
 }
 
+function installAutoHideScrollbarBehavior(element: HTMLElement): () => void {
+  const activeAttribute = "data-scrollbar-active";
+  const inactiveDelayMs = 3000;
+  let hideTimer: number | null = null;
+
+  const markActive = () => {
+    element.setAttribute(activeAttribute, "true");
+    if (hideTimer !== null) {
+      window.clearTimeout(hideTimer);
+    }
+    hideTimer = window.setTimeout(() => {
+      element.setAttribute(activeAttribute, "false");
+    }, inactiveDelayMs);
+  };
+
+  element.setAttribute(activeAttribute, "false");
+  element.addEventListener("wheel", markActive, { passive: true });
+  element.addEventListener("touchmove", markActive, { passive: true });
+  element.addEventListener("scroll", markActive, { passive: true });
+
+  return () => {
+    if (hideTimer !== null) {
+      window.clearTimeout(hideTimer);
+    }
+    element.removeEventListener("wheel", markActive);
+    element.removeEventListener("touchmove", markActive);
+    element.removeEventListener("scroll", markActive);
+  };
+}
+
 function isMacOsUnifiedTitlebarGesture(eventClientY: number, shellElement: HTMLElement): boolean {
   const shellRect = shellElement.getBoundingClientRect();
 
@@ -170,13 +206,16 @@ interface LibraryContextMenuState {
   target: LibraryContextMenuTarget;
 }
 
-type LibrarySubmenuKey = "copy" | "new";
+type LibrarySubmenuKey = "copy" | "new" | "open-mode";
+type FileOpenMode = "preview" | "local_app";
 
 type LibraryContextActionId =
   | "preview"
   | "open"
   | "locate"
   | "open-local-app"
+  | "set-open-mode-preview"
+  | "set-open-mode-local-app"
   | "download"
   | "new-directory"
   | "new-markdown"
@@ -194,7 +233,7 @@ type LibraryContextActionId =
   | "properties";
 
 interface NativeLibraryContextMenuItem {
-  id: LibraryContextActionId | "copy-group" | "new-group";
+  id: LibraryContextActionId | "copy-group" | "new-group" | "open-mode-group";
   label: string;
   disabled?: boolean;
   items?: NativeLibraryContextMenuItem[];
@@ -405,7 +444,22 @@ export function LibraryPage({
             isResizing: panels.isResizing,
           };
 
-    void syncNativeSidebarLayout(layout).catch(() => undefined);
+    void notifyWindowReadyForNativeSidebar()
+      .then((ready) => {
+        if (!ready) {
+          return false;
+        }
+        return syncNativeSidebarLayout(layout);
+      })
+      .then((synced) => {
+        if (!synced) {
+          return;
+        }
+        window.dispatchEvent(new CustomEvent("x-file-startup-ready", {
+          detail: { source: "native-sidebar-ready" },
+        }));
+      })
+      .catch(() => undefined);
   }, [
     overlayMacOsTitlebar,
     panels.isResizing,
@@ -550,6 +604,16 @@ export function LibraryPage({
       case "open-local-app":
         if (absolutePath) {
           await openPathInDesktop(absolutePath);
+        }
+        return;
+      case "set-open-mode-preview":
+        if (target.kind === "document") {
+          await saveFileOpenModeForExtension(target.entry.path, "preview");
+        }
+        return;
+      case "set-open-mode-local-app":
+        if (target.kind === "document") {
+          await saveFileOpenModeForExtension(target.entry.path, "local_app");
         }
         return;
       case "download":
@@ -2303,146 +2367,139 @@ function LibraryStageToolbar({
     <div
       className={overlayTitlebar ? "xfile-stage-titlebar overlay" : "xfile-stage-titlebar"}
     >
-      <div className="xfile-stage-titlebar-left">
-        <div className="affairs-stage-toolbar-left" data-window-drag="ignore">
-          <div className="affairs-stage-breadcrumb" aria-label={t("libraryCurrentFolder")}>
-            <button
-              type="button"
-              className="affairs-stage-breadcrumb-button root"
-              aria-label={t("libraryRootFolder")}
-              title={t("libraryRootFolder")}
-              onClick={() => library.selectFolder(null)}
-            >
-              {renderHomeIcon()}
-            </button>
-            <BreadcrumbItems
-              path={
-                library.viewState.browseMode === "folder"
-                  ? library.viewState.selectedFolderPath
-                  : library.viewState.selectedTagPath
-              }
-              browseMode={library.viewState.browseMode}
-              onSelectFolder={library.selectFolder}
-              onSelectTag={library.selectTag}
-            />
+      <div className="xfile-stage-titlebar-content">
+        <div className="xfile-stage-titlebar-left">
+          <div className="affairs-stage-toolbar-left" data-window-drag="ignore">
+            <div className="affairs-stage-breadcrumb" aria-label={t("libraryCurrentFolder")}>
+              <button
+                type="button"
+                className="affairs-stage-breadcrumb-button root"
+                aria-label={t("libraryRootFolder")}
+                title={t("libraryRootFolder")}
+                onClick={() => library.selectFolder(null)}
+              >
+                {renderHomeIcon()}
+              </button>
+              <BreadcrumbItems
+                path={
+                  library.viewState.browseMode === "folder"
+                    ? library.viewState.selectedFolderPath
+                    : library.viewState.selectedTagPath
+                }
+                browseMode={library.viewState.browseMode}
+                onSelectFolder={library.selectFolder}
+                onSelectTag={library.selectTag}
+              />
+            </div>
           </div>
+          <div
+            className="xfile-stage-titlebar-drag-spacer"
+            aria-hidden="true"
+            data-window-drag-handle={overlayTitlebar ? "xfile-library-titlebar-spacer" : undefined}
+            data-tauri-drag-region={overlayTitlebar ? "" : undefined}
+          />
         </div>
-        <div
-          className="xfile-stage-titlebar-drag-spacer"
-          aria-hidden="true"
-          data-window-drag-handle={overlayTitlebar ? "xfile-library-titlebar-spacer" : undefined}
-          data-tauri-drag-region={overlayTitlebar ? "" : undefined}
-        />
-      </div>
-      <div className="affairs-stage-toolbar-right" data-window-drag="ignore">
-        <div className="affairs-stage-toolbar-group">
-          <button
-            type="button"
-            className={library.viewState.viewMode === "grid" ? "affairs-stage-toolbar-icon active" : "affairs-stage-toolbar-icon"}
-            onClick={() => library.setViewState((current) => ({ ...current, viewMode: "grid" }))}
-            aria-label={t("libraryViewGrid")}
-            title={t("libraryViewGrid")}
-          >
-            {renderGridIcon()}
-          </button>
-          <button
-            type="button"
-            className={library.viewState.viewMode === "list" ? "affairs-stage-toolbar-icon active" : "affairs-stage-toolbar-icon"}
-            onClick={() => library.setViewState((current) => ({ ...current, viewMode: "list" }))}
-            aria-label={t("libraryViewList")}
-            title={t("libraryViewList")}
-          >
-            {renderListIcon()}
-          </button>
-        </div>
-        {library.viewState.browseMode === "tag" &&
-        library.viewState.selectedTagPaths.length > 0 &&
-        library.viewState.viewMode === "list" ? (
-          <span
-            className="affairs-tag-result-structure-switch"
-            role="group"
-            aria-label={t("libraryTagResultStructureLabel")}
-          >
+        <div className="affairs-stage-toolbar-right" data-window-drag="ignore">
+          <div className="affairs-stage-toolbar-group">
             <button
               type="button"
-              className={library.viewState.tagResultStructureMode === "file" ? "active" : ""}
-              onClick={() => library.setViewState((current) => ({ ...current, tagResultStructureMode: "file" }))}
-              aria-pressed={library.viewState.tagResultStructureMode === "file"}
+              className={library.viewState.viewMode === "grid" ? "affairs-stage-toolbar-icon active" : "affairs-stage-toolbar-icon"}
+              onClick={() => library.setViewState((current) => ({ ...current, viewMode: "grid" }))}
+              aria-label={t("libraryViewGrid")}
+              title={t("libraryViewGrid")}
             >
-              {t("libraryTagResultFileMode")}
+              {renderGridIcon()}
             </button>
             <button
               type="button"
-              className={library.viewState.tagResultStructureMode === "directory" ? "active" : ""}
-              onClick={() => library.setViewState((current) => ({ ...current, tagResultStructureMode: "directory" }))}
-              aria-pressed={library.viewState.tagResultStructureMode === "directory"}
+              className={library.viewState.viewMode === "list" ? "affairs-stage-toolbar-icon active" : "affairs-stage-toolbar-icon"}
+              onClick={() => library.setViewState((current) => ({ ...current, viewMode: "list" }))}
+              aria-label={t("libraryViewList")}
+              title={t("libraryViewList")}
             >
-              {t("libraryTagResultDirectoryMode")}
+              {renderListIcon()}
             </button>
-          </span>
-        ) : null}
-        <select
-          className="affairs-stage-toolbar-select"
-          value={library.viewState.librarySort.mode}
-          onChange={(event) =>
-            library.setViewState((current) => ({
-              ...current,
-              librarySort: {
-                ...current.librarySort,
-                mode: event.target.value as LibrarySortMode,
-              },
-            }))
-          }
-          aria-label={t("librarySortRecent")}
-          title={t("librarySortRecent")}
-        >
-          {sortOptions.map((option) => (
-            <option key={option.value} value={option.value}>{option.label}</option>
-          ))}
-        </select>
-        <button
-          type="button"
-          className="affairs-stage-toolbar-icon"
-          disabled={library.refreshPending}
-          onClick={() => void library.refresh()}
-          aria-label={t("libraryRefresh")}
-          title={t("libraryRefresh")}
-        >
-          {renderRefreshIcon()}
-        </button>
-        <LibraryIndexStatusPopover
-          status={library.snapshot?.status ?? null}
-          documentCount={library.snapshot?.documentCount ?? 0}
-          directoryStatus={library.documentPage?.directoryStatus ?? null}
-          tagAssignmentTask={tagAssignmentTask}
-        />
-        <button
-          type="button"
-          className="affairs-stage-toolbar-icon"
-          onClick={onOpenSearch}
-          aria-label={t("librarySearchAction")}
-          title={t("librarySearchAction")}
-        >
-          {renderSearchIcon()}
-        </button>
-        <button
-          type="button"
-          className="affairs-stage-toolbar-icon"
-          onClick={onOpenSettings}
-          aria-label={t("navSettings")}
-          title={t("navSettings")}
-        >
-          {renderSettingsIcon()}
-        </button>
-        <button
-          type="button"
-          className="affairs-stage-toolbar-icon"
-          onClick={() => onRequestCreate({ kind: "directory", folderPath: library.viewState.selectedFolderPath, fileName: t("libraryCreateDirectoryDefaultName") })}
-          aria-label={t("libraryContextNew")}
-          title={t("libraryContextNew")}
-        >
-          {renderPlusIcon()}
-        </button>
+          </div>
+          {library.viewState.browseMode === "tag" &&
+          library.viewState.selectedTagPaths.length > 0 &&
+          library.viewState.viewMode === "list" ? (
+            <span
+              className="affairs-tag-result-structure-switch"
+              role="group"
+              aria-label={t("libraryTagResultStructureLabel")}
+            >
+              <button
+                type="button"
+                className={library.viewState.tagResultStructureMode === "file" ? "active" : ""}
+                onClick={() => library.setViewState((current) => ({ ...current, tagResultStructureMode: "file" }))}
+                aria-pressed={library.viewState.tagResultStructureMode === "file"}
+              >
+                {t("libraryTagResultFileMode")}
+              </button>
+              <button
+                type="button"
+                className={library.viewState.tagResultStructureMode === "directory" ? "active" : ""}
+                onClick={() => library.setViewState((current) => ({ ...current, tagResultStructureMode: "directory" }))}
+                aria-pressed={library.viewState.tagResultStructureMode === "directory"}
+              >
+                {t("libraryTagResultDirectoryMode")}
+              </button>
+            </span>
+          ) : null}
+          <select
+            className="affairs-stage-toolbar-select"
+            value={library.viewState.librarySort.mode}
+            onChange={(event) =>
+              library.setViewState((current) => ({
+                ...current,
+                librarySort: {
+                  ...current.librarySort,
+                  mode: event.target.value as LibrarySortMode,
+                },
+              }))
+            }
+            aria-label={t("librarySortRecent")}
+            title={t("librarySortRecent")}
+          >
+            {sortOptions.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="affairs-stage-toolbar-icon"
+            disabled={library.refreshPending}
+            onClick={() => void library.refresh()}
+            aria-label={t("libraryRefresh")}
+            title={t("libraryRefresh")}
+          >
+            {renderRefreshIcon()}
+          </button>
+          <LibraryIndexStatusPopover
+            status={library.snapshot?.status ?? null}
+            documentCount={library.snapshot?.documentCount ?? 0}
+            directoryStatus={library.documentPage?.directoryStatus ?? null}
+            tagAssignmentTask={tagAssignmentTask}
+          />
+          <button
+            type="button"
+            className="affairs-stage-toolbar-icon"
+            onClick={onOpenSearch}
+            aria-label={t("librarySearchAction")}
+            title={t("librarySearchAction")}
+          >
+            {renderSearchIcon()}
+          </button>
+          <button
+            type="button"
+            className="affairs-stage-toolbar-icon"
+            onClick={() => onRequestCreate({ kind: "directory", folderPath: library.viewState.selectedFolderPath, fileName: t("libraryCreateDirectoryDefaultName") })}
+            aria-label={t("libraryContextNew")}
+            title={t("libraryContextNew")}
+          >
+            {renderPlusIcon()}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -2581,6 +2638,14 @@ function VirtualLibraryGrid({
     return () => observer?.disconnect();
   }, []);
 
+  useEffect(() => {
+    const element = viewportRef.current;
+    if (!element) {
+      return;
+    }
+    return installAutoHideScrollbarBehavior(element);
+  }, []);
+
   useLayoutEffect(() => {
     const element = viewportRef.current;
     if (!element) return;
@@ -2709,6 +2774,7 @@ function VirtualLibraryGrid({
     <div
       ref={viewportRef}
       className="affairs-doc-grid-scroll"
+      data-scrollbar="macos-thin"
       onScroll={(event) => handleScroll(event.currentTarget)}
     >
       <div className="affairs-doc-grid-viewport">
@@ -2808,6 +2874,14 @@ function VirtualLibraryFinderList({
       window.clearTimeout(timeoutId);
     };
   }, [entries.length, measuredRowHeight]);
+
+  useEffect(() => {
+    const element = viewportRef.current;
+    if (!element) {
+      return;
+    }
+    return installAutoHideScrollbarBehavior(element);
+  }, []);
 
   const virtualItemCount = Math.max(entries.length, library.visibleEntryTotal);
   const metrics = computeVirtualListMetrics(
@@ -2992,6 +3066,7 @@ function VirtualLibraryFinderList({
       <div
         ref={viewportRef}
         className="affairs-finder-list affairs-finder-viewport"
+        data-scrollbar="macos-thin"
         onScroll={(event) => handleScroll(event.currentTarget)}
       >
         <div
@@ -3421,7 +3496,17 @@ function LibraryEntryCard({
         library.selectDocument(entry.documentId);
         onOpenContextMenu(event, { kind: "document", entry });
       }}
-      onDoubleClick={() => onOpenLibraryViewer(entry)}
+      onDoubleClick={() => {
+        if (getFileOpenModeForPath(entry.path) === "local_app") {
+          void openPathInDesktop(entry.path).then((opened) => {
+            if (!opened) {
+              onOpenLibraryViewer(entry);
+            }
+          });
+          return;
+        }
+        onOpenLibraryViewer(entry);
+      }}
     >
       <div className="affairs-doc-icon">{renderDocumentShape(entry.path)}</div>
       <div
@@ -3522,7 +3607,17 @@ function LibraryFinderRow({
         library.selectDocument(entry.documentId);
         onOpenContextMenu(event, { kind: "document", entry });
       }}
-      onDoubleClick={() => onOpenLibraryViewer(entry)}
+      onDoubleClick={() => {
+        if (getFileOpenModeForPath(entry.path) === "local_app") {
+          void openPathInDesktop(entry.path).then((opened) => {
+            if (!opened) {
+              onOpenLibraryViewer(entry);
+            }
+          });
+          return;
+        }
+        onOpenLibraryViewer(entry);
+      }}
     >
       <span className="affairs-finder-name-cell" style={{ "--affairs-finder-depth": entry.depth ?? 0 } as CSSProperties}>
         <span className="affairs-finder-icon">
@@ -3565,6 +3660,7 @@ function LibraryDetail({
   onRequestTagAssignment: (target: LibraryContextMenuTarget) => void;
 }) {
   const [activeTab, setActiveTab] = useState<"detail" | "assistant">("detail");
+  const detailScrollRef = useRef<HTMLDivElement | null>(null);
   const [assistantHistoryModalOpen, setAssistantHistoryModalOpen] = useState(false);
   const [assistantCreateModalOpen, setAssistantCreateModalOpen] = useState(false);
   const selected = library.selectedDocument;
@@ -3599,6 +3695,14 @@ function LibraryDetail({
     }
     void assistant.ensureSessionReady();
   }, [activeTab, assistant.ensureSessionReady, assistant.ready]);
+
+  useEffect(() => {
+    const element = detailScrollRef.current;
+    if (!element || activeTab === "assistant") {
+      return;
+    }
+    return installAutoHideScrollbarBehavior(element);
+  }, [activeTab, selected?.documentId, selectedFolder?.path]);
 
   return (
     <aside
@@ -3674,12 +3778,19 @@ function LibraryDetail({
       {activeTab === "assistant" ? (
         <DocumentAssistantPanel library={library} assistant={assistant} />
       ) : !selected && !selectedFolder ? (
-        <div className="affairs-detail-scroll">
+        <div
+          ref={detailScrollRef}
+          className="affairs-detail-scroll"
+          data-scrollbar="macos-thin"
+        >
           <div className="affairs-detail-empty">{t("libraryNoSelection")}</div>
-          {import.meta.env.DEV ? <LibraryNativeDebugPanel library={library} /> : null}
         </div>
       ) : selectedFolder ? (
-        <div className="affairs-detail-scroll">
+        <div
+          ref={detailScrollRef}
+          className="affairs-detail-scroll"
+          data-scrollbar="macos-thin"
+        >
           <section className="affairs-detail-block affairs-detail-hero-block">
             <div className="affairs-detail-headline affairs-detail-headline-document">
               <div className="affairs-detail-headline-main affairs-detail-headline-main-centered">
@@ -3727,10 +3838,13 @@ function LibraryDetail({
               />
             </div>
           </section>
-          {import.meta.env.DEV ? <LibraryNativeDebugPanel library={library} /> : null}
         </div>
       ) : selected ? (
-        <div className="affairs-detail-scroll">
+        <div
+          ref={detailScrollRef}
+          className="affairs-detail-scroll"
+          data-scrollbar="macos-thin"
+        >
           <section className="affairs-detail-block affairs-detail-hero-block">
             <div className="affairs-detail-headline affairs-detail-headline-document">
               <div className="affairs-detail-headline-main affairs-detail-headline-main-centered">
@@ -3836,7 +3950,6 @@ function LibraryDetail({
               compact
             />
           </section>
-          {import.meta.env.DEV ? <LibraryNativeDebugPanel library={library} /> : null}
         </div>
       ) : null}
       <AssistantHistoryModal
@@ -3866,169 +3979,6 @@ function LibraryDetail({
         }}
       />
     </aside>
-  );
-}
-
-function LibraryNativeDebugPanel({ library }: { library: LibraryState }) {
-  const [panelOpen, setPanelOpen] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const debug = library.debug;
-  const channels = [
-    ["watcher", debug.watcher],
-    ["snapshot", debug.snapshot],
-    ["documents", debug.documents],
-    ["files", debug.files],
-    ["preview", debug.preview],
-    ["refresh", debug.refresh],
-  ] as const;
-
-  const debugSummary = JSON.stringify(
-    {
-      runtime: debug.runtime,
-      mode: debug.mode,
-      nativeBridgeEligible: debug.nativeBridgeEligible,
-      nativeBridgeAvailable: debug.nativeBridgeAvailable,
-      channels: Object.fromEntries(
-        channels.map(([channel, state]) => [
-          channel,
-          {
-            transport: state.transport,
-            detail: state.detail,
-            updatedAt: state.updatedAt,
-          },
-        ])
-      ),
-    },
-    null,
-    2
-  );
-
-  if (!panelOpen) {
-    return (
-      <button
-        type="button"
-        className="library-native-debug-collapsed-button"
-        data-testid="library-native-debug-toggle"
-        aria-label="展开 Native 调试命中"
-        title="展开 Native 调试命中"
-        onClick={() => setPanelOpen(true)}
-      >
-        <DebugBugIcon />
-        <span className="library-native-debug-runtime-badge" data-transport={debug.nativeBridgeAvailable ? "native" : "http"}>
-          {debug.runtime === "desktop-tauri" ? "Tauri" : "Web"}
-        </span>
-      </button>
-    );
-  }
-
-  return (
-    <section className="affairs-detail-block library-native-debug-panel" data-testid="library-native-debug-panel">
-      <div className="affairs-detail-viewer-header library-native-debug-toolbar">
-        <span className="affairs-detail-viewer-title">Native 调试命中</span>
-        <div className="library-native-debug-toolbar-actions">
-          <span className="library-native-debug-runtime-badge" data-transport={debug.nativeBridgeAvailable ? "native" : "http"}>
-            {debug.runtime === "desktop-tauri" ? "Tauri" : "Web"}
-          </span>
-          <button
-            type="button"
-            className="library-native-debug-icon-button"
-            aria-label={copied ? "已复制调试结果" : "复制调试结果"}
-            title={copied ? "已复制调试结果" : "复制调试结果"}
-            onClick={() => {
-              void copyContextText(debugSummary);
-              setCopied(true);
-              window.setTimeout(() => setCopied(false), 1200);
-            }}
-          >
-            <DebugCopyIcon />
-          </button>
-          <button
-            type="button"
-            className="library-native-debug-icon-button"
-            aria-label="收起调试命中"
-            title="收起调试命中"
-            onClick={() => setPanelOpen(false)}
-          >
-            <DebugCollapseIcon collapsed={false} />
-          </button>
-        </div>
-      </div>
-      <div className="library-native-debug-summary-grid">
-        <div className="library-native-debug-summary-card">
-          <span className="library-native-debug-summary-label">运行模式</span>
-          <strong>{debug.mode}</strong>
-        </div>
-        <div className="library-native-debug-summary-card">
-          <span className="library-native-debug-summary-label">native 资格</span>
-          <strong>{debug.nativeBridgeEligible ? "local 可走 native" : "mirror 只走 HTTP"}</strong>
-        </div>
-        <div className="library-native-debug-summary-card">
-          <span className="library-native-debug-summary-label">宿主桥</span>
-          <strong>{debug.nativeBridgeAvailable ? "已检测到 __TAURI_INTERNALS__" : "当前不是 Tauri 宿主"}</strong>
-        </div>
-      </div>
-      <div className="library-native-debug-channel-list">
-        {channels.map(([channel, state]) => (
-          <article key={channel} className="library-native-debug-channel-card">
-            <div className="library-native-debug-channel-head">
-              <strong>{channel}</strong>
-              <span className="library-native-debug-runtime-badge" data-transport={state.transport}>
-                {state.transport}
-              </span>
-            </div>
-            <p className="library-native-debug-channel-detail">{state.detail}</p>
-            <p className="library-native-debug-channel-time">
-              {state.updatedAt ? formatDateTime(state.updatedAt) : "尚无命中记录"}
-            </p>
-          </article>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function DebugBugIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        d="M9 7.5h6M10 4.5h4M8.5 10.5h7a2.5 2.5 0 0 1 2.5 2.5v3a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4v-3a2.5 2.5 0 0 1 2.5-2.5Zm-3 1.5 2 1.5m11-1.5-2 1.5m-11 6 2-1.5m9 1.5-2-1.5"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.7"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function DebugCopyIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        d="M9 9.5V6.8A1.8 1.8 0 0 1 10.8 5h6.4A1.8 1.8 0 0 1 19 6.8v8.4a1.8 1.8 0 0 1-1.8 1.8H14m-5 2H6.8A1.8 1.8 0 0 1 5 17.2v-8.4A1.8 1.8 0 0 1 6.8 7H13a1.8 1.8 0 0 1 1.8 1.8v8.4A1.8 1.8 0 0 1 13 19Z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.7"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function DebugCollapseIcon({ collapsed }: { collapsed: boolean }) {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        d={collapsed ? "m9 6 6 6-6 6" : "m15 18-6-6 6-6"}
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.9"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
   );
 }
 
@@ -4115,6 +4065,7 @@ function LibraryContextMenu({
   const absolutePath = isFileSystemTarget
     ? resolveTargetAbsolutePath(library, target)
     : null;
+  const openMode = isDocument ? getFileOpenModeForPath(target.entry.path) ?? "preview" : "preview";
   const canPaste = Boolean(libraryClipboard);
 
   useLayoutEffect(() => {
@@ -4192,6 +4143,15 @@ function LibraryContextMenu({
       onPointerDown={(event) => event.stopPropagation()}
       onContextMenu={(event) => event.preventDefault()}
     >
+      {isFileSystemTarget ? (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => void run(() => openContextTarget(library, target))}
+        >
+          {t("libraryContextOpen")}
+        </button>
+      ) : null}
       {isDocument ? (
         <button
           type="button"
@@ -4206,14 +4166,53 @@ function LibraryContextMenu({
           {t("libraryContextPreview")}
         </button>
       ) : null}
-      {isFileSystemTarget ? (
+      {isDocument && absolutePath ? (
         <button
           type="button"
           role="menuitem"
-          onClick={() => void run(() => openContextTarget(library, target))}
+          onClick={() =>
+            void run(async () => {
+              await openPathInDesktop(absolutePath);
+            })
+          }
         >
-          {t("libraryContextOpen")}
+          {t("libraryContextOpenLocalApp")}
         </button>
+      ) : null}
+      {isDocument ? (
+        <ContextSubmenu
+          menuKey="open-mode"
+          activeSubmenu={activeSubmenu}
+          label={t("libraryContextOpenMode")}
+          onOpen={openSubmenu}
+          onCloseLater={closeSubmenuLater}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            aria-pressed={openMode === "preview"}
+            onClick={() =>
+              void run(() => saveFileOpenModeForExtension(target.entry.path, "preview"))
+            }
+          >
+            {openMode === "preview"
+              ? `${t("libraryContextOpenModePreview")} (${t("librarySelected")})`
+              : t("libraryContextOpenModePreview")}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            aria-pressed={openMode === "local_app"}
+            disabled={!absolutePath}
+            onClick={() =>
+              void run(() => saveFileOpenModeForExtension(target.entry.path, "local_app"))
+            }
+          >
+            {openMode === "local_app"
+              ? `${t("libraryContextOpenModeLocalApp")} (${t("librarySelected")})`
+              : t("libraryContextOpenModeLocalApp")}
+          </button>
+        </ContextSubmenu>
       ) : null}
       {isFileSystemTarget ? (
         <button
@@ -4228,19 +4227,6 @@ function LibraryContextMenu({
           }
         >
           {t("libraryContextLocate")}
-        </button>
-      ) : null}
-      {isDocument && absolutePath ? (
-        <button
-          type="button"
-          role="menuitem"
-          onClick={() =>
-            void run(async () => {
-              await openPathInDesktop(absolutePath);
-            })
-          }
-        >
-          {t("libraryContextOpenLocalApp")}
         </button>
       ) : null}
       {isDocument ? (
@@ -8548,6 +8534,24 @@ async function locateDocumentFolder(
   library.selectFolder(getParentPath(path));
 }
 
+function resolveLibraryFileExtension(path: string): string {
+  const fileName = path.split("/").pop() ?? "";
+  const matched = fileName.match(/(\.[^./\\]+)$/);
+  return matched ? matched[1].toLowerCase() : "";
+}
+
+async function saveFileOpenModeForExtension(path: string, mode: FileOpenMode): Promise<void> {
+  const extension = resolveLibraryFileExtension(path);
+  if (!extension) {
+    return;
+  }
+  const nextItems = [
+    ...getFileOpenPreferenceItems().filter((item) => item.extension !== extension),
+    { extension, mode },
+  ];
+  await saveFileOpenPreferenceItems(nextItems);
+}
+
 function buildNativeLibraryContextMenuItems(
   library: LibraryState,
   target: LibraryContextMenuTarget,
@@ -8560,21 +8564,43 @@ function buildNativeLibraryContextMenuItems(
   const absolutePath = isFileSystemTarget
     ? resolveTargetAbsolutePath(library, target)
     : null;
+  const openMode = isDocument ? getFileOpenModeForPath(target.entry.path) ?? "preview" : "preview";
   const items: NativeLibraryContextMenuItem[] = [];
 
-  if (isDocument) {
-    items.push({ id: "preview", label: t("libraryContextPreview") });
-  }
   if (isFileSystemTarget) {
     items.push({ id: "open", label: t("libraryContextOpen") });
-    items.push({ id: "locate", label: t("libraryContextLocate") });
   }
   if (isDocument) {
+    items.push({ id: "preview", label: t("libraryContextPreview") });
     items.push({
       id: "open-local-app",
       label: t("libraryContextOpenLocalApp"),
       disabled: !absolutePath,
     });
+    items.push({
+      id: "open-mode-group",
+      label: t("libraryContextOpenMode"),
+      items: [
+        {
+          id: "set-open-mode-preview",
+          label: openMode === "preview"
+            ? `${t("libraryContextOpenModePreview")} (${t("librarySelected")})`
+            : t("libraryContextOpenModePreview"),
+        },
+        {
+          id: "set-open-mode-local-app",
+          label: openMode === "local_app"
+            ? `${t("libraryContextOpenModeLocalApp")} (${t("librarySelected")})`
+            : t("libraryContextOpenModeLocalApp"),
+          disabled: !absolutePath,
+        },
+      ],
+    });
+  }
+  if (isFileSystemTarget) {
+    items.push({ id: "locate", label: t("libraryContextLocate") });
+  }
+  if (isDocument) {
     items.push({ id: "download", label: t("libraryContextDownload") });
   }
   if (isFileSystemTarget) {
@@ -8634,12 +8660,17 @@ async function openContextTarget(
   target: Extract<LibraryContextMenuTarget, { kind: "document" | "folder" }>,
 ): Promise<void> {
   const absolutePath = resolveTargetAbsolutePath(library, target);
-  if (absolutePath && (await openPathInDesktop(absolutePath))) {
-    return;
-  }
   if (target.kind === "folder") {
+    if (absolutePath && (await openPathInDesktop(absolutePath))) {
+      return;
+    }
     library.selectFolder(target.entry.path);
     return;
+  }
+  if (getFileOpenModeForPath(target.entry.path) === "local_app" && absolutePath) {
+    if (await openPathInDesktop(absolutePath)) {
+      return;
+    }
   }
   await library.openPreview(target.entry.path);
 }
