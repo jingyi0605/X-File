@@ -12,7 +12,10 @@ test("文档库主路由、标签路由和 server state 都已注册", async () 
   process.env.HOME = tempHome;
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "x-file-routes-library-"));
   fs.writeFileSync(path.join(rootDir, "a.doc"), "office", "utf8");
-  const app = createServer({ httpServerRuntimeState: { running: false } });
+  const app = createServer({
+    httpServerRuntimeState: { running: false },
+    sidecarProfile: "full"
+  });
 
   try {
     const binding = await app.inject({
@@ -82,6 +85,7 @@ test("文档库主路由、标签路由和 server state 都已注册", async () 
     const state = await app.inject({ method: "GET", url: "/api/server/state" });
     assert.equal(state.statusCode, 200);
     assert.equal(state.json().host, "127.0.0.1");
+    assert.equal(state.json().actualHost, null);
 
     const refresh = await app.inject({
       method: "POST",

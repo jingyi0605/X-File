@@ -1,3 +1,5 @@
+import { pathToFileURL } from "node:url";
+
 import { createServer } from "./app.js";
 import { getDefaultHttpServerHost, getDefaultHttpServerPort, HttpServerManager } from "./http-server-manager.js";
 
@@ -19,7 +21,8 @@ async function main() {
   const httpServerManager = new HttpServerManager();
   httpServerManager.bindServerFactory(() => createServer({
     httpServerManager,
-    manageHttpServerLifecycle: true
+    manageHttpServerLifecycle: true,
+    sidecarProfile: resolveStandaloneSidecarProfile()
   }));
 
   const host = process.env.X_FILE_SERVER_HOST ?? httpServerManager.getState().host ?? getDefaultHttpServerHost();
@@ -35,8 +38,26 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  new HttpServerManager().markError(error);
-  console.error(error);
-  process.exitCode = 1;
-});
+export function resolveStandaloneSidecarProfile(): "full" | "sidecar-only" {
+  const raw = process.env.X_FILE_NODE_SIDECAR_PROFILE?.trim().toLowerCase();
+  if (raw === "sidecar-only") {
+    return "sidecar-only";
+  }
+  return "full";
+}
+
+if (isCliEntry()) {
+  main().catch((error) => {
+    new HttpServerManager().markError(error);
+    console.error(error);
+    process.exitCode = 1;
+  });
+}
+
+function isCliEntry(): boolean {
+  const entry = process.argv[1];
+  if (!entry) {
+    return false;
+  }
+  return import.meta.url === pathToFileURL(entry).href;
+}
