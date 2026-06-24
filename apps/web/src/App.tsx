@@ -353,6 +353,9 @@ function applyPlatformDatasets(platformData: WorkbenchPlatformData): void {
   }
 }
 
+const initialPlatformData = resolveWorkbenchPlatformData();
+applyPlatformDatasets(initialPlatformData);
+
 const MACOS_TITLEBAR_STYLE_KEYS = [
   "--desktop-macos-traffic-light-center-y",
   "--desktop-macos-traffic-light-leading-inset",

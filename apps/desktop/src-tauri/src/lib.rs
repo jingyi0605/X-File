@@ -116,6 +116,8 @@ struct MacosNativeSidebarWindowState {
     right_view_ptr: Option<usize>,
     rendered_left_width: f64,
     rendered_right_width: f64,
+    initialized: bool,
+    handlers_attached: bool,
 }
 
 #[cfg(target_os = "macos")]
@@ -187,6 +189,18 @@ impl MacosNativeSidebarState {
     fn get_window_state(&self, window_label: &str) -> Option<MacosNativeSidebarWindowState> {
         let guard = self.windows.lock().expect("macOS 原生侧栏状态锁被污染");
         guard.get(window_label).cloned()
+    }
+
+    fn mark_initialized(&self, window_label: &str) {
+        let mut guard = self.windows.lock().expect("macOS 原生侧栏状态锁被污染");
+        let entry = guard.entry(window_label.to_string()).or_default();
+        entry.initialized = true;
+    }
+
+    fn mark_handlers_attached(&self, window_label: &str) {
+        let mut guard = self.windows.lock().expect("macOS 原生侧栏状态锁被污染");
+        let entry = guard.entry(window_label.to_string()).or_default();
+        entry.handlers_attached = true;
     }
 
     fn update_view_pointers(
@@ -5105,7 +5119,7 @@ fn configure_macos_window_chrome(app: &tauri::App) -> tauri::Result<()> {
 
 
 #[cfg(target_os = "macos")]
-fn configure_macos_native_glass_sidebars(app: &tauri::App) -> tauri::Result<()> {
+fn configure_macos_native_glass_sidebars(app: &AppHandle) -> tauri::Result<()> {
     let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
         return Ok(());
     };
@@ -5119,6 +5133,7 @@ fn configure_macos_native_glass_sidebars(app: &tauri::App) -> tauri::Result<()> 
         is_resizing: false,
     };
     let sidebar_state = native_sidebar_state.upsert_layout(window.label(), &initial_layout);
+    native_sidebar_state.mark_initialized(window.label());
     schedule_macos_native_sidebar_layout(
         &window,
         window.label().to_string(),
@@ -5369,6 +5384,7 @@ fn attach_macos_native_sidebar_handlers(
     window: WebviewWindow,
     native_sidebar_state: MacosNativeSidebarState,
 ) {
+    native_sidebar_state.mark_handlers_attached(window.label());
     let window_for_events = window.clone();
     window.on_window_event(move |event| {
         if matches!(event, WindowEvent::Resized(_)) {
@@ -5399,6 +5415,40 @@ fn load_initial_backend_persistence() -> bool {
 
 fn default_backend_persistence() -> bool {
     cfg!(target_os = "macos")
+}
+
+#[tauri::command]
+fn window_ready_for_native_sidebar(
+    window: WebviewWindow,
+    native_sidebar_state: State<'_, MacosNativeSidebarState>,
+) -> Result<bool, String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        let _ = native_sidebar_state;
+        Ok(false)
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let window_label = window.label().to_string();
+        let native_sidebar_state = native_sidebar_state.inner().clone();
+        let window_state = native_sidebar_state.get_window_state(&window_label);
+
+        if !window_state.as_ref().is_some_and(|state| state.initialized) {
+            let app = window.app_handle();
+            configure_macos_native_glass_sidebars(&app).map_err(|error| error.to_string())?;
+        }
+
+        if !window_state
+            .as_ref()
+            .is_some_and(|state| state.handlers_attached)
+        {
+            attach_macos_native_sidebar_handlers(window, native_sidebar_state);
+        }
+
+        Ok(true)
+    }
 }
 
 #[tauri::command]
@@ -5601,11 +5651,6 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             {
                 configure_macos_window_chrome(app)?;
-                configure_macos_native_glass_sidebars(app)?;
-                if let Some(window) = app.get_webview_window("main") {
-                    let native_sidebar_state = app.state::<MacosNativeSidebarState>().inner().clone();
-                    attach_macos_native_sidebar_handlers(window, native_sidebar_state);
-                }
             }
             Ok(())
         })
@@ -5616,6 +5661,7 @@ pub fn run() {
             stop_managed_backend,
             desktop_shell_status,
             get_native_library_engine_state,
+            window_ready_for_native_sidebar,
             sync_native_sidebar_layout,
             start_native_library_watcher,
             stop_native_library_watcher,

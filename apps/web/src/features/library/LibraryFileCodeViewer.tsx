@@ -39,6 +39,36 @@ interface FileOverviewMarker {
   kind: LineChangeKind;
 }
 
+function installAutoHideScrollbarBehavior(element: HTMLElement): () => void {
+  const activeAttribute = "data-scrollbar-active";
+  const inactiveDelayMs = 3000;
+  let hideTimer: number | null = null;
+
+  const markActive = () => {
+    element.setAttribute(activeAttribute, "true");
+    if (hideTimer !== null) {
+      window.clearTimeout(hideTimer);
+    }
+    hideTimer = window.setTimeout(() => {
+      element.setAttribute(activeAttribute, "false");
+    }, inactiveDelayMs);
+  };
+
+  element.setAttribute(activeAttribute, "false");
+  element.addEventListener("wheel", markActive, { passive: true });
+  element.addEventListener("touchmove", markActive, { passive: true });
+  element.addEventListener("scroll", markActive, { passive: true });
+
+  return () => {
+    if (hideTimer !== null) {
+      window.clearTimeout(hideTimer);
+    }
+    element.removeEventListener("wheel", markActive);
+    element.removeEventListener("touchmove", markActive);
+    element.removeEventListener("scroll", markActive);
+  };
+}
+
 function CopyBlockButton({ content }: { content: string }) {
   const [copied, setCopied] = useState(false);
 
@@ -202,9 +232,22 @@ function loadOnlyOfficeScript(src: string): Promise<void> {
 
 function MarkdownPreview({ content }: { content: string }) {
   const markdownComponents = useMemo(() => buildMarkdownComponents(), []);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element) {
+      return;
+    }
+    return installAutoHideScrollbarBehavior(element);
+  }, []);
 
   return (
-    <div className="markdown-content file-viewer-markdown">
+    <div
+      ref={containerRef}
+      className="markdown-content file-viewer-markdown"
+      data-scrollbar="macos-thin"
+    >
       <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
         {content}
       </Markdown>
@@ -313,6 +356,14 @@ function CodePreview({
   const lines = content.split(/\r?\n/);
   const bodyRef = useRef<HTMLDivElement | null>(null);
 
+  useEffect(() => {
+    const element = bodyRef.current;
+    if (!element || editable) {
+      return;
+    }
+    return installAutoHideScrollbarBehavior(element);
+  }, [editable]);
+
   const lineChangeMap = useMemo(() => {
     const map = new Map<number, "add" | "modify">();
     for (const marker of overviewMarkers) {
@@ -330,7 +381,12 @@ function CodePreview({
         <CopyBlockButton content={content} />
       </div>
       <div className="file-viewer-scroll-shell">
-        <div className="file-viewer-code-body" data-editable={editable ? "true" : undefined} ref={bodyRef}>
+        <div
+          className="file-viewer-code-body"
+          data-editable={editable ? "true" : undefined}
+          data-scrollbar={editable ? undefined : "macos-thin"}
+          ref={bodyRef}
+        >
           {editable ? (
             <EditableCodeContent
               content={content}

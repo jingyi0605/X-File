@@ -221,6 +221,13 @@ export async function getNativeDesktopRuntimeInfo(): Promise<NativeDesktopRuntim
   return invokeOptional<NativeDesktopRuntimeInfo>("get_runtime_info");
 }
 
+export async function notifyWindowReadyForNativeSidebar(): Promise<boolean> {
+  if (!isDesktopTauriRuntime()) {
+    return false;
+  }
+  return invoke<boolean>("window_ready_for_native_sidebar");
+}
+
 export async function syncNativeSidebarLayout(
   layout: NativeSidebarLayoutInput,
 ): Promise<boolean> {

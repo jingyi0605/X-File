@@ -118,6 +118,12 @@
   --danger-fg: #d04d4d;
   --status-danger: #ef4444;
   --transition-fast: 120ms ease;
+  --scrollbar-size: 4px;
+  --scrollbar-radius: 999px;
+  --scrollbar-thumb-idle: transparent;
+  --scrollbar-thumb-active: rgba(60, 60, 67, 0.26);
+  --scrollbar-thumb-hover: rgba(60, 60, 67, 0.38);
+  --scrollbar-track: transparent;
   --font-sans:
     "SF Pro Text", "SF Pro SC", "PingFang SC", "Helvetica Neue", -apple-system,
     BlinkMacSystemFont, sans-serif;
@@ -216,6 +222,42 @@ body {
   font-size: 13px;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
+}
+
+[data-scrollbar="macos-thin"] {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb-idle) var(--scrollbar-track);
+}
+
+[data-scrollbar="macos-thin"][data-scrollbar-active="true"] {
+  scrollbar-color: var(--scrollbar-thumb-active) var(--scrollbar-track);
+}
+
+[data-scrollbar="macos-thin"]::-webkit-scrollbar {
+  width: var(--scrollbar-size);
+  height: var(--scrollbar-size);
+}
+
+[data-scrollbar="macos-thin"]::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+[data-scrollbar="macos-thin"]::-webkit-scrollbar-thumb {
+  border-radius: var(--scrollbar-radius);
+  background-color: var(--scrollbar-thumb-idle);
+  transition: background-color 180ms ease;
+}
+
+[data-scrollbar="macos-thin"][data-scrollbar-active="true"]::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb-active);
+}
+
+[data-scrollbar="macos-thin"][data-scrollbar-active="true"]::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover);
+}
+
+[data-scrollbar="macos-thin"]::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 button,
