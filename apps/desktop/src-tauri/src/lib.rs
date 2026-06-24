@@ -4264,23 +4264,42 @@ fn read_local_http_server_state(state: &mut DesktopState) -> Value {
     let enabled = saved.get("enabled").and_then(Value::as_bool).unwrap_or(true);
     let host = saved.get("host").and_then(Value::as_str).unwrap_or("127.0.0.1");
     let port = saved.get("port").and_then(Value::as_u64).unwrap_or(17321);
-    let last_error = saved.get("lastError").and_then(Value::as_str).map(ToString::to_string)
-        .or_else(|| state.backend.snapshot().last_error.clone());
     let backend_snapshot = state.backend.snapshot();
-    let lifecycle_state = match backend_snapshot.state {
-        BackendProcessState::Running => "running",
-        BackendProcessState::Starting => "starting",
-        BackendProcessState::Failed => "failed",
-        BackendProcessState::Stopped => if enabled { "disabled" } else { "disabled" },
+    let healthy_http = if enabled {
+        probe_local_http_service(host, port as u16)
+    } else {
+        false
+    };
+    let backend_running = matches!(backend_snapshot.state, BackendProcessState::Running);
+    let running = backend_running || healthy_http;
+    let last_error = if running {
+        None
+    } else {
+        saved.get("lastError").and_then(Value::as_str).map(ToString::to_string)
+            .or_else(|| backend_snapshot.last_error.clone())
+    };
+    let lifecycle_state = match (enabled, running, &backend_snapshot.state, last_error.as_ref()) {
+        (false, _, _, _) => "disabled",
+        (true, true, _, _) => "running",
+        (true, false, BackendProcessState::Starting, _) => "starting",
+        (true, false, BackendProcessState::Failed, _) => "failed",
+        (true, false, _, Some(_)) => "failed",
+        (true, false, _, _) => "disabled",
     };
     json!({
         "enabled": enabled,
         "host": host,
         "port": port,
-        "running": matches!(backend_snapshot.state, BackendProcessState::Running),
+        "running": running,
         "persistent": state.backend_persistent,
+        "actualHost": if running { Value::String(host.to_string()) } else { Value::Null },
+        "actualPort": if running { json!(port) } else { Value::Null },
         "lifecycleState": lifecycle_state,
-        "startedAt": backend_snapshot.started_at.map(epoch_millis_to_iso),
+        "startedAt": if backend_running {
+            backend_snapshot.started_at.map(epoch_millis_to_iso)
+        } else {
+            None
+        },
         "lastError": last_error,
     })
 }
@@ -4306,12 +4325,37 @@ fn save_local_http_server_state(
     write_json_file(&resolve_local_http_server_state_path(), &payload)?;
     state.backend_persistent = persistent;
     if enabled {
-        let _ = state.backend.stop();
-        let _ = state.backend.start();
+        if !probe_local_http_service("127.0.0.1", port) {
+            let _ = state.backend.stop();
+            let _ = state.backend.start();
+        }
     } else {
         let _ = state.backend.stop();
     }
     Ok(read_local_http_server_state(state))
+}
+
+fn probe_local_http_service(host: &str, port: u16) -> bool {
+    let url = format!("http://{}:{}/api/health", host, port);
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_millis(800))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return false,
+    };
+    let response = match client.get(url).send() {
+        Ok(response) => response,
+        Err(_) => return false,
+    };
+    if !response.status().is_success() {
+        return false;
+    }
+    let payload = match response.json::<Value>() {
+        Ok(payload) => payload,
+        Err(_) => return false,
+    };
+    payload.get("app").and_then(Value::as_str) == Some("X-File")
 }
 
 fn default_local_library_binding() -> LocalLibraryBinding {
@@ -4838,6 +4882,18 @@ mod tests {
         );
         assert_eq!(env_map.get("X_FILE_SERVER_PORT"), Some(&"17322".to_string()));
         assert_eq!(env_map.get("X_FILE_SERVER_HOST"), Some(&"127.0.0.1".to_string()));
+    }
+
+    #[test]
+    fn probe_local_http_service_对未监听端口返回_false() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("申请临时端口失败");
+        let port = listener
+            .local_addr()
+            .expect("读取临时端口失败")
+            .port();
+        drop(listener);
+
+        assert_eq!(probe_local_http_service("127.0.0.1", port), false);
     }
 }
 
