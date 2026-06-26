@@ -677,6 +677,16 @@ p {
   z-index: 3;
 }
 
+.xfile-stage-titlebar-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
 .xfile-stage-titlebar-left {
   display: flex;
   align-items: center;
@@ -750,6 +760,9 @@ p {
   flex-wrap: nowrap;
   justify-content: flex-end;
   gap: 6px;
+  flex: 0 0 auto;
+  padding-right: clamp(32px, 5vw, 72px);
+  box-sizing: border-box;
 }
 
 .affairs-stage-breadcrumb {
