@@ -5007,12 +5007,13 @@ body[data-workbench-macos-vibrancy="true"] #root {
 
 .affairs-stage-toolbar-select {
   height: 30px;
-  min-width: 98px;
+  width: 60px;
+  min-width: 60px;
   border: 1px solid var(--affairs-muted-border);
   border-radius: 8px;
   background: var(--affairs-surface-ghost);
   color: var(--text-primary);
-  padding: 0 24px 0 8px;
+  padding: 0 18px 0 8px;
   font-size: 11px;
   font-weight: 700;
   box-shadow:
