@@ -3897,39 +3897,39 @@ function LibraryDetail({
               />
             </div>
           </section>
-          <section className="affairs-detail-block affairs-detail-actions-block">
+          <section className="affairs-detail-block affairs-detail-actions-block affairs-detail-block-borderless">
             <div className="affairs-detail-actions-grid affairs-detail-actions-grid-single-row">
               <button
                 type="button"
-                className="secondary-button"
+                className="affairs-detail-action-button"
                 onClick={() => library.selectFolder(resolveDocumentFolderPath(selected.path))}
               >
                 {t("libraryContextLocateShort")}
               </button>
               <button
                 type="button"
-                className="secondary-button"
+                className="affairs-detail-action-button"
                 onClick={() => void library.openPreview(selected.path)}
               >
                 {t("libraryPreview")}
               </button>
               <button
                 type="button"
-                className="secondary-button"
+                className="affairs-detail-action-button"
                 onClick={() => void library.downloadSelected(selected.path)}
               >
                 {t("libraryDownload")}
               </button>
               <button
                 type="button"
-                className="secondary-button"
+                className="affairs-detail-action-button"
                 onClick={() => onRequestRename(selected.path)}
               >
                 {t("libraryRename")}
               </button>
               <button
                 type="button"
-                className="danger-button"
+                className="affairs-detail-action-button danger"
                 onClick={() =>
                   onRequestDelete({ kind: "document", entry: selected })
                 }
