@@ -5701,17 +5701,32 @@ body[data-workbench-macos-vibrancy="true"] #root {
   width: 100%;
   min-height: 32px;
   box-sizing: border-box;
-  border: 1px solid var(--modal-control-border);
-  border-radius: 12px;
-  background: var(--modal-control-surface);
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
   color: var(--text-primary);
   padding: 0 12px;
   font-size: 12px;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.affairs-document-tag-input-label input::placeholder {
+  color: color-mix(in srgb, var(--text-tertiary) 68%, transparent);
+}
+
+.affairs-document-tag-input-label input:hover {
+  background: color-mix(in srgb, var(--panel-hover) 42%, transparent);
 }
 
 .affairs-document-tag-input-label input:focus {
-  border-color: var(--modal-control-border-focus);
-  box-shadow: var(--modal-control-focus-ring);
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 18%, transparent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
 .affairs-color-tag {
