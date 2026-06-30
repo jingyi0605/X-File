@@ -2070,6 +2070,55 @@ mark {
   white-space: nowrap;
 }
 
+.affairs-detail-actions-grid-single-row > .affairs-detail-action-button {
+  flex: 1 1 calc(25% - 6px);
+  min-width: 0;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  box-shadow: none;
+  transition:
+    background-color var(--transition-fast),
+    color var(--transition-fast),
+    transform var(--transition-fast),
+    opacity var(--transition-fast);
+}
+
+.affairs-detail-actions-grid-single-row > .affairs-detail-action-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text-primary) 7%, transparent);
+}
+
+.affairs-detail-actions-grid-single-row > .affairs-detail-action-button:active:not(:disabled) {
+  background: color-mix(in srgb, var(--text-primary) 11%, transparent);
+  transform: translateY(0.5px) scale(0.985);
+}
+
+.affairs-detail-actions-grid-single-row > .affairs-detail-action-button:focus-visible {
+  outline: none;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.affairs-detail-actions-grid-single-row > .affairs-detail-action-button.danger {
+  flex-basis: 100%;
+  color: var(--danger-fg);
+}
+
+.affairs-detail-actions-grid-single-row > .affairs-detail-action-button.danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger-fg) 10%, transparent);
+}
+
+.affairs-detail-actions-grid-single-row > .affairs-detail-action-button.danger:active:not(:disabled) {
+  background: color-mix(in srgb, var(--danger-fg) 14%, transparent);
+}
+
 .primary-button,
 .secondary-button,
 .danger-button {
@@ -21718,7 +21767,7 @@ body[data-workbench-macos-vibrancy="true"] #root {
   min-height: 45px;
   height: 45px;
   padding: 0 10px;
-  border-bottom: 1px solid var(--border-primary);
+  border-bottom: 0;
   flex-shrink: 0;
   box-sizing: border-box;
 }
@@ -21726,23 +21775,27 @@ body[data-workbench-macos-vibrancy="true"] #root {
 .workbench-info-tabs {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 0;
   flex-wrap: nowrap;
   min-height: 100%;
+  align-self: stretch;
 }
 
 .workbench-info-tab,
 .workbench-info-tabs > button {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  align-self: center;
-  min-height: 26px;
-  height: 26px;
+  align-self: stretch;
+  flex: 0 0 72px;
+  min-width: 72px;
+  min-height: 45px;
+  height: 45px;
   margin: 0;
-  padding: 0 10px;
-  border: 1px solid color-mix(in srgb, var(--border-primary) 82%, transparent);
-  border-radius: 999px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 0;
   background: transparent;
   color: var(--text-secondary);
   font-size: 12px;
@@ -21751,23 +21804,31 @@ body[data-workbench-macos-vibrancy="true"] #root {
   white-space: nowrap;
   transition:
     background var(--transition-fast),
-    border-color var(--transition-fast),
-    color var(--transition-fast),
-    box-shadow var(--transition-fast);
+    color var(--transition-fast);
 }
 
 .workbench-info-tab:hover,
 .workbench-info-tabs > button:hover {
-  background: color-mix(in srgb, rgba(255, 255, 255, 0.08) 52%, transparent);
+  background: color-mix(in srgb, var(--panel-hover) 58%, transparent);
   color: var(--text-primary);
 }
 
 .workbench-info-tab.active,
 .workbench-info-tabs > button.active {
-  border-color: color-mix(in srgb, var(--accent) 22%, var(--border-primary));
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
-  color: color-mix(in srgb, var(--accent) 82%, var(--text-primary));
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface-overlay-highlight) 24%, transparent);
+  background: transparent;
+  color: var(--text-primary);
+}
+
+.workbench-info-tab.active::after,
+.workbench-info-tabs > button.active::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 5px;
+  height: 2px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 90%, rgba(255, 255, 255, 0.14));
 }
 
 .workbench-nav-toolbar-button {
