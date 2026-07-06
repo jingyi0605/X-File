@@ -247,9 +247,9 @@ function resolveExportDir(rootDir: string): string {
 }
 
 /**
- * 稳态进度合成：导出产物存在即代表这批文档已全部扫描完毕。
- * 对齐父仓库面板语义——索引总数=当前数量=documentCount，问题数量=0，
- * 本轮“更新数量”为 0（全部命中 unchanged），让面板摘要网格在未重新索引时也能正常展示。
+ * 稳态进度合成：导出产物存在即代表这批文档已全部扫描并可读。
+ * 面板文案已经改为“已扫描数量 / 已索引数量”，所以稳态下两者都应等于 documentCount，
+ * 避免在未重新索引时出现“已索引数量 = 0”这种误导展示。
  */
 function deriveSteadyProgress(documentCount: number): LibraryIndexProgress | null {
   if (!Number.isFinite(documentCount) || documentCount <= 0) {
@@ -257,10 +257,10 @@ function deriveSteadyProgress(documentCount: number): LibraryIndexProgress | nul
   }
   return {
     scannedCount: documentCount,
-    indexedCount: 0,
+    indexedCount: documentCount,
     skippedCount: 0,
     failedCount: 0,
-    unchangedCount: documentCount,
+    unchangedCount: 0,
     totalCount: documentCount,
     maxConcurrency: null,
   };

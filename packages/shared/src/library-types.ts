@@ -143,6 +143,9 @@ export interface LibraryIndexProgress {
   unchangedCount: number;
   totalCount: number | null;
   maxConcurrency: number | null;
+  activeTaskCount: number;
+  pendingTaskCount: number;
+  completedTaskCount: number;
 }
 
 export interface LibraryDirectoryStatus {

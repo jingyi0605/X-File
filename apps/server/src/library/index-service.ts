@@ -6,6 +6,7 @@ import { TaskManager, type TaskSummary } from "../tasks/task-manager.js";
 
 export const LIBRARY_INDEX_TASK_TYPE = "library.index_refresh";
 const INDEX_COOLDOWN_MS = 1500;
+const INDEX_RUN_TIMEOUT_MS = 30 * 60_000;
 
 export interface RequestIndexRefreshInput {
   reason?: string | null;
@@ -143,7 +144,7 @@ export class LibraryIndexService {
 
     this.taskManager.register<LibraryIndexTaskInput, void>({
       taskType: LIBRARY_INDEX_TASK_TYPE,
-      timeoutMs: 120_000,
+      timeoutMs: INDEX_RUN_TIMEOUT_MS,
       run: async (input, context) => {
         let latestProgress: LibraryIndexProgress | null = null;
         this.applyStatus(input.binding.rootDir, createStatus("running", {

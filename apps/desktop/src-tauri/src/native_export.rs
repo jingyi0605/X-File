@@ -1,13 +1,13 @@
+use crate::native_core::state_store::{
+    export_catalog_snapshot_path, export_dir as native_export_dir, runtime_status_path,
+    SEARCH_MANIFEST_RELATIVE_PATH,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use crate::native_core::state_store::{
-    export_catalog_snapshot_path, export_dir as native_export_dir, runtime_status_path,
-    SEARCH_MANIFEST_RELATIVE_PATH,
-};
 
 const INDEX_COOLDOWN_MS: i64 = 1500;
 const META_SHARD_TARGET_DOCUMENTS: usize = 64;
@@ -87,6 +87,7 @@ struct PersistedRuntimeStatus {
     last_completed_at: Option<String>,
     last_failed_at: Option<String>,
     next_allowed_at: Option<String>,
+    progress_updated_at: Option<String>,
     running_stage: Option<String>,
     error_summary: Option<String>,
     progress: Option<Value>,
@@ -221,6 +222,7 @@ pub fn run_native_export_worker(request: NativeExportRequest) -> Result<Value, S
             last_completed_at: None,
             last_failed_at: None,
             next_allowed_at: None,
+            progress_updated_at: Some(last_started_at.clone()),
             running_stage: Some("export_snapshot".to_string()),
             error_summary: None,
             progress: None,
@@ -246,6 +248,7 @@ pub fn run_native_export_worker(request: NativeExportRequest) -> Result<Value, S
                     last_completed_at: Some(completed_at),
                     last_failed_at: None,
                     next_allowed_at: Some(next_allowed_at),
+                    progress_updated_at: Some(iso_now()),
                     running_stage: None,
                     error_summary: None,
                     progress: None,
@@ -294,6 +297,7 @@ pub fn run_native_export_worker(request: NativeExportRequest) -> Result<Value, S
                     last_completed_at: None,
                     last_failed_at: Some(iso_now()),
                     next_allowed_at: None,
+                    progress_updated_at: Some(iso_now()),
                     running_stage: Some("export_snapshot".to_string()),
                     error_summary: Some(error.clone()),
                     progress: None,
@@ -325,6 +329,16 @@ pub fn run_native_search_worker(request: NativeSearchRequest) -> Result<Value, S
         ));
     }
 
+    let running_stage = if request.reason == "summary_backfill" {
+        "summary_backfill_search"
+    } else {
+        "search_index"
+    };
+    let inherited_progress = if request.reason == "summary_backfill" {
+        read_existing_runtime_progress(&root_dir)?
+    } else {
+        None
+    };
     let last_requested_at = iso_now();
     let last_started_at = iso_now();
     write_runtime_status(
@@ -336,7 +350,8 @@ pub fn run_native_search_worker(request: NativeSearchRequest) -> Result<Value, S
             last_completed_at: None,
             last_failed_at: None,
             next_allowed_at: None,
-            running_stage: Some("search_index".to_string()),
+            progress_updated_at: Some(last_started_at.clone()),
+            running_stage: Some(running_stage.to_string()),
             error_summary: None,
             progress: None,
         },
@@ -345,10 +360,18 @@ pub fn run_native_search_worker(request: NativeSearchRequest) -> Result<Value, S
     let result = (|| -> Result<ExportBuildResult, String> {
         let snapshot = read_snapshot(&snapshot_path)?;
         let export_dir = PathBuf::from(&root_dir).join(".ai-index").join("exports");
-        let (search_buckets, files_written) =
-            build_search_index(&export_dir, &iso_now(), &snapshot.documents, dirty_scope.as_ref())?;
+        let (search_buckets, files_written) = build_search_index(
+            &export_dir,
+            &iso_now(),
+            &snapshot.documents,
+            dirty_scope.as_ref(),
+        )?;
         Ok(ExportBuildResult {
-            manifest_path: export_dir.join("search").join("manifest.json").to_string_lossy().to_string(),
+            manifest_path: export_dir
+                .join("search")
+                .join("manifest.json")
+                .to_string_lossy()
+                .to_string(),
             output_dir: export_dir.to_string_lossy().to_string(),
             exported_at: iso_now(),
             meta_shard_count: 0,
@@ -374,9 +397,10 @@ pub fn run_native_search_worker(request: NativeSearchRequest) -> Result<Value, S
                     last_completed_at: Some(completed_at),
                     last_failed_at: None,
                     next_allowed_at: Some(next_allowed_at),
+                    progress_updated_at: Some(iso_now()),
                     running_stage: None,
                     error_summary: None,
-                    progress: None,
+                    progress: inherited_progress.clone(),
                 },
             )?;
             Ok(json!({
@@ -394,7 +418,7 @@ pub fn run_native_search_worker(request: NativeSearchRequest) -> Result<Value, S
                     "nextAllowedAt": iso_after_ms(INDEX_COOLDOWN_MS),
                     "runningStage": Value::Null,
                     "errorSummary": Value::Null,
-                    "progress": Value::Null
+                    "progress": inherited_progress
                 },
                 "dirtyScope": dirty_scope,
                 "dirtyScopeSummary": {
@@ -420,7 +444,8 @@ pub fn run_native_search_worker(request: NativeSearchRequest) -> Result<Value, S
                     last_completed_at: None,
                     last_failed_at: Some(iso_now()),
                     next_allowed_at: None,
-                    running_stage: Some("search_index".to_string()),
+                    progress_updated_at: Some(iso_now()),
+                    running_stage: Some(running_stage.to_string()),
                     error_summary: Some(error.clone()),
                     progress: None,
                 },
@@ -464,9 +489,8 @@ fn build_native_export(
             .as_ref()
             .map(|value| value != &meta_root)
             .unwrap_or(false);
-        let should_flush_size =
-            current_meta_documents.len() >= META_SHARD_TARGET_DOCUMENTS
-                && !current_meta_dir_set.contains(&directory);
+        let should_flush_size = current_meta_documents.len() >= META_SHARD_TARGET_DOCUMENTS
+            && !current_meta_dir_set.contains(&directory);
         if should_flush_root || should_flush_size {
             flush_meta_shard(
                 &export_dir,
@@ -544,7 +568,8 @@ fn build_native_export(
     let (relation_shards, relation_files) =
         build_relation_shards(&export_dir, &exported_at, &documents)?;
     files_written.extend(relation_files);
-    let (search_buckets, search_files) = build_search_index(&export_dir, &exported_at, &documents, Some(dirty_scope))?;
+    let (search_buckets, search_files) =
+        build_search_index(&export_dir, &exported_at, &documents, Some(dirty_scope))?;
     files_written.extend(search_files);
 
     let status_path = export_dir.join("status.json");
@@ -667,11 +692,7 @@ fn build_taxonomy(tags: &[SnapshotTag]) -> (Vec<String>, Vec<Value>, Vec<Value>)
         }
         tree.push(build_tree_node(&tag.path, &by_path, &children));
     }
-    (
-        root_types.into_iter().collect(),
-        nodes,
-        tree,
-    )
+    (root_types.into_iter().collect(), nodes, tree)
 }
 
 fn build_tree_node(
@@ -679,7 +700,10 @@ fn build_tree_node(
     by_path: &BTreeMap<String, Value>,
     children: &HashMap<String, Vec<Value>>,
 ) -> Value {
-    let mut node = by_path.get(path).cloned().unwrap_or_else(|| json!({ "path": path }));
+    let mut node = by_path
+        .get(path)
+        .cloned()
+        .unwrap_or_else(|| json!({ "path": path }));
     let child_values = children
         .get(path)
         .cloned()
@@ -706,8 +730,11 @@ fn build_tag_shards(
     documents: &[SnapshotDocument],
     tags: &[SnapshotTag],
 ) -> Result<(Vec<TagShardManifestEntry>, Vec<String>), String> {
-    let tag_map: HashMap<String, SnapshotTag> =
-        tags.iter().cloned().map(|tag| (tag.path.clone(), tag)).collect();
+    let tag_map: HashMap<String, SnapshotTag> = tags
+        .iter()
+        .cloned()
+        .map(|tag| (tag.path.clone(), tag))
+        .collect();
     let mut tags_by_root = BTreeMap::<String, Vec<SnapshotTag>>::new();
     for tag in tags {
         tags_by_root
@@ -716,8 +743,7 @@ fn build_tag_shards(
             .push(tag.clone());
     }
 
-    let mut postings_by_root =
-        BTreeMap::<String, BTreeMap<String, Vec<Value>>>::new();
+    let mut postings_by_root = BTreeMap::<String, BTreeMap<String, Vec<Value>>>::new();
     for document in documents {
         for (tag_path, derived) in document
             .tags
@@ -810,7 +836,10 @@ fn build_relation_shards(
             if !is_relation_eligible_tag(tag_path) {
                 continue;
             }
-            by_direct_tag.entry(tag_path.clone()).or_default().push(document);
+            by_direct_tag
+                .entry(tag_path.clone())
+                .or_default()
+                .push(document);
         }
     }
 
@@ -890,10 +919,8 @@ fn build_search_index(
     fs::create_dir_all(&search_dir)
         .map_err(|error| format!("创建搜索导出目录失败 {}: {error}", search_dir.display()))?;
     let incremental_plan = build_incremental_search_plan(export_dir, documents, dirty_scope);
-    let mut bucket_documents =
-        BTreeMap::<String, BTreeMap<String, SearchDocumentEntry>>::new();
-    let mut bucket_terms =
-        BTreeMap::<String, BTreeMap<String, Vec<String>>>::new();
+    let mut bucket_documents = BTreeMap::<String, BTreeMap<String, SearchDocumentEntry>>::new();
+    let mut bucket_terms = BTreeMap::<String, BTreeMap<String, Vec<String>>>::new();
 
     for document in documents {
         let entry = SearchDocumentEntry {
@@ -991,7 +1018,10 @@ fn build_search_index(
             fs::remove_file(&stale_bucket_path).ok();
         }
         for bucket in manifest {
-            if !merged_manifest.iter().any(|item| item.bucket == bucket.bucket) {
+            if !merged_manifest
+                .iter()
+                .any(|item| item.bucket == bucket.bucket)
+            {
                 merged_manifest.push(bucket);
             }
         }
@@ -1071,9 +1101,9 @@ fn bucket_contains_any_path(path: &PathBuf, changed_paths: &BTreeSet<String>) ->
     let Ok(raw) = fs::read_to_string(path) else {
         return false;
     };
-    changed_paths.iter().any(|changed_path| {
-        raw.contains(&format!("\"path\": \"{}\"", changed_path))
-    })
+    changed_paths
+        .iter()
+        .any(|changed_path| raw.contains(&format!("\"path\": \"{}\"", changed_path)))
 }
 
 fn tokenize_document(document: &SnapshotDocument) -> HashSet<String> {
@@ -1102,7 +1132,10 @@ fn tokenize_document(document: &SnapshotDocument) -> HashSet<String> {
         terms.insert(word);
     }
 
-    let compact = source.chars().filter(|ch| !ch.is_whitespace()).collect::<String>();
+    let compact = source
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>();
     let han_chars = compact
         .chars()
         .map(|ch| if is_han(ch) { ch } else { ' ' })
@@ -1195,15 +1228,16 @@ fn flush_meta_shard(
 fn bump_folder_counts(folder_map: &mut BTreeMap<String, FolderBootstrapNode>, directory: &str) {
     let normalized = if directory.is_empty() { "." } else { directory };
     {
-        let node = folder_map
-            .entry(normalized.to_string())
-            .or_insert_with(|| FolderBootstrapNode {
-                path: normalized.to_string(),
-                name: directory_name(normalized),
-                parent_path: parent_directory(normalized),
-                direct_document_count: 0,
-                document_count: 0,
-            });
+        let node =
+            folder_map
+                .entry(normalized.to_string())
+                .or_insert_with(|| FolderBootstrapNode {
+                    path: normalized.to_string(),
+                    name: directory_name(normalized),
+                    parent_path: parent_directory(normalized),
+                    direct_document_count: 0,
+                    document_count: 0,
+                });
         node.direct_document_count += 1;
     }
 
@@ -1241,6 +1275,14 @@ fn read_snapshot(path: &PathBuf) -> Result<ExportCatalogSnapshot, String> {
 fn write_runtime_status(root_dir: &str, payload: PersistedRuntimeStatus) -> Result<(), String> {
     let path = runtime_status_path(root_dir);
     write_json_file(&path, &payload)
+}
+
+fn read_existing_runtime_progress(root_dir: &str) -> Result<Option<Value>, String> {
+    let path = runtime_status_path(root_dir);
+    let Some(payload) = read_optional_json_file::<Value>(&path)? else {
+        return Ok(None);
+    };
+    Ok(payload.get("progress").cloned())
 }
 
 fn infer_root_type(tag_path: &str) -> String {
@@ -1316,7 +1358,10 @@ fn common_directory(directories: &[String]) -> String {
             if item == "." {
                 Vec::<String>::new()
             } else {
-                item.split('/').filter(|part| !part.is_empty()).map(ToString::to_string).collect()
+                item.split('/')
+                    .filter(|part| !part.is_empty())
+                    .map(ToString::to_string)
+                    .collect()
             }
         })
         .collect::<Vec<_>>();
@@ -1326,7 +1371,10 @@ fn common_directory(directories: &[String]) -> String {
         let Some(current) = parts_list[0].get(index) else {
             break;
         };
-        if parts_list.iter().all(|parts| parts.get(index) == Some(current)) {
+        if parts_list
+            .iter()
+            .all(|parts| parts.get(index) == Some(current))
+        {
             shared.push(current.clone());
         } else {
             break;
@@ -1365,6 +1413,16 @@ where
         .map_err(|error| format!("解析 JSON 失败 {}: {error}", path.display()))
 }
 
+fn read_optional_json_file<T>(path: &PathBuf) -> Result<Option<T>, String>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    if !path.is_file() {
+        return Ok(None);
+    }
+    read_json_file(path).map(Some)
+}
+
 fn write_json_file<T>(path: &PathBuf, value: &T) -> Result<(), String>
 where
     T: Serialize,
@@ -1376,8 +1434,7 @@ where
     let mut buffer = serde_json::to_vec_pretty(value)
         .map_err(|error| format!("序列化 JSON 失败 {}: {error}", path.display()))?;
     buffer.push(b'\n');
-    fs::write(path, buffer)
-        .map_err(|error| format!("写入文件失败 {}: {error}", path.display()))
+    fs::write(path, buffer).map_err(|error| format!("写入文件失败 {}: {error}", path.display()))
 }
 
 fn iso_now() -> String {
@@ -1398,7 +1455,11 @@ fn json_summary_trigger(value: &Value) -> Option<String> {
 }
 
 fn json_summary_len(value: &Value, key: &str) -> usize {
-    value.get(key).and_then(Value::as_array).map(Vec::len).unwrap_or(0)
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0)
 }
 
 fn json_summary_optional_trigger(value: Option<&Value>) -> Option<String> {
@@ -1413,10 +1474,12 @@ fn json_summary_optional_len(value: Option<&Value>, key: &str) -> usize {
 mod tests {
     use super::{
         build_native_export, build_search_index, read_json_file, write_runtime_status, DirtyScope,
-        ExportCatalogSnapshot, PersistedRuntimeStatus, SearchManifestFile, SnapshotDocument, SnapshotTag,
+        ExportCatalogSnapshot, PersistedRuntimeStatus, SearchManifestFile, SnapshotDocument,
+        SnapshotTag,
     };
     use crate::native_core::state_store::{
-        export_manifest_path, search_manifest_path, runtime_status_path, SEARCH_MANIFEST_RELATIVE_PATH,
+        export_manifest_path, runtime_status_path, search_manifest_path,
+        SEARCH_MANIFEST_RELATIVE_PATH,
     };
     use serde_json::Value;
     use std::fs;
@@ -1429,9 +1492,8 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time before unix epoch")
             .as_nanos();
-        let temp_root = std::env::temp_dir().join(format!(
-            "x-file-native-search-incremental-{nonce}"
-        ));
+        let temp_root =
+            std::env::temp_dir().join(format!("x-file-native-search-incremental-{nonce}"));
         if temp_root.exists() {
             fs::remove_dir_all(&temp_root).ok();
         }
@@ -1526,17 +1588,85 @@ mod tests {
         assert_eq!(after_banana_bucket, before_banana_bucket);
 
         let cherry_bucket_path = export_dir.join("search").join("c.json");
-        let cherry_bucket = fs::read_to_string(&cherry_bucket_path)
-            .expect("read rebuilt dirty bucket");
+        let cherry_bucket =
+            fs::read_to_string(&cherry_bucket_path).expect("read rebuilt dirty bucket");
         assert!(cherry_bucket.contains("\"doc_a\""));
 
         let rebuilt_alpha_bucket_path = export_dir.join("search").join("a.json");
-        let rebuilt_alpha_bucket = fs::read_to_string(&rebuilt_alpha_bucket_path)
-            .expect("read rebuilt alpha bucket");
+        let rebuilt_alpha_bucket =
+            fs::read_to_string(&rebuilt_alpha_bucket_path).expect("read rebuilt alpha bucket");
         assert!(rebuilt_alpha_bucket.contains("\"doc_a\""));
         assert_eq!(rebuilt_alpha_bucket.contains("apple"), false);
 
         fs::remove_dir_all(&temp_root).ok();
+    }
+
+    #[test]
+    fn incremental_search_rebuilds_summary_terms_after_backfill() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos();
+        let temp_root =
+            std::env::temp_dir().join(format!("x-file-native-search-summary-backfill-{nonce}"));
+        if temp_root.exists() {
+            fs::remove_dir_all(&temp_root).ok();
+        }
+        let export_dir = temp_root.join(".ai-index").join("exports");
+        fs::create_dir_all(&export_dir).expect("create export dir");
+
+        let initial_documents = vec![SnapshotDocument {
+            document_id: "doc_a".to_string(),
+            path: "docs/a.md".to_string(),
+            title: "Alpha".to_string(),
+            summary: "".to_string(),
+            tags: Vec::new(),
+            derived_tags: Vec::new(),
+            mtime: "2026-06-17T00:00:00Z".to_string(),
+        }];
+        build_search_index(
+            &export_dir,
+            "2026-06-17T00:00:00Z",
+            &initial_documents,
+            None,
+        )
+        .expect("build initial search index");
+
+        let updated_documents = vec![SnapshotDocument {
+            document_id: "doc_a".to_string(),
+            path: "docs/a.md".to_string(),
+            title: "Alpha".to_string(),
+            summary: "gamma delta".to_string(),
+            tags: Vec::new(),
+            derived_tags: Vec::new(),
+            mtime: "2026-06-17T00:00:00Z".to_string(),
+        }];
+        let dirty_scope = DirtyScope {
+            trigger: "summary_backfill".to_string(),
+            changed_paths: vec!["docs/a.md".to_string()],
+            deleted_paths: Vec::new(),
+            dirty_directories: vec!["docs".to_string()],
+            dirty_tag_paths: Vec::new(),
+            dirty_meta_shards: Vec::new(),
+            dirty_detail_shards: Vec::new(),
+            dirty_posting_buckets: Vec::new(),
+            dirty_relations: Vec::new(),
+        };
+        build_search_index(
+            &export_dir,
+            "2026-06-17T00:01:00Z",
+            &updated_documents,
+            Some(&dirty_scope),
+        )
+        .expect("build summary-backfill incremental search index");
+
+        let gamma_bucket_path = export_dir.join("search").join("g.json");
+        let gamma_bucket = fs::read_to_string(&gamma_bucket_path)
+            .expect("read rebuilt gamma bucket after summary backfill");
+        fs::remove_dir_all(&temp_root).ok();
+
+        assert!(gamma_bucket.contains("\"gamma\""));
+        assert!(gamma_bucket.contains("\"doc_a\""));
     }
 
     #[test]
@@ -1584,16 +1714,17 @@ mod tests {
         let result = build_native_export(&root_dir.to_string_lossy(), &snapshot, &dirty_scope)
             .expect("build export");
         let manifest_path = export_manifest_path(&root_dir.to_string_lossy());
-        assert!(
-            result
-                .files_written
-                .iter()
-                .any(|item| item == &manifest_path.to_string_lossy().to_string())
-        );
+        assert!(result
+            .files_written
+            .iter()
+            .any(|item| item == &manifest_path.to_string_lossy().to_string()));
 
         let manifest = read_json_file::<Value>(&manifest_path).expect("read manifest");
         assert_eq!(manifest.get("version").and_then(Value::as_u64), Some(2));
-        assert_eq!(manifest.get("format").and_then(Value::as_str), Some("static-v2"));
+        assert_eq!(
+            manifest.get("format").and_then(Value::as_str),
+            Some("static-v2")
+        );
         assert_eq!(
             manifest
                 .get("entries")
@@ -1637,6 +1768,7 @@ mod tests {
                 last_completed_at: Some("2026-06-18T10:00:02Z".to_string()),
                 last_failed_at: None,
                 next_allowed_at: Some("2026-06-18T10:00:03Z".to_string()),
+                progress_updated_at: Some("2026-06-18T10:00:02Z".to_string()),
                 running_stage: None,
                 error_summary: None,
                 progress: None,
@@ -1646,7 +1778,10 @@ mod tests {
 
         let status = read_json_file::<Value>(&runtime_status_path(&root_dir.to_string_lossy()))
             .expect("read runtime status");
-        assert_eq!(status.get("state").and_then(Value::as_str), Some("cooldown"));
+        assert_eq!(
+            status.get("state").and_then(Value::as_str),
+            Some("cooldown")
+        );
         assert_eq!(
             status.get("lastRequestedAt").and_then(Value::as_str),
             Some("2026-06-18T10:00:00Z"),

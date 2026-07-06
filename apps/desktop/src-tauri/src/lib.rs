@@ -1,9 +1,8 @@
+mod native_core;
 mod native_export;
 mod native_index;
-mod native_core;
 mod updater;
 
-use notify::{Config as NotifyConfig, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use hmac::{Hmac, Mac};
 use jwt::SignWithKey;
@@ -11,20 +10,27 @@ use mime_guess::from_path;
 use native_core::export_core::{run_native_library_export_core, NativeLibraryExportCoreRequest};
 use native_core::index_core::{run_native_library_index_core, NativeLibraryIndexCoreRequest};
 use native_core::search_core::{run_native_library_search_core, NativeLibrarySearchCoreRequest};
+use native_core::state_store::{
+    active_file_state_snapshot_path, priority_hints_path, summary_backfill_state_path,
+};
 use native_core::tag_core::{
-    count_local_tags, create_native_library_tag, delete_native_library_tag, get_native_document_tag_details,
+    count_local_tags, create_native_library_tag, delete_native_library_tag,
+    expand_local_tag_ancestor_paths, get_native_document_tag_details,
     get_native_folder_tag_details, get_native_library_tag_detail,
     get_native_library_tag_recompute_task, list_native_library_tag_details,
-    request_native_library_tag_recompute, save_native_document_tags,
-    save_native_folder_tags, update_native_library_tag, expand_local_tag_ancestor_paths,
-    NativeFolderTagDetailsRequest, NativeLibraryTagIdRequest,
+    request_native_library_tag_recompute, save_native_document_tags, save_native_folder_tags,
+    update_native_library_tag, NativeFolderTagDetailsRequest, NativeLibraryTagIdRequest,
     NativeSaveDocumentTagsRequest, NativeSaveFolderTagsRequest,
     NativeSaveLibraryTagDefinitionRequest,
 };
-use native_export::{run_native_export_worker, run_native_search_worker, NativeExportRequest, NativeSearchRequest};
-use native_index::{
-    run_native_index_worker, run_native_parser, NativeIndexRequest, NativeParserRequest,
+use native_export::{
+    run_native_export_worker, run_native_search_worker, NativeExportRequest, NativeSearchRequest,
 };
+use native_index::{
+    run_native_index_worker, run_native_parser, run_native_summary_backfill_worker,
+    NativeIndexRequest, NativeParserRequest,
+};
+use notify::{Config as NotifyConfig, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -33,12 +39,10 @@ use std::fs;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::menu::{
-    Menu, MenuBuilder, MenuEvent, MenuItemBuilder, SubmenuBuilder,
-};
+use tauri::menu::{Menu, MenuBuilder, MenuEvent, MenuItemBuilder, SubmenuBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow, Window, WindowEvent};
 use tiny_http::{Header, Method, Response, Server, StatusCode};
@@ -47,8 +51,8 @@ use tiny_http::{Header, Method, Response, Server, StatusCode};
 use {
     objc2::MainThreadMarker,
     objc2_app_kit::{
-        NSAppearance, NSAppearanceCustomization, NSAppearanceNameVibrantDark, NSAppearanceNameVibrantLight, NSAutoresizingMaskOptions,
-        NSColor, NSView,
+        NSAppearance, NSAppearanceCustomization, NSAppearanceNameVibrantDark,
+        NSAppearanceNameVibrantLight, NSAutoresizingMaskOptions, NSColor, NSView,
         NSViewLayerContentsRedrawPolicy, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
         NSVisualEffectState, NSVisualEffectView, NSWindow, NSWindowOrderingMode,
     },
@@ -261,7 +265,9 @@ impl BackendProcessManager {
         let command = raw_command.unwrap_or_else(default_backend_command);
         let raw_args = env::var("X_FILE_BACKEND_ARGS").ok();
         let args_overridden = raw_args.is_some();
-        let args = raw_args.map(parse_command_args).unwrap_or_else(default_backend_args);
+        let args = raw_args
+            .map(parse_command_args)
+            .unwrap_or_else(default_backend_args);
 
         Self {
             child: None,
@@ -335,7 +341,10 @@ impl BackendProcessManager {
         match Command::new(&self.command)
             .args(&self.args)
             .current_dir(&self.cwd)
-            .envs(resolve_backend_extra_env(&self.cwd, &self.server_state_path))
+            .envs(resolve_backend_extra_env(
+                &self.cwd,
+                &self.server_state_path,
+            ))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -875,6 +884,13 @@ struct LocalLibraryDocumentList {
     directory_status: Option<LocalLibraryDirectoryStatus>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalRuntimePriorityHints {
+    updated_at: String,
+    paths: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LocalLibraryFileNode {
@@ -937,6 +953,7 @@ struct PersistedRuntimeStatus {
     last_completed_at: Option<String>,
     last_failed_at: Option<String>,
     next_allowed_at: Option<String>,
+    progress_updated_at: Option<String>,
     running_stage: Option<String>,
     error_summary: Option<String>,
     progress: Option<LocalLibraryIndexProgress>,
@@ -952,6 +969,12 @@ struct LocalLibraryIndexProgress {
     unchanged_count: usize,
     total_count: Option<usize>,
     max_concurrency: Option<usize>,
+    #[serde(default)]
+    active_task_count: usize,
+    #[serde(default)]
+    pending_task_count: usize,
+    #[serde(default)]
+    completed_task_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1254,6 +1277,18 @@ struct LocalRuntimeExportCatalogSnapshot {
     documents: Vec<LocalRuntimeSnapshotDocument>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalRuntimeActiveFileStateSnapshot {
+    files: Vec<LocalRuntimeIndexedDocumentState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalRuntimeSummaryBackfillStateSnapshot {
+    files: Vec<LocalRuntimeIndexedDocumentState>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LocalLibrarySnapshot {
@@ -1452,6 +1487,11 @@ impl NativeLibraryState {
     }
 }
 
+fn summary_backfill_spawn_registry() -> &'static Mutex<HashSet<String>> {
+    static REGISTRY: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BackendArchitecture {
@@ -1573,8 +1613,8 @@ fn start_native_library_watcher(
         return Err("rootDir 不能为空".to_string());
     }
 
-    let canonical_root = fs::canonicalize(root_dir)
-        .map_err(|error| format!("无法解析 watcher 根目录：{error}"))?;
+    let canonical_root =
+        fs::canonicalize(root_dir).map_err(|error| format!("无法解析 watcher 根目录：{error}"))?;
     if !canonical_root.is_dir() {
         return Err("watcher 根目录不是文件夹".to_string());
     }
@@ -1600,45 +1640,44 @@ fn start_native_library_watcher(
     let runtime_for_callback = Arc::clone(&runtime);
     let canonical_root_for_callback = canonical_root.clone();
     let mut watcher = RecommendedWatcher::new(
-        move |result: Result<Event, notify::Error>| {
-            match result {
-                Ok(event) => {
-                    if !should_handle_native_watcher_event(&canonical_root_for_callback, &event) {
+        move |result: Result<Event, notify::Error>| match result {
+            Ok(event) => {
+                if !should_handle_native_watcher_event(&canonical_root_for_callback, &event) {
+                    return;
+                }
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                if let Ok(mut runtime) = runtime_for_callback.lock() {
+                    if runtime
+                        .last_event_unix_ms
+                        .is_some_and(|last_ms| now_ms.saturating_sub(last_ms) < 1200)
+                    {
                         return;
                     }
-                    let now_ms = chrono::Utc::now().timestamp_millis();
-                    if let Ok(mut runtime) = runtime_for_callback.lock() {
-                        if runtime
-                            .last_event_unix_ms
-                            .is_some_and(|last_ms| now_ms.saturating_sub(last_ms) < 1200)
-                        {
-                            return;
-                        }
-                        runtime.last_event_unix_ms = Some(now_ms);
-                    }
-                    println!(
-                        "[x-file native] watcher.event reason=native_watcher_change transport=native"
-                    );
-                    if let Ok(mut runtime) = runtime_for_callback.lock() {
-                        runtime.last_event_at = Some(iso_now());
-                        runtime.last_refresh_requested_at = Some(iso_now());
-                        runtime.last_refresh_reason = Some("native_watcher_change".to_string());
-                        runtime.last_error = None;
-                    }
-                    let _ = run_native_library_index_worker_detached(
-                        watcher_resource_dir.clone(),
-                        NativeLibraryRefreshRequest {
+                    runtime.last_event_unix_ms = Some(now_ms);
+                }
+                println!(
+                    "[x-file native] watcher.event reason=native_watcher_change transport=native"
+                );
+                if let Ok(mut runtime) = runtime_for_callback.lock() {
+                    runtime.last_event_at = Some(iso_now());
+                    runtime.last_refresh_requested_at = Some(iso_now());
+                    runtime.last_refresh_reason = Some("native_watcher_change".to_string());
+                    runtime.last_error = None;
+                }
+                let _ = run_native_library_index_worker_detached(
+                    watcher_resource_dir.clone(),
+                    NativeLibraryRefreshRequest {
                         reason: Some("native_watcher_change".to_string()),
                         target_path: None,
                         mode: None,
-                    });
+                    },
+                );
+            }
+            Err(error) => {
+                if let Ok(mut runtime) = runtime_for_callback.lock() {
+                    runtime.last_error = Some(error.to_string());
                 }
-                Err(error) => {
-                    if let Ok(mut runtime) = runtime_for_callback.lock() {
-                        runtime.last_error = Some(error.to_string());
-                    }
-                    eprintln!("native watcher error: {error}");
-                }
+                eprintln!("native watcher error: {error}");
             }
         },
         NotifyConfig::default(),
@@ -1662,7 +1701,10 @@ fn start_native_library_watcher(
 }
 
 fn should_handle_native_watcher_event(root_dir: &Path, event: &Event) -> bool {
-    event.paths.iter().any(|path| !is_native_runtime_artifact_path(root_dir, path))
+    event
+        .paths
+        .iter()
+        .any(|path| !is_native_runtime_artifact_path(root_dir, path))
 }
 
 fn is_native_runtime_artifact_path(root_dir: &Path, path: &Path) -> bool {
@@ -1683,16 +1725,109 @@ fn native_request_library_refresh(
     state: tauri::State<'_, Mutex<DesktopState>>,
     request: NativeLibraryRefreshRequest,
 ) -> Result<NativeLibraryRefreshResponse, String> {
-    let mut state = lock_desktop_state(&state);
+    let reason = request
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("native_manual_refresh")
+        .to_string();
+    let target_path_for_log = request
+        .target_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
     println!(
         "[x-file native] refresh.request transport=native reason={} targetPath={}",
-        request.reason.as_deref().unwrap_or("native_manual_refresh"),
-        request.target_path.as_deref().unwrap_or("<root>")
+        reason,
+        target_path_for_log.as_deref().unwrap_or("<root>")
     );
-    let backend_response = run_native_library_index_worker(&mut state, request)?;
+    let binding = read_local_library_binding()?
+        .ok_or_else(|| "文档库绑定不存在，无法执行索引 worker".to_string())?;
+    let current_status = read_local_runtime_status(&binding.root_dir)?;
+    if current_status
+        .as_ref()
+        .is_some_and(|status| matches!(status.state.as_str(), "queued" | "running"))
+    {
+        let watcher = {
+            let state = lock_desktop_state(&state);
+            state.native_library.snapshot()
+        };
+        return Ok(NativeLibraryRefreshResponse {
+            watcher,
+            backend_response: json!({
+                "accepted": true,
+                "deduped": true,
+                "scheduled": true,
+                "reason": reason,
+                "targetPath": request.target_path,
+                "taskId": Value::Null,
+                "status": current_status.unwrap_or_else(|| empty_local_status("running", None)),
+                "directoryStatus": Value::Null,
+            }),
+        });
+    }
+
+    let resource_dir = {
+        let mut state = lock_desktop_state(&state);
+        state.native_library.last_refresh_requested_at = Some(iso_now());
+        state.native_library.last_refresh_reason = Some(reason.clone());
+        state.native_library.last_error = None;
+        state.resource_dir.clone()
+    };
+
+    let request_for_worker = request.clone();
+    thread::spawn(move || {
+        let result = run_native_library_index_worker_detached(resource_dir, request_for_worker);
+        if let Err(error) = result {
+            eprintln!("[x-file native] refresh.worker failed: {error}");
+        }
+    });
+
+    let watcher = {
+        let state = lock_desktop_state(&state);
+        state.native_library.snapshot()
+    };
+    let status =
+        read_local_runtime_status(&binding.root_dir)?.unwrap_or_else(|| LocalLibraryIndexStatus {
+            state: "queued".to_string(),
+            dirty_reasons: vec![reason.clone()],
+            last_requested_at: Some(iso_now()),
+            last_started_at: None,
+            last_completed_at: None,
+            last_failed_at: None,
+            next_allowed_at: None,
+            running_task_id: None,
+            running_stage: Some("index_text".to_string()),
+            error_summary: None,
+            worker_health: None,
+            progress: Some(LocalLibraryIndexProgress {
+                scanned_count: 0,
+                indexed_count: 0,
+                skipped_count: 0,
+                failed_count: 0,
+                unchanged_count: 0,
+                total_count: None,
+                max_concurrency: Some(1),
+                active_task_count: 0,
+                pending_task_count: 0,
+                completed_task_count: 0,
+            }),
+            runtime_index_state: None,
+        });
     Ok(NativeLibraryRefreshResponse {
-        watcher: state.native_library.snapshot(),
-        backend_response,
+        watcher,
+        backend_response: json!({
+            "accepted": true,
+            "deduped": false,
+            "scheduled": true,
+            "reason": reason,
+            "targetPath": request.target_path,
+            "taskId": Value::Null,
+            "status": status,
+            "directoryStatus": Value::Null,
+        }),
     })
 }
 
@@ -1703,9 +1838,7 @@ fn native_get_library_binding() -> Result<Value, String> {
 }
 
 #[tauri::command]
-fn native_save_library_binding(
-    request: NativeSaveLibraryBindingRequest,
-) -> Result<Value, String> {
+fn native_save_library_binding(request: NativeSaveLibraryBindingRequest) -> Result<Value, String> {
     serde_json::to_value(save_local_library_binding(request)?)
         .map_err(|error| format!("序列化本地 binding 失败：{error}"))
 }
@@ -1717,17 +1850,13 @@ fn native_get_library_config() -> Result<Value, String> {
 }
 
 #[tauri::command]
-fn native_save_library_config(
-    request: NativeSaveLibraryConfigRequest,
-) -> Result<Value, String> {
+fn native_save_library_config(request: NativeSaveLibraryConfigRequest) -> Result<Value, String> {
     serde_json::to_value(save_local_library_config(request)?)
         .map_err(|error| format!("序列化本地 config 失败：{error}"))
 }
 
 #[tauri::command]
-fn native_browse_host_directories(
-    path: Option<String>,
-) -> Result<Value, String> {
+fn native_browse_host_directories(path: Option<String>) -> Result<Value, String> {
     serde_json::to_value(browse_local_host_directories(path)?)
         .map_err(|error| format!("序列化本地 host directories 失败：{error}"))
 }
@@ -1746,6 +1875,21 @@ fn native_get_library_snapshot(
 }
 
 #[tauri::command]
+fn native_get_library_status() -> Result<Value, String> {
+    let Some(binding) = read_local_library_binding()? else {
+        return serde_json::to_value(empty_local_status("fresh", None))
+            .map_err(|error| format!("序列化本地 status 失败：{error}"));
+    };
+    if !binding.initialized {
+        return serde_json::to_value(empty_local_status("fresh", None))
+            .map_err(|error| format!("序列化本地 status 失败：{error}"));
+    }
+    let status = read_local_runtime_status(&binding.root_dir)?
+        .unwrap_or_else(|| empty_local_status("fresh", None));
+    serde_json::to_value(status).map_err(|error| format!("序列化本地 status 失败：{error}"))
+}
+
+#[tauri::command]
 fn native_list_library_tag_details(
     request: NativeListLibraryTagDetailsRequest,
 ) -> Result<Value, String> {
@@ -1753,9 +1897,7 @@ fn native_list_library_tag_details(
 }
 
 #[tauri::command]
-fn native_get_library_tag_detail(
-    request: NativeLibraryTagIdRequest,
-) -> Result<Value, String> {
+fn native_get_library_tag_detail(request: NativeLibraryTagIdRequest) -> Result<Value, String> {
     get_native_library_tag_detail(&request.tag_id)
 }
 
@@ -1778,9 +1920,7 @@ fn native_update_library_tag(
 }
 
 #[tauri::command]
-fn native_delete_library_tag(
-    request: NativeLibraryTagIdRequest,
-) -> Result<Value, String> {
+fn native_delete_library_tag(request: NativeLibraryTagIdRequest) -> Result<Value, String> {
     delete_native_library_tag(&request.tag_id)
 }
 
@@ -1792,23 +1932,17 @@ fn native_get_document_tag_details(
 }
 
 #[tauri::command]
-fn native_save_document_tags(
-    request: NativeSaveDocumentTagsRequest,
-) -> Result<Value, String> {
+fn native_save_document_tags(request: NativeSaveDocumentTagsRequest) -> Result<Value, String> {
     save_native_document_tags(request)
 }
 
 #[tauri::command]
-fn native_get_folder_tag_details(
-    request: NativeFolderTagDetailsRequest,
-) -> Result<Value, String> {
+fn native_get_folder_tag_details(request: NativeFolderTagDetailsRequest) -> Result<Value, String> {
     get_native_folder_tag_details(&request.folder_path)
 }
 
 #[tauri::command]
-fn native_save_folder_tags(
-    request: NativeSaveFolderTagsRequest,
-) -> Result<Value, String> {
+fn native_save_folder_tags(request: NativeSaveFolderTagsRequest) -> Result<Value, String> {
     save_native_folder_tags(request)
 }
 
@@ -1823,26 +1957,19 @@ fn native_get_library_tag_recompute_task() -> Result<Value, String> {
 }
 
 #[tauri::command]
-fn native_list_library_documents(
-    request: NativeListDocumentsRequest,
-) -> Result<Value, String> {
+fn native_list_library_documents(request: NativeListDocumentsRequest) -> Result<Value, String> {
     serde_json::to_value(read_local_library_documents(request)?)
         .map_err(|error| format!("序列化本地 documents 失败：{error}"))
 }
 
 #[tauri::command]
-fn native_list_library_files(
-    path: Option<String>,
-    limit: Option<usize>,
-) -> Result<Value, String> {
+fn native_list_library_files(path: Option<String>, limit: Option<usize>) -> Result<Value, String> {
     serde_json::to_value(read_local_library_files(path, limit)?)
         .map_err(|error| format!("序列化本地 files 失败：{error}"))
 }
 
 #[tauri::command]
-fn native_get_library_preview(
-    request: NativePreviewRequest,
-) -> Result<Value, String> {
+fn native_get_library_preview(request: NativePreviewRequest) -> Result<Value, String> {
     println!(
         "[x-file native] preview.request transport=native path={} displayMode={}",
         request.path,
@@ -1894,9 +2021,7 @@ fn native_get_onlyoffice_settings() -> Result<Value, String> {
 }
 
 #[tauri::command]
-fn native_save_onlyoffice_settings(
-    input: NativeOnlyOfficeSettingsInput,
-) -> Result<Value, String> {
+fn native_save_onlyoffice_settings(input: NativeOnlyOfficeSettingsInput) -> Result<Value, String> {
     save_local_onlyoffice_settings(input)
 }
 
@@ -1906,9 +2031,7 @@ fn native_get_onlyoffice_status() -> Result<Value, String> {
 }
 
 #[tauri::command]
-fn native_list_plugins(
-    state: tauri::State<'_, Mutex<DesktopState>>,
-) -> Result<Value, String> {
+fn native_list_plugins(state: tauri::State<'_, Mutex<DesktopState>>) -> Result<Value, String> {
     let resource_dir = {
         let state = lock_desktop_state(&state);
         state.resource_dir.clone()
@@ -2067,7 +2190,11 @@ fn append_native_context_menu_items(
     items: &[NativeContextMenuItem],
 ) -> Result<(), String> {
     for item in items {
-        if item.items.as_ref().is_some_and(|children| !children.is_empty()) {
+        if item
+            .items
+            .as_ref()
+            .is_some_and(|children| !children.is_empty())
+        {
             let submenu = build_native_context_submenu(app, item)?;
             menu.append(&submenu)
                 .map_err(|error| format!("添加原生子菜单失败：{error}"))?;
@@ -2103,7 +2230,11 @@ fn build_native_context_submenu(
     .map_err(|error| format!("创建原生子菜单失败：{error}"))?;
 
     for child in item.items.as_deref().unwrap_or(&[]) {
-        if child.items.as_ref().is_some_and(|children| !children.is_empty()) {
+        if child
+            .items
+            .as_ref()
+            .is_some_and(|children| !children.is_empty())
+        {
             let child_submenu = build_native_context_submenu(app, child)?;
             submenu
                 .append(&child_submenu)
@@ -2176,7 +2307,8 @@ fn backend_policy(persistent: bool) -> BackendPolicy {
             quit_application_behavior: "stop_backend_and_quit_application",
             implemented_by_desktop_shell: true,
             requires_system_tray: true,
-            note: "关闭窗口时隐藏主窗口并保留后台服务；用户可以从顶部菜单栏图标恢复窗口或退出应用。",
+            note:
+                "关闭窗口时隐藏主窗口并保留后台服务；用户可以从顶部菜单栏图标恢复窗口或退出应用。",
         }
     } else {
         BackendPolicy {
@@ -2267,9 +2399,10 @@ fn apply_main_window_geometry(window: &WebviewWindow, geometry: MainWindowGeomet
         geometry.width,
         geometry.height,
     )));
-    let _ = window.set_position(tauri::Position::Physical(
-        tauri::PhysicalPosition::new(geometry.position_x, geometry.position_y),
-    ));
+    let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
+        geometry.position_x,
+        geometry.position_y,
+    )));
 }
 
 fn capture_main_window_geometry_from_window(window: &Window) -> Option<MainWindowGeometry> {
@@ -2427,8 +2560,7 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
         MenuItemBuilder::with_id(MENU_ENABLE_PERSISTENCE, "开启后端常驻").build(app)?;
     let disable_persistence =
         MenuItemBuilder::with_id(MENU_DISABLE_PERSISTENCE, "关闭后端常驻").build(app)?;
-    let start_backend =
-        MenuItemBuilder::with_id(MENU_START_BACKEND, "启动内置后端").build(app)?;
+    let start_backend = MenuItemBuilder::with_id(MENU_START_BACKEND, "启动内置后端").build(app)?;
     let stop_backend = MenuItemBuilder::with_id(MENU_STOP_BACKEND, "停止内置后端").build(app)?;
     let quit = MenuItemBuilder::with_id(MENU_QUIT, "退出 X-File").build(app)?;
 
@@ -2489,7 +2621,9 @@ fn configure_backend_process(app: &tauri::App) {
     state.resource_dir = resource_dir.clone();
 
     if let Some(resource_dir) = resource_dir {
-        state.backend.prefer_resource_entry(resource_dir, resource_boundary.as_ref());
+        state
+            .backend
+            .prefer_resource_entry(resource_dir, resource_boundary.as_ref());
     }
 
     if should_autostart_backend() {
@@ -2544,12 +2678,13 @@ fn run_native_library_index_worker(
             "index-only",
             None,
         )?;
-        let dirty_scope = index_result
-            .get("dirtyScope")
-            .cloned()
-            .ok_or_else(|| "index-only worker 未返回 dirtyScope，无法继续执行 export-only".to_string())?;
+        let dirty_scope = index_result.get("dirtyScope").cloned().ok_or_else(|| {
+            "index-only worker 未返回 dirtyScope，无法继续执行 export-only".to_string()
+        })?;
         if dirty_scope.is_null() {
-            return Err("index-only worker 返回了空 dirtyScope，宿主不会继续触发 export-only".to_string());
+            return Err(
+                "index-only worker 返回了空 dirtyScope，宿主不会继续触发 export-only".to_string(),
+            );
         }
         let export_result = run_native_library_index_worker_once(
             state,
@@ -2563,14 +2698,85 @@ fn run_native_library_index_worker(
             state,
             &binding,
             &reason,
-            target_path,
+            target_path.clone(),
             "search-only",
             Some(dirty_scope),
         )?;
+        spawn_native_summary_backfill_worker(binding.clone(), reason.clone(), target_path);
         return Ok(export_result);
     }
 
     run_native_library_index_worker_once(state, &binding, &reason, target_path, &mode, None)
+}
+
+fn spawn_native_summary_backfill_worker(
+    binding: LocalLibraryBinding,
+    reason: String,
+    target_path: Option<String>,
+) {
+    thread::spawn(move || {
+        let root_dir = binding.root_dir.clone();
+        println!(
+            "[x-file native] summary-backfill.start reason={} targetPath={}",
+            reason,
+            target_path.as_deref().unwrap_or("<root>")
+        );
+        let result = run_native_summary_backfill_worker(NativeIndexRequest {
+            root_dir: binding.root_dir.clone(),
+            allowed_extensions: binding.allowed_extensions.clone(),
+            included_hidden_paths: binding.included_hidden_paths.clone(),
+            config_relative_path: binding.config_relative_path.clone(),
+            reason,
+            target_path: target_path.clone(),
+        });
+        match result {
+            Ok(value) => {
+                println!("[x-file native] summary-backfill.done result={value}");
+                let changed_paths = value
+                    .get("changedPaths")
+                    .and_then(Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if changed_paths.is_empty() {
+                    return;
+                }
+                let dirty_scope = json!({
+                    "trigger": "summary_backfill",
+                    "changedPaths": changed_paths,
+                    "deletedPaths": [],
+                    "dirtyDirectories": [],
+                    "dirtyTagPaths": [],
+                    "dirtyMetaShards": [],
+                    "dirtyDetailShards": [],
+                    "dirtyPostingBuckets": [],
+                    "dirtyRelations": [],
+                });
+                match run_native_library_search_once(
+                    &binding,
+                    "summary_backfill",
+                    target_path,
+                    Some(dirty_scope),
+                ) {
+                    Ok(search_result) => println!(
+                        "[x-file native] summary-backfill.search-only.done result={search_result}"
+                    ),
+                    Err(error) => {
+                        eprintln!("[x-file native] summary-backfill.search-only.failed: {error}")
+                    }
+                }
+            }
+            Err(error) => eprintln!("[x-file native] summary-backfill.failed: {error}"),
+        }
+        if let Ok(mut guard) = summary_backfill_spawn_registry().lock() {
+            guard.remove(&root_dir);
+        }
+    });
 }
 
 fn run_native_library_index_worker_once(
@@ -2696,12 +2902,10 @@ fn read_local_library_snapshot(
         });
     }
 
-    let manifest_path = PathBuf::from(&binding.root_dir)
-        .join(".ai-index")
-        .join("exports")
-        .join("manifest.json");
+    ensure_summary_backfill_running(&binding)?;
     let runtime_status = read_local_runtime_status(&binding.root_dir)?;
-    if !manifest_path.is_file() {
+    let export_payload = read_local_library_export_payload(&binding.root_dir)?;
+    let Some(export_payload) = export_payload else {
         return Ok(LocalLibrarySnapshot {
             binding: Some(binding),
             default_root_dir,
@@ -2714,34 +2918,14 @@ fn read_local_library_snapshot(
             document_count: 0,
             last_error: None,
         });
-    }
-
-    let export_dir = manifest_path
-        .parent()
-        .map(PathBuf::from)
-        .ok_or_else(|| "无法定位 exports 目录".to_string())?;
-    let manifest: ManifestFile = read_json_file(&manifest_path)?;
-    let documents = read_meta_documents(&export_dir, &manifest)?;
-    let status_file: Option<StatusFile> = read_optional_json_file(
-        &export_dir.join(
-            manifest
-                .entries
-                .as_ref()
-                .and_then(|entries| entries.status.clone())
-                .unwrap_or_else(|| "status.json".to_string()),
-        ),
-    )?;
-    let document_count = status_file
-        .as_ref()
-        .and_then(|status| status.document_count)
-        .unwrap_or(documents.len());
-    let tag_counts = count_local_tags(&documents);
-    let tags = read_local_tags(&export_dir, &manifest, &tag_counts)?;
-    let folders = read_local_folders(&export_dir, &manifest)?;
+    };
+    let document_count = export_payload
+        .document_count
+        .unwrap_or(export_payload.documents.len());
     let status = merge_runtime_status(
         runtime_status,
-        manifest.generated_at.clone(),
-        status_file.and_then(|item| item.exported_at),
+        export_payload.generated_at.clone(),
+        export_payload.exported_at.clone(),
         document_count,
         watcher,
     );
@@ -2752,9 +2936,9 @@ fn read_local_library_snapshot(
         requires_initialization: false,
         initialization_redirect_path: "/init".to_string(),
         status: status.clone(),
-        tags,
+        tags: export_payload.tags,
         favorites,
-        folders,
+        folders: export_payload.folders,
         document_count,
         last_error: status.error_summary,
     })
@@ -2763,12 +2947,41 @@ fn read_local_library_snapshot(
 fn read_local_library_documents(
     request: NativeListDocumentsRequest,
 ) -> Result<LocalLibraryDocumentList, String> {
-    let binding = read_local_library_binding()?
-        .ok_or_else(|| "当前未绑定文档库".to_string())?;
+    let binding = read_local_library_binding()?.ok_or_else(|| "当前未绑定文档库".to_string())?;
+    ensure_summary_backfill_running(&binding)?;
+    let runtime_status = read_local_runtime_status(&binding.root_dir)?;
+    if request.browse_mode == "folder"
+        && runtime_status
+            .as_ref()
+            .and_then(|status| status.running_stage.as_deref())
+            .is_some_and(is_summary_backfill_stage)
+    {
+        return read_local_library_documents_lightweight_for_backfill(
+            &request,
+            runtime_status,
+        );
+    }
     let favorites = read_local_library_favorites(&binding)?;
-    let export_dir = PathBuf::from(&binding.root_dir).join(".ai-index").join("exports");
-    let manifest: ManifestFile = read_json_file(&export_dir.join("manifest.json"))?;
-    let documents = read_meta_documents(&export_dir, &manifest)?;
+    record_native_directory_priority_hint(
+        &binding.root_dir,
+        request.selected_folder_path.as_deref(),
+    )?;
+    let export_payload = match read_local_library_export_payload(&binding.root_dir)? {
+        Some(value) => value,
+        None => {
+            if runtime_status
+                .as_ref()
+                .is_some_and(|status| matches!(status.state.as_str(), "queued" | "running"))
+            {
+                return Ok(empty_local_library_documents_for_running_index(
+                    &request,
+                    runtime_status,
+                ));
+            }
+            return Err("文档库读取失败：索引快照尚未生成，请先等待本地索引完成".to_string());
+        }
+    };
+    let documents = export_payload.documents;
     let keyword = request.keyword.unwrap_or_default().trim().to_lowercase();
     let offset = request.offset.unwrap_or(0);
     let limit = request.limit.unwrap_or(50);
@@ -2799,12 +3012,8 @@ fn read_local_library_documents(
         );
 
         if request.browse_mode != "tag" {
-            let selected_folder = normalize_folder_path(
-                request
-                    .selected_folder_path
-                    .as_deref()
-                    .unwrap_or("."),
-            );
+            let selected_folder =
+                normalize_folder_path(request.selected_folder_path.as_deref().unwrap_or("."));
             if document_dir != selected_folder {
                 continue;
             }
@@ -2823,7 +3032,10 @@ fn read_local_library_documents(
         }
 
         if let Some(selected_favorite_id) = request.selected_favorite_id.as_deref() {
-            let Some(favorite) = favorites.iter().find(|item| item.path == selected_favorite_id) else {
+            let Some(favorite) = favorites
+                .iter()
+                .find(|item| item.path == selected_favorite_id)
+            else {
                 continue;
             };
             if !document_matches_favorite(&tags, &derived_tags, &document_dir, favorite) {
@@ -2860,7 +3072,7 @@ fn read_local_library_documents(
             summary,
             updated_at: document
                 .mtime
-                .or_else(|| manifest.generated_at.clone())
+                .or_else(|| export_payload.generated_at.clone())
                 .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
             created_at: metadata
                 .as_ref()
@@ -2894,23 +3106,446 @@ fn read_local_library_documents(
             state: "fresh".to_string(),
             source: "snapshot".to_string(),
             last_requested_at: None,
-            last_completed_at: manifest.generated_at.clone(),
+            last_completed_at: export_payload
+                .exported_at
+                .clone()
+                .or(export_payload.generated_at.clone()),
             last_failed_at: None,
             running_task_id: None,
             error_summary: None,
-            generated_at: manifest.generated_at,
+            generated_at: export_payload.generated_at,
             filesystem_observed_at: None,
             stale_reason: None,
         }),
     })
 }
 
+fn read_local_library_documents_lightweight_for_backfill(
+    request: &NativeListDocumentsRequest,
+    runtime_status: Option<LocalLibraryIndexStatus>,
+) -> Result<LocalLibraryDocumentList, String> {
+    let selected_folder = normalize_folder_path(request.selected_folder_path.as_deref().unwrap_or("."));
+    let file_list = read_local_library_files(
+        if selected_folder == "." {
+            None
+        } else {
+            Some(selected_folder.clone())
+        },
+        Some(200),
+    )?;
+    let keyword = request
+        .keyword
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_lowercase();
+    let offset = request.offset.unwrap_or(0);
+    let limit = request.limit.unwrap_or(50);
+
+    let mut items = Vec::new();
+    for file in file_list.items.into_iter().filter(|item| item.kind == "file") {
+        if !keyword.is_empty() {
+            let haystack = format!(
+                "{}\n{}",
+                file.name.to_lowercase(),
+                file.path.to_lowercase(),
+            );
+            if !keyword
+                .split_whitespace()
+                .all(|token| haystack.contains(token))
+            {
+                continue;
+            }
+        }
+        items.push(LocalLibraryDocumentRecord {
+            document_id: file.path.clone(),
+            path: file.path.clone(),
+            title: if file.name.trim().is_empty() {
+                file_name_from_path(&file.path)
+            } else {
+                file.name.clone()
+            },
+            summary: String::new(),
+            updated_at: file
+                .updated_at
+                .clone()
+                .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+            created_at: None,
+            size_bytes: file.size,
+            tags: vec![],
+            derived_tags: vec![],
+            is_favorite: false,
+        });
+    }
+
+    items.sort_by(|left, right| left.path.cmp(&right.path));
+    let total = items.len();
+    let paged_items = items
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .collect::<Vec<_>>();
+
+    Ok(LocalLibraryDocumentList {
+        total,
+        visible_entry_total: total + file_list.total.saturating_sub(total),
+        offset,
+        limit,
+        items: paged_items,
+        tag_facet_counts: HashMap::new(),
+        directory_status: Some(LocalLibraryDirectoryStatus {
+            path: selected_folder,
+            state: "running".to_string(),
+            source: "mixed".to_string(),
+            last_requested_at: runtime_status
+                .as_ref()
+                .and_then(|status| status.last_requested_at.clone()),
+            last_completed_at: runtime_status
+                .as_ref()
+                .and_then(|status| status.last_completed_at.clone()),
+            last_failed_at: runtime_status
+                .as_ref()
+                .and_then(|status| status.last_failed_at.clone()),
+            running_task_id: None,
+            error_summary: None,
+            generated_at: None,
+            filesystem_observed_at: Some(chrono::Utc::now().to_rfc3339()),
+            stale_reason: Some("后台补摘要期间，当前目录文档列表切换为轻量文件系统视图，避免整库快照读取拖慢界面。".to_string()),
+        }),
+    })
+}
+
+fn ensure_summary_backfill_running(binding: &LocalLibraryBinding) -> Result<(), String> {
+    let Some(runtime_status) = read_local_runtime_status(&binding.root_dir)? else {
+        return Ok(());
+    };
+    if matches!(runtime_status.state.as_str(), "queued" | "running") {
+        return Ok(());
+    }
+    if !has_pending_summary_backfill_work(&binding.root_dir)? {
+        return Ok(());
+    }
+
+    let registry = summary_backfill_spawn_registry();
+    {
+        let mut guard = registry.lock().map_err(|_| "summary backfill 注册表锁被污染".to_string())?;
+        if !guard.insert(binding.root_dir.clone()) {
+            return Ok(());
+        }
+    }
+
+    spawn_native_summary_backfill_worker(
+        binding.clone(),
+        "auto_summary_backfill".to_string(),
+        None,
+    );
+    Ok(())
+}
+
+fn has_pending_summary_backfill_work(root_dir: &str) -> Result<bool, String> {
+    let snapshot_path = resolve_runtime_export_catalog_snapshot_path(root_dir);
+    let Some(snapshot) =
+        read_optional_json_file::<LocalRuntimeExportCatalogSnapshot>(&snapshot_path)?
+    else {
+        return Ok(false);
+    };
+    if snapshot.documents.is_empty() {
+        return Ok(false);
+    }
+
+    let active_state = read_optional_json_file::<LocalRuntimeActiveFileStateSnapshot>(
+        &active_file_state_snapshot_path(root_dir),
+    )?
+    .unwrap_or(LocalRuntimeActiveFileStateSnapshot { files: vec![] });
+    let active_map = active_state
+        .files
+        .into_iter()
+        .map(|item| (item.path.clone(), item))
+        .collect::<HashMap<_, _>>();
+    if active_map.is_empty() {
+        return Ok(false);
+    }
+
+    let completed_state = read_optional_json_file::<LocalRuntimeSummaryBackfillStateSnapshot>(
+        &summary_backfill_state_path(root_dir),
+    )?
+    .unwrap_or(LocalRuntimeSummaryBackfillStateSnapshot { files: vec![] });
+    let completed_map = completed_state
+        .files
+        .into_iter()
+        .map(|item| (item.path.clone(), item))
+        .collect::<HashMap<_, _>>();
+
+    Ok(snapshot.documents.iter().any(|document| {
+        let Some(active) = active_map.get(&document.path) else {
+            return false;
+        };
+        if active.index_status != "indexed" {
+            return false;
+        }
+        let already_completed = completed_map.get(&document.path).is_some_and(|completed| {
+            completed.path == active.path
+                && completed.extension == active.extension
+                && completed.size == active.size
+                && completed.mtime == active.mtime
+                && completed.index_status == active.index_status
+        });
+        if already_completed {
+            return false;
+        }
+        document.summary.trim().is_empty()
+    }))
+}
+
+fn record_native_directory_priority_hint(
+    root_dir: &str,
+    selected_folder_path: Option<&str>,
+) -> Result<(), String> {
+    let normalized = normalize_folder_path(selected_folder_path.unwrap_or("."));
+    if normalized == "." {
+        return Ok(());
+    }
+    let Some(runtime_status) = read_local_runtime_status(root_dir)? else {
+        return Ok(());
+    };
+    if !matches!(runtime_status.state.as_str(), "queued" | "running") {
+        return Ok(());
+    }
+    let hint_path = priority_hints_path(root_dir);
+    let current_paths = read_optional_json_file::<LocalRuntimePriorityHints>(&hint_path)?
+        .map(|payload| payload.paths)
+        .unwrap_or_default();
+    if current_paths
+        .first()
+        .is_some_and(|path| path == &normalized)
+    {
+        return Ok(());
+    }
+    let mut paths = current_paths
+        .into_iter()
+        .filter(|path| path != &normalized)
+        .collect::<Vec<_>>();
+    paths.insert(0, normalized);
+    paths.truncate(16);
+    write_json_file(
+        &hint_path,
+        &LocalRuntimePriorityHints {
+            updated_at: iso_now(),
+            paths,
+        },
+    )
+}
+
+fn empty_local_library_documents_for_running_index(
+    request: &NativeListDocumentsRequest,
+    runtime_status: Option<LocalLibraryIndexStatus>,
+) -> LocalLibraryDocumentList {
+    LocalLibraryDocumentList {
+        total: 0,
+        visible_entry_total: 0,
+        offset: request.offset.unwrap_or(0),
+        limit: request.limit.unwrap_or(50),
+        items: vec![],
+        tag_facet_counts: HashMap::new(),
+        directory_status: Some(LocalLibraryDirectoryStatus {
+            path: normalize_folder_path(request.selected_folder_path.as_deref().unwrap_or(".")),
+            state: "running".to_string(),
+            source: "stale_fallback".to_string(),
+            last_requested_at: runtime_status
+                .as_ref()
+                .and_then(|status| status.last_requested_at.clone()),
+            last_completed_at: None,
+            last_failed_at: None,
+            running_task_id: None,
+            error_summary: None,
+            generated_at: None,
+            filesystem_observed_at: None,
+            stale_reason: Some("索引快照尚未生成，当前正在等待本地索引完成".to_string()),
+        }),
+    }
+}
+
+#[derive(Debug, Clone)]
+struct LocalLibraryExportPayload {
+    generated_at: Option<String>,
+    exported_at: Option<String>,
+    document_count: Option<usize>,
+    documents: Vec<MetaDocument>,
+    tags: Vec<LocalLibraryTagNode>,
+    folders: Vec<LocalLibraryFolderNode>,
+}
+
+fn read_local_library_export_payload(
+    root_dir: &str,
+) -> Result<Option<LocalLibraryExportPayload>, String> {
+    if let Some(payload) = read_local_library_runtime_snapshot_payload(root_dir)? {
+        return Ok(Some(payload));
+    }
+
+    let export_dir = PathBuf::from(root_dir).join(".ai-index").join("exports");
+    let manifest_path = export_dir.join("manifest.json");
+    if manifest_path.is_file() {
+        return read_local_library_export_manifest_payload(&export_dir, &manifest_path).map(Some);
+    }
+    read_local_library_runtime_snapshot_payload(root_dir)
+}
+
+fn read_local_library_export_manifest_payload(
+    export_dir: &PathBuf,
+    manifest_path: &PathBuf,
+) -> Result<LocalLibraryExportPayload, String> {
+    let manifest: ManifestFile = read_json_file(manifest_path)?;
+    let documents = read_meta_documents(export_dir, &manifest)?;
+    let status_file: Option<StatusFile> = read_optional_json_file(
+        &export_dir.join(
+            manifest
+                .entries
+                .as_ref()
+                .and_then(|entries| entries.status.clone())
+                .unwrap_or_else(|| "status.json".to_string()),
+        ),
+    )?;
+    let tag_counts = count_local_tags(&documents);
+    let tags = read_local_tags(export_dir, &manifest, &tag_counts)?;
+    let folders = read_local_folders(export_dir, &manifest)?;
+    Ok(LocalLibraryExportPayload {
+        generated_at: manifest.generated_at.clone(),
+        exported_at: status_file
+            .as_ref()
+            .and_then(|item| item.exported_at.clone()),
+        document_count: status_file.and_then(|item| item.document_count),
+        documents,
+        tags,
+        folders,
+    })
+}
+
+fn read_local_library_runtime_snapshot_payload(
+    root_dir: &str,
+) -> Result<Option<LocalLibraryExportPayload>, String> {
+    let snapshot_path = resolve_runtime_export_catalog_snapshot_path(root_dir);
+    let Some(snapshot) =
+        read_optional_json_file::<LocalRuntimeExportCatalogSnapshot>(&snapshot_path)?
+    else {
+        return Ok(None);
+    };
+    let documents = snapshot
+        .documents
+        .iter()
+        .map(|document| MetaDocument {
+            document_id: document.document_id.clone(),
+            path: document.path.clone(),
+            title: Some(document.title.clone()),
+            summary: Some(document.summary.clone()),
+            mtime: Some(document.mtime.clone()),
+            direct_tags: Some(document.tags.clone()),
+            derived_tags: Some(document.derived_tags.clone()),
+        })
+        .collect::<Vec<_>>();
+    let tags = build_local_tags_from_runtime_snapshot(&snapshot.tags, &documents);
+    let folders = build_local_folders_from_runtime_snapshot(&documents);
+    Ok(Some(LocalLibraryExportPayload {
+        generated_at: snapshot
+            .generated_at
+            .clone()
+            .or(snapshot.generated_at_legacy.clone()),
+        exported_at: None,
+        document_count: Some(documents.len()),
+        documents,
+        tags,
+        folders,
+    }))
+}
+
+fn build_local_tags_from_runtime_snapshot(
+    snapshot_tags: &[LocalRuntimeSnapshotTag],
+    documents: &[MetaDocument],
+) -> Vec<LocalLibraryTagNode> {
+    let tag_counts = count_local_tags(documents);
+    snapshot_tags
+        .iter()
+        .map(|tag| LocalLibraryTagNode {
+            path: tag.path.clone(),
+            name: tag.name.clone(),
+            root_type: tag.root_type.clone(),
+            parent_path: tag.parent_path.clone(),
+            depth: tag.depth,
+            document_count: *tag_counts.get(&tag.path).unwrap_or(&0),
+        })
+        .collect()
+}
+
+fn build_local_folders_from_runtime_snapshot(
+    documents: &[MetaDocument],
+) -> Vec<LocalLibraryFolderNode> {
+    let mut direct_counts = HashMap::<String, usize>::new();
+    let mut total_counts = HashMap::<String, usize>::new();
+    let mut parent_paths = HashMap::<String, Option<String>>::new();
+
+    for document in documents {
+        let normalized_path = normalize_document_path(&document.path);
+        let document_dir = normalize_folder_path(
+            &PathBuf::from(&normalized_path)
+                .parent()
+                .map(|value| value.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|| ".".to_string()),
+        );
+        *direct_counts.entry(document_dir.clone()).or_insert(0) += 1;
+        for ancestor in expand_folder_ancestor_paths(&document_dir) {
+            *total_counts.entry(ancestor.clone()).or_insert(0) += 1;
+            parent_paths
+                .entry(ancestor.clone())
+                .or_insert_with(|| parent_folder_path(&ancestor));
+        }
+    }
+
+    let mut folders = total_counts
+        .into_iter()
+        .map(|(path, document_count)| LocalLibraryFolderNode {
+            name: file_name_from_path(&path),
+            parent_path: parent_paths
+                .get(&path)
+                .cloned()
+                .unwrap_or_else(|| parent_folder_path(&path)),
+            direct_document_count: *direct_counts.get(&path).unwrap_or(&0),
+            document_count,
+            created_at: None,
+            updated_at: None,
+            path,
+        })
+        .collect::<Vec<_>>();
+    folders.sort_by(|left, right| left.path.cmp(&right.path));
+    folders
+}
+
+fn expand_folder_ancestor_paths(path: &str) -> Vec<String> {
+    let normalized = normalize_folder_path(path);
+    if normalized == "." {
+        return vec![".".to_string()];
+    }
+    let parts = normalized.split('/').collect::<Vec<_>>();
+    let mut ancestors = vec![".".to_string()];
+    for index in 0..parts.len() {
+        ancestors.push(parts[..=index].join("/"));
+    }
+    ancestors
+}
+
+fn parent_folder_path(path: &str) -> Option<String> {
+    let normalized = normalize_folder_path(path);
+    if normalized == "." {
+        return None;
+    }
+    PathBuf::from(&normalized)
+        .parent()
+        .map(|value| normalize_folder_path(&value.to_string_lossy()))
+}
+
 fn read_local_library_files(
     path: Option<String>,
     limit: Option<usize>,
 ) -> Result<LocalLibraryFileList, String> {
-    let binding = read_local_library_binding()?
-        .ok_or_else(|| "当前未绑定文档库".to_string())?;
+    let binding = read_local_library_binding()?.ok_or_else(|| "当前未绑定文档库".to_string())?;
     let normalized_path = normalize_folder_path(path.as_deref().unwrap_or("."));
     let absolute_path = if normalized_path == "." {
         PathBuf::from(&binding.root_dir)
@@ -2928,14 +3563,15 @@ fn read_local_library_files(
         });
     }
 
-    let metadata = fs::metadata(&absolute_path)
-        .map_err(|error| format!("读取目录信息失败：{error}"))?;
+    let metadata =
+        fs::metadata(&absolute_path).map_err(|error| format!("读取目录信息失败：{error}"))?;
     if !metadata.is_dir() {
         return Err("指定路径不是目录".to_string());
     }
 
     let mut items = Vec::new();
-    for entry in fs::read_dir(&absolute_path).map_err(|error| format!("读取目录失败：{error}"))? {
+    for entry in fs::read_dir(&absolute_path).map_err(|error| format!("读取目录失败：{error}"))?
+    {
         let entry = entry.map_err(|error| format!("读取目录项失败：{error}"))?;
         let name = entry.file_name().to_string_lossy().to_string();
         let entry_path = if normalized_path == "." {
@@ -2949,7 +3585,13 @@ fn read_local_library_files(
             path: entry_path,
             name,
             kind: if is_dir { "directory" } else { "file" }.to_string(),
-            size: entry_metadata.as_ref().and_then(|meta| if meta.is_dir() { None } else { Some(meta.len()) }),
+            size: entry_metadata.as_ref().and_then(|meta| {
+                if meta.is_dir() {
+                    None
+                } else {
+                    Some(meta.len())
+                }
+            }),
             updated_at: entry_metadata
                 .as_ref()
                 .and_then(|meta| meta.modified().ok())
@@ -2971,12 +3613,11 @@ fn read_local_library_files(
 fn read_local_library_preview(
     request: NativePreviewRequest,
 ) -> Result<LocalLibraryPreview, String> {
-    let binding = read_local_library_binding()?
-        .ok_or_else(|| "当前未绑定文档库".to_string())?;
+    let binding = read_local_library_binding()?.ok_or_else(|| "当前未绑定文档库".to_string())?;
     let relative_path = normalize_document_path(&request.path);
     let absolute_path = PathBuf::from(&binding.root_dir).join(&relative_path);
-    let metadata = fs::metadata(&absolute_path)
-        .map_err(|error| format!("读取预览文件失败：{error}"))?;
+    let metadata =
+        fs::metadata(&absolute_path).map_err(|error| format!("读取预览文件失败：{error}"))?;
     if !metadata.is_file() {
         return Err("预览目标不是文件".to_string());
     }
@@ -2990,10 +3631,22 @@ fn read_local_library_preview(
     let kind = detect_local_preview_kind(&extension);
 
     if matches!(kind.as_str(), "image" | "pdf") && size > 20 * 1024 * 1024 {
-        return Ok(unsupported_preview(&binding.library_id, &relative_path, size, updated_at, "文件过大，当前内置资源预览暂不处理这么大的文件"));
+        return Ok(unsupported_preview(
+            &binding.library_id,
+            &relative_path,
+            size,
+            updated_at,
+            "文件过大，当前内置资源预览暂不处理这么大的文件",
+        ));
     }
     if !matches!(kind.as_str(), "image" | "pdf" | "office") && size > 512 * 1024 {
-        return Ok(unsupported_preview(&binding.library_id, &relative_path, size, updated_at, "文件过大，本轮只提供轻量预览"));
+        return Ok(unsupported_preview(
+            &binding.library_id,
+            &relative_path,
+            size,
+            updated_at,
+            "文件过大，本轮只提供轻量预览",
+        ));
     }
 
     if kind == "office" {
@@ -3020,8 +3673,7 @@ fn read_local_library_preview(
 
     println!(
         "[x-file native] preview.resolve kind={} transport=native path={}",
-        kind,
-        relative_path
+        kind, relative_path
     );
 
     if kind == "image" || kind == "pdf" {
@@ -3047,7 +3699,8 @@ fn read_local_library_preview(
         });
     }
 
-    let buffer = fs::read(&absolute_path).map_err(|error| format!("读取预览文件内容失败：{error}"))?;
+    let buffer =
+        fs::read(&absolute_path).map_err(|error| format!("读取预览文件内容失败：{error}"))?;
     if buffer.contains(&0) {
         return Ok(LocalLibraryPreview {
             library_id: binding.library_id,
@@ -3066,8 +3719,8 @@ fn read_local_library_preview(
         });
     }
 
-    let content = String::from_utf8(buffer.clone())
-        .map_err(|error| format!("读取文本预览失败：{error}"))?;
+    let content =
+        String::from_utf8(buffer.clone()).map_err(|error| format!("读取文本预览失败：{error}"))?;
     let version = if size <= 256 * 1024 && matches!(kind.as_str(), "text" | "markdown" | "html") {
         Some(sha256_hex(&buffer))
     } else {
@@ -3112,8 +3765,8 @@ fn save_local_library_binding(
     if root_dir.is_empty() {
         return Err("rootDir 不能为空".to_string());
     }
-    let canonical_root = fs::canonicalize(root_dir)
-        .map_err(|error| format!("无法解析文档库根目录：{error}"))?;
+    let canonical_root =
+        fs::canonicalize(root_dir).map_err(|error| format!("无法解析文档库根目录：{error}"))?;
     if !canonical_root.is_dir() {
         return Err("文档库根目录不是文件夹".to_string());
     }
@@ -3131,10 +3784,17 @@ fn save_local_library_binding(
         config_relative_path: existing.config_relative_path,
         export_mode: existing.export_mode,
         initialized,
-        initialized_at: if initialized { Some(updated_at.clone()) } else { existing.initialized_at },
+        initialized_at: if initialized {
+            Some(updated_at.clone())
+        } else {
+            existing.initialized_at
+        },
         updated_at,
     };
-    write_json_file(&x_file_data_dir().join("library-binding.json"), &binding_to_stored(&next))?;
+    write_json_file(
+        &x_file_data_dir().join("library-binding.json"),
+        &binding_to_stored(&next),
+    )?;
     Ok(next)
 }
 
@@ -3190,44 +3850,67 @@ fn read_local_library_config() -> Result<LocalLibraryConfig, String> {
         binding: binding.clone(),
         enabled: binding.as_ref().map(|item| item.enabled).unwrap_or(false),
         mirror_root: binding.as_ref().and_then(|item| item.mirror_root.clone()),
-        allowed_extensions: binding.as_ref().map(|item| {
-            if item.allowed_extensions.is_empty() {
-                default_extensions.clone()
-            } else {
-                item.allowed_extensions.clone()
-            }
-        }).unwrap_or_else(|| default_extensions.clone()),
-        included_hidden_paths: binding.as_ref().map(|item| item.included_hidden_paths.clone()).unwrap_or_default(),
-        folder_open_behavior: binding.as_ref().map(|item| item.folder_open_behavior.clone()).unwrap_or_else(|| "double_click".to_string()),
-        config_relative_path: binding.as_ref().map(|item| item.config_relative_path.clone()).unwrap_or_else(|| ".ai-index/doc-semantic-index.config.json".to_string()),
+        allowed_extensions: binding
+            .as_ref()
+            .map(|item| {
+                if item.allowed_extensions.is_empty() {
+                    default_extensions.clone()
+                } else {
+                    item.allowed_extensions.clone()
+                }
+            })
+            .unwrap_or_else(|| default_extensions.clone()),
+        included_hidden_paths: binding
+            .as_ref()
+            .map(|item| item.included_hidden_paths.clone())
+            .unwrap_or_default(),
+        folder_open_behavior: binding
+            .as_ref()
+            .map(|item| item.folder_open_behavior.clone())
+            .unwrap_or_else(|| "double_click".to_string()),
+        config_relative_path: binding
+            .as_ref()
+            .map(|item| item.config_relative_path.clone())
+            .unwrap_or_else(|| ".ai-index/doc-semantic-index.config.json".to_string()),
         can_write: binding.is_some(),
     })
 }
 
-fn save_local_library_config(request: NativeSaveLibraryConfigRequest) -> Result<LocalLibraryConfig, String> {
-    let mut binding = read_local_library_binding()?.ok_or_else(|| "请先绑定文档库根目录".to_string())?;
+fn save_local_library_config(
+    request: NativeSaveLibraryConfigRequest,
+) -> Result<LocalLibraryConfig, String> {
+    let mut binding =
+        read_local_library_binding()?.ok_or_else(|| "请先绑定文档库根目录".to_string())?;
     binding.enabled = request.enabled.unwrap_or(binding.enabled);
     if let Some(mirror_root) = request.mirror_root {
         binding.mirror_root = normalize_nullable_path(mirror_root, binding.mirror_root);
     }
     if let Some(allowed_extensions) = request.allowed_extensions {
-        binding.allowed_extensions = normalize_extensions(allowed_extensions, binding.allowed_extensions);
+        binding.allowed_extensions =
+            normalize_extensions(allowed_extensions, binding.allowed_extensions);
     }
     if let Some(included_hidden_paths) = request.included_hidden_paths {
-        binding.included_hidden_paths = normalize_string_list(included_hidden_paths, binding.included_hidden_paths);
+        binding.included_hidden_paths =
+            normalize_string_list(included_hidden_paths, binding.included_hidden_paths);
     }
-    binding.folder_open_behavior = if request.folder_open_behavior.as_deref() == Some("single_click") {
-        "single_click".to_string()
-    } else {
-        "double_click".to_string()
-    };
+    binding.folder_open_behavior =
+        if request.folder_open_behavior.as_deref() == Some("single_click") {
+            "single_click".to_string()
+        } else {
+            "double_click".to_string()
+        };
     binding.updated_at = iso_now();
-    write_json_file(&x_file_data_dir().join("library-binding.json"), &binding_to_stored(&binding))?;
+    write_json_file(
+        &x_file_data_dir().join("library-binding.json"),
+        &binding_to_stored(&binding),
+    )?;
     write_library_config_sidecar(&binding)?;
     read_local_library_config()
 }
 
-fn browse_local_host_directories(requested_path: Option<String>) -> Result<LocalHostDirectoryBrowseResult, String> {
+fn browse_local_host_directories(
+    requested_path: Option<String>,
+) -> Result<LocalHostDirectoryBrowseResult, String> {
     let roots = list_local_host_directory_roots();
     let fallback_path = resolve_default_local_host_browse_path(&roots);
     let current_path = resolve_local_host_browse_path(requested_path.as_deref(), &fallback_path)?;
@@ -3266,24 +3949,74 @@ fn read_local_runtime_status(root_dir: &str) -> Result<Option<LocalLibraryIndexS
     let Some(payload) = read_optional_json_file::<PersistedRuntimeStatus>(&file_path)? else {
         return Ok(None);
     };
+    let stale_reference_at = payload
+        .progress_updated_at
+        .as_deref()
+        .or(payload.last_completed_at.as_deref())
+        .or(payload.last_started_at.as_deref());
+    let stale_timeout_ms = resolve_runtime_status_stale_timeout_ms(
+        payload.state.as_str(),
+        payload.running_stage.as_deref(),
+    );
+    let stale_running = matches!(payload.state.as_str(), "running" | "queued")
+        && stale_reference_at
+            .and_then(parse_rfc3339_to_unix_ms)
+            .is_some_and(|heartbeat_at| {
+                chrono::Utc::now()
+                    .timestamp_millis()
+                    .saturating_sub(heartbeat_at)
+                    > stale_timeout_ms
+            });
     Ok(Some(LocalLibraryIndexStatus {
-        state: payload.state,
+        state: if stale_running {
+            "failed".to_string()
+        } else {
+            payload.state
+        },
         dirty_reasons: vec![],
         last_requested_at: payload.last_requested_at,
         last_started_at: payload.last_started_at,
         last_completed_at: payload.last_completed_at,
-        last_failed_at: payload.last_failed_at,
+        last_failed_at: if stale_running {
+            Some(iso_now())
+        } else {
+            payload.last_failed_at
+        },
         next_allowed_at: payload.next_allowed_at,
         running_task_id: None,
-        running_stage: payload.running_stage,
-        error_summary: payload.error_summary,
+        running_stage: if stale_running {
+            None
+        } else {
+            payload.running_stage
+        },
+        error_summary: if stale_running {
+            Some("本地索引状态长时间没有新进度心跳，上一轮刷新很可能已经中断。请重新触发刷新并观察扫描数量是否继续推进。".to_string())
+        } else {
+            payload.error_summary
+        },
         worker_health: None,
         progress: payload.progress,
         runtime_index_state: read_local_runtime_index_state(root_dir)?,
     }))
 }
 
-fn read_local_runtime_index_state(root_dir: &str) -> Result<Option<LocalRuntimeIndexState>, String> {
+fn resolve_runtime_status_stale_timeout_ms(state: &str, running_stage: Option<&str>) -> i64 {
+    if state == "queued" {
+        return 2 * 60_000;
+    }
+    match running_stage.unwrap_or_default() {
+        "export_snapshot" | "search_index" | "export_search" | "summary_backfill_search" => {
+            15 * 60_000
+        }
+        "count_files" | "index" | "index_text" | "init_catalog" => 5 * 60_000,
+        "summary_backfill" => 15 * 60_000,
+        _ => 5 * 60_000,
+    }
+}
+
+fn read_local_runtime_index_state(
+    root_dir: &str,
+) -> Result<Option<LocalRuntimeIndexState>, String> {
     let file_path = PathBuf::from(root_dir)
         .join(".ai-index")
         .join("runtime")
@@ -3307,7 +4040,8 @@ fn read_meta_documents(
 ) -> Result<Vec<MetaDocument>, String> {
     let mut documents = Vec::new();
     for shard in manifest.meta_shards.as_ref().into_iter().flatten() {
-        let shard_file: Option<MetaShardFile> = read_optional_json_file(&export_dir.join(&shard.path))?;
+        let shard_file: Option<MetaShardFile> =
+            read_optional_json_file(&export_dir.join(&shard.path))?;
         if let Some(shard_file) = shard_file {
             documents.extend(shard_file.documents.unwrap_or_default());
         }
@@ -3395,7 +4129,8 @@ fn merge_runtime_status(
     watcher: &NativeLibraryWatcherStatus,
 ) -> LocalLibraryIndexStatus {
     let fallback_completed_at = exported_at.or(generated_at);
-    let mut status = runtime_status.unwrap_or_else(|| empty_local_status("fresh", fallback_completed_at.clone()));
+    let mut status = runtime_status
+        .unwrap_or_else(|| empty_local_status("fresh", fallback_completed_at.clone()));
     if status.last_completed_at.is_none() {
         status.last_completed_at = fallback_completed_at;
     }
@@ -3408,6 +4143,9 @@ fn merge_runtime_status(
             unchanged_count: document_count,
             total_count: Some(document_count),
             max_concurrency: None,
+            active_task_count: 0,
+            pending_task_count: 0,
+            completed_task_count: document_count,
         });
     }
     if watcher.active && status.state == "fresh" {
@@ -3434,9 +4172,7 @@ fn empty_local_status(state: &str, last_completed_at: Option<String>) -> LocalLi
     }
 }
 
-fn count_document_tag_facets(
-    documents: &[LocalLibraryDocumentRecord],
-) -> HashMap<String, usize> {
+fn count_document_tag_facets(documents: &[LocalLibraryDocumentRecord]) -> HashMap<String, usize> {
     let mut counts = HashMap::new();
     for document in documents {
         let mut expanded_paths = HashSet::new();
@@ -3460,7 +4196,9 @@ fn document_matches_favorite(
 ) -> bool {
     if favorite.kind == "folder" {
         let folder_path = normalize_folder_path(&favorite.path);
-        return folder_path == "." || document_dir == folder_path || document_dir.starts_with(&format!("{folder_path}/"));
+        return folder_path == "."
+            || document_dir == folder_path
+            || document_dir.starts_with(&format!("{folder_path}/"));
     }
     let required_tags = if favorite.kind == "tag_filter" {
         favorite
@@ -3492,7 +4230,11 @@ fn normalize_folder_path(value: &str) -> String {
 }
 
 fn normalize_document_path(value: &str) -> String {
-    value.trim().replace('\\', "/").trim_start_matches('/').to_string()
+    value
+        .trim()
+        .replace('\\', "/")
+        .trim_start_matches('/')
+        .to_string()
 }
 
 fn file_name_from_path(path: &str) -> String {
@@ -3504,6 +4246,12 @@ fn file_name_from_path(path: &str) -> String {
 
 fn system_time_to_rfc3339(value: SystemTime) -> String {
     chrono::DateTime::<chrono::Utc>::from(value).to_rfc3339()
+}
+
+fn parse_rfc3339_to_unix_ms(value: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|item| item.timestamp_millis())
 }
 
 fn detect_local_preview_kind(extension: &str) -> String {
@@ -3591,7 +4339,8 @@ fn save_local_onlyoffice_settings(input: NativeOnlyOfficeSettingsInput) -> Resul
     let next_enabled = input.enabled.unwrap_or(current.enabled);
     let next_server_url = normalize_optional_absolute_url(input.server_url.as_deref())?;
     let next_public_base_url = normalize_optional_absolute_url(input.public_base_url.as_deref())?;
-    let next_callback_base_url = normalize_optional_absolute_url(input.callback_base_url.as_deref())?;
+    let next_callback_base_url =
+        normalize_optional_absolute_url(input.callback_base_url.as_deref())?;
     let next_user_display_name = normalize_optional_text(input.user_display_name.as_deref());
     let next_user_avatar_url = normalize_optional_absolute_url(input.user_avatar_url.as_deref())?;
     let mut next_jwt_secret = current.jwt_secret.clone();
@@ -3652,8 +4401,14 @@ fn read_local_onlyoffice_status_view() -> Result<Value, String> {
         }));
     }
     let mut checks = vec![];
-    let server_url = record.server_url.clone().filter(|value| !value.trim().is_empty());
-    let public_base_url = record.public_base_url.clone().filter(|value| !value.trim().is_empty());
+    let server_url = record
+        .server_url
+        .clone()
+        .filter(|value| !value.trim().is_empty());
+    let public_base_url = record
+        .public_base_url
+        .clone()
+        .filter(|value| !value.trim().is_empty());
     let callback_base_url = record.callback_base_url.clone().or(public_base_url.clone());
     checks.push(json!({
         "key": "serverUrl",
@@ -3678,7 +4433,10 @@ fn read_local_onlyoffice_status_view() -> Result<Value, String> {
     let server_url = server_url.unwrap();
     let public_base_url = public_base_url.unwrap();
     let health_check_url = format!("{}healthcheck", ensure_trailing_slash(&server_url));
-    let api_script_url = format!("{}web-apps/apps/api/documents/api.js", ensure_trailing_slash(&server_url));
+    let api_script_url = format!(
+        "{}web-apps/apps/api/documents/api.js",
+        ensure_trailing_slash(&server_url)
+    );
     let health_probe = probe_text_endpoint(&health_check_url);
     let script_probe = probe_text_endpoint(&api_script_url);
     checks.push(json!({
@@ -3773,15 +4531,21 @@ fn create_signed_preview_token(library_id: &str) -> Result<String, String> {
         library_id: library_id.to_string(),
         expires_at: chrono::Utc::now().timestamp_millis() + LIBRARY_PREVIEW_TOKEN_TTL_MS,
     };
-    let encoded_payload = URL_SAFE_NO_PAD
-        .encode(serde_json::to_vec(&payload).map_err(|error| format!("序列化 preview token 失败：{error}"))?);
+    let encoded_payload = URL_SAFE_NO_PAD.encode(
+        serde_json::to_vec(&payload)
+            .map_err(|error| format!("序列化 preview token 失败：{error}"))?,
+    );
     let signature = sign_hmac(&encoded_payload, &read_signing_secret());
     Ok(format!("{encoded_payload}.{signature}"))
 }
 
-fn create_onlyoffice_callback_token(payload: &OnlyOfficeCallbackTokenPayload) -> Result<String, String> {
-    let encoded_payload = URL_SAFE_NO_PAD
-        .encode(serde_json::to_vec(payload).map_err(|error| format!("序列化 callback token 失败：{error}"))?);
+fn create_onlyoffice_callback_token(
+    payload: &OnlyOfficeCallbackTokenPayload,
+) -> Result<String, String> {
+    let encoded_payload = URL_SAFE_NO_PAD.encode(
+        serde_json::to_vec(payload)
+            .map_err(|error| format!("序列化 callback token 失败：{error}"))?,
+    );
     let signature = sign_hmac(&encoded_payload, &read_signing_secret());
     Ok(format!("{encoded_payload}.{signature}"))
 }
@@ -3799,7 +4563,9 @@ fn verify_signed_preview_token(token: &str) -> Result<LocalPreviewTokenPayload, 
         .map_err(|_| "预览链接无效，请重新打开文件预览".to_string())?;
     let payload = serde_json::from_slice::<LocalPreviewTokenPayload>(&payload_bytes)
         .map_err(|_| "预览链接无效，请重新打开文件预览".to_string())?;
-    if payload.library_id.trim().is_empty() || payload.expires_at <= chrono::Utc::now().timestamp_millis() {
+    if payload.library_id.trim().is_empty()
+        || payload.expires_at <= chrono::Utc::now().timestamp_millis()
+    {
         return Err("预览链接已经过期，请重新打开文件预览".to_string());
     }
     Ok(payload)
@@ -3828,8 +4594,7 @@ fn verify_onlyoffice_callback_token(token: &str) -> Result<OnlyOfficeCallbackTok
 }
 
 fn sign_hmac(payload: &str, secret: &str) -> String {
-    let mut mac = Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes())
-        .expect("HMAC 初始化失败");
+    let mut mac = Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC 初始化失败");
     mac.update(payload.as_bytes());
     URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
 }
@@ -3931,7 +4696,11 @@ fn build_onlyoffice_preview_payload(
             }
         }
     });
-    let editor_config = if let Some(secret) = setting.jwt_secret.as_deref().filter(|value| !value.trim().is_empty()) {
+    let editor_config = if let Some(secret) = setting
+        .jwt_secret
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
         let key: Hmac<sha2::Sha256> = Hmac::new_from_slice(secret.as_bytes())
             .map_err(|error| format!("初始化 ONLYOFFICE JWT key 失败：{error}"))?;
         let token = base_config
@@ -3999,22 +4768,27 @@ fn build_native_onlyoffice_preview(
     state: &tauri::State<'_, Mutex<DesktopState>>,
     request: NativeOnlyOfficePreviewRequest,
 ) -> Result<LocalLibraryPreview, String> {
-    let binding = read_local_library_binding()?
-        .ok_or_else(|| "当前未绑定文档库".to_string())?;
+    let binding = read_local_library_binding()?.ok_or_else(|| "当前未绑定文档库".to_string())?;
     let setting = read_local_onlyoffice_setting()?.ok_or_else(|| {
         "当前还没有启用 ONLYOFFICE 集成，请先在设置里完成 ONLYOFFICE 配置。".to_string()
     })?;
     if !setting.enabled {
         return Err("当前还没有启用 ONLYOFFICE 集成。".to_string());
     }
-    if setting.server_url.as_deref().unwrap_or("").trim().is_empty() {
+    if setting
+        .server_url
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .is_empty()
+    {
         return Err("ONLYOFFICE 服务地址未配置。".to_string());
     }
 
     let relative_path = normalize_document_path(&request.path);
     let absolute_path = PathBuf::from(&binding.root_dir).join(&relative_path);
-    let metadata = fs::metadata(&absolute_path)
-        .map_err(|error| format!("读取 Office 文件失败：{error}"))?;
+    let metadata =
+        fs::metadata(&absolute_path).map_err(|error| format!("读取 Office 文件失败：{error}"))?;
     if !metadata.is_file() {
         return Err("Office 预览目标不是文件".to_string());
     }
@@ -4098,7 +4872,10 @@ fn route_onlyoffice_bridge_request(
     if *method == Method::Post && url.starts_with("/api/office/onlyoffice/callback/") {
         return handle_onlyoffice_callback_request(request, url);
     }
-    Err((StatusCode(404), format!("ONLYOFFICE bridge route not found: {url}")))
+    Err((
+        StatusCode(404),
+        format!("ONLYOFFICE bridge route not found: {url}"),
+    ))
 }
 
 fn handle_onlyoffice_preview_file_request(
@@ -4108,20 +4885,31 @@ fn handle_onlyoffice_preview_file_request(
     let suffix = path
         .strip_prefix("/api/library/preview-file/")
         .ok_or_else(|| (StatusCode(404), "预览链接不存在".to_string()))?;
-    let (encoded_token, encoded_relative_path) = suffix
-        .split_once('/')
-        .ok_or_else(|| (StatusCode(401), "预览链接无效，请重新打开文件预览".to_string()))?;
+    let (encoded_token, encoded_relative_path) = suffix.split_once('/').ok_or_else(|| {
+        (
+            StatusCode(401),
+            "预览链接无效，请重新打开文件预览".to_string(),
+        )
+    })?;
     let token = urlencoding::decode(encoded_token)
-        .map_err(|_| (StatusCode(401), "预览链接无效，请重新打开文件预览".to_string()))?
+        .map_err(|_| {
+            (
+                StatusCode(401),
+                "预览链接无效，请重新打开文件预览".to_string(),
+            )
+        })?
         .into_owned();
-    let payload = verify_signed_preview_token(&token)
-        .map_err(|message| (StatusCode(401), message))?;
+    let payload =
+        verify_signed_preview_token(&token).map_err(|message| (StatusCode(401), message))?;
     let relative_path = decode_relative_path(encoded_relative_path)?;
     let binding = read_local_library_binding()
         .map_err(|message| (StatusCode(500), message))?
         .ok_or_else(|| (StatusCode(400), "当前未绑定文档库".to_string()))?;
     if binding.library_id != payload.library_id {
-        return Err((StatusCode(401), "预览链接无效，请重新打开文件预览".to_string()));
+        return Err((
+            StatusCode(401),
+            "预览链接无效，请重新打开文件预览".to_string(),
+        ));
     }
     let absolute_path = resolve_library_file_path(&binding.root_dir, &relative_path)
         .map_err(|message| (StatusCode(400), message))?;
@@ -4145,24 +4933,46 @@ fn handle_onlyoffice_callback_request(
     let path = url.split('?').next().unwrap_or(url);
     let encoded_token = path
         .strip_prefix("/api/office/onlyoffice/callback/")
-        .ok_or_else(|| (StatusCode(404), "ONLYOFFICE callback route not found".to_string()))?;
+        .ok_or_else(|| {
+            (
+                StatusCode(404),
+                "ONLYOFFICE callback route not found".to_string(),
+            )
+        })?;
     let token = urlencoding::decode(encoded_token)
-        .map_err(|_| (StatusCode(401), "ONLYOFFICE 回调 token 无效或已过期。".to_string()))?
+        .map_err(|_| {
+            (
+                StatusCode(401),
+                "ONLYOFFICE 回调 token 无效或已过期。".to_string(),
+            )
+        })?
         .into_owned();
-    let payload = verify_onlyoffice_callback_token(&token)
-        .map_err(|message| (StatusCode(401), message))?;
+    let payload =
+        verify_onlyoffice_callback_token(&token).map_err(|message| (StatusCode(401), message))?;
     let mut body = String::new();
     request
         .as_reader()
         .read_to_string(&mut body)
-        .map_err(|error| (StatusCode(400), format!("读取 ONLYOFFICE 回调失败：{error}")))?;
+        .map_err(|error| {
+            (
+                StatusCode(400),
+                format!("读取 ONLYOFFICE 回调失败：{error}"),
+            )
+        })?;
     let callback_body: Value = if body.trim().is_empty() {
         json!({})
     } else {
-        serde_json::from_str(&body)
-            .map_err(|error| (StatusCode(400), format!("解析 ONLYOFFICE 回调失败：{error}")))?
+        serde_json::from_str(&body).map_err(|error| {
+            (
+                StatusCode(400),
+                format!("解析 ONLYOFFICE 回调失败：{error}"),
+            )
+        })?
     };
-    let status = callback_body.get("status").and_then(Value::as_i64).unwrap_or_default();
+    let status = callback_body
+        .get("status")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
     if status != 2 && status != 6 {
         println!(
             "[x-file native] onlyoffice.callback transport=native path={} status={} persisted=false",
@@ -4175,34 +4985,58 @@ fn handle_onlyoffice_callback_request(
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| (StatusCode(400), "ONLYOFFICE callback 缺少下载地址".to_string()))?;
+        .ok_or_else(|| {
+            (
+                StatusCode(400),
+                "ONLYOFFICE callback 缺少下载地址".to_string(),
+            )
+        })?;
     let binding = read_local_library_binding()
         .map_err(|message| (StatusCode(500), message))?
         .ok_or_else(|| (StatusCode(400), "当前未绑定文档库".to_string()))?;
     if binding.library_id != payload.library_id {
-        return Err((StatusCode(401), "ONLYOFFICE 回调 token 无效或已过期。".to_string()));
+        return Err((
+            StatusCode(401),
+            "ONLYOFFICE 回调 token 无效或已过期。".to_string(),
+        ));
     }
     let target_path = resolve_library_file_path(&binding.root_dir, &payload.file_path)
         .map_err(|message| (StatusCode(400), message))?;
     let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_millis(CALLBACK_DOWNLOAD_TIMEOUT_MS))
+        .timeout(std::time::Duration::from_millis(
+            CALLBACK_DOWNLOAD_TIMEOUT_MS,
+        ))
         .build()
-        .map_err(|error| (StatusCode(500), format!("初始化 ONLYOFFICE callback client 失败：{error}")))?;
-    let response = client
-        .get(download_url)
-        .send()
-        .map_err(|error| (StatusCode(502), format!("下载 ONLYOFFICE 回写文件失败：{error}")))?;
+        .map_err(|error| {
+            (
+                StatusCode(500),
+                format!("初始化 ONLYOFFICE callback client 失败：{error}"),
+            )
+        })?;
+    let response = client.get(download_url).send().map_err(|error| {
+        (
+            StatusCode(502),
+            format!("下载 ONLYOFFICE 回写文件失败：{error}"),
+        )
+    })?;
     if !response.status().is_success() {
         return Err((
             StatusCode(502),
             format!("下载 ONLYOFFICE 回写文件失败：{}", response.status()),
         ));
     }
-    let file_buffer = response
-        .bytes()
-        .map_err(|error| (StatusCode(502), format!("读取 ONLYOFFICE 回写文件失败：{error}")))?;
-    fs::write(&target_path, &file_buffer)
-        .map_err(|error| (StatusCode(500), format!("写回 ONLYOFFICE 文件失败：{error}")))?;
+    let file_buffer = response.bytes().map_err(|error| {
+        (
+            StatusCode(502),
+            format!("读取 ONLYOFFICE 回写文件失败：{error}"),
+        )
+    })?;
+    fs::write(&target_path, &file_buffer).map_err(|error| {
+        (
+            StatusCode(500),
+            format!("写回 ONLYOFFICE 文件失败：{error}"),
+        )
+    })?;
     let refresh_result = run_native_library_index_worker_detached(
         None,
         NativeLibraryRefreshRequest {
@@ -4232,11 +5066,11 @@ fn decode_relative_path(value: &str) -> Result<String, (StatusCode, String)> {
 }
 
 fn resolve_library_file_path(root_dir: &str, relative_path: &str) -> Result<PathBuf, String> {
-    let root = fs::canonicalize(root_dir)
-        .map_err(|error| format!("解析文档库根目录失败：{error}"))?;
+    let root =
+        fs::canonicalize(root_dir).map_err(|error| format!("解析文档库根目录失败：{error}"))?;
     let joined = root.join(normalize_document_path(relative_path));
-    let resolved = fs::canonicalize(&joined)
-        .map_err(|error| format!("解析文档库文件失败：{error}"))?;
+    let resolved =
+        fs::canonicalize(&joined).map_err(|error| format!("解析文档库文件失败：{error}"))?;
     if !resolved.starts_with(&root) {
         return Err("目标文件不在当前文档库根目录下".to_string());
     }
@@ -4246,17 +5080,15 @@ fn resolve_library_file_path(root_dir: &str, relative_path: &str) -> Result<Path
     Ok(resolved)
 }
 
-fn text_response(
-    status: StatusCode,
-    message: &str,
-) -> Response<std::io::Cursor<Vec<u8>>> {
-    binary_response(status, message.as_bytes().to_vec(), Some("text/plain; charset=utf-8"))
+fn text_response(status: StatusCode, message: &str) -> Response<std::io::Cursor<Vec<u8>>> {
+    binary_response(
+        status,
+        message.as_bytes().to_vec(),
+        Some("text/plain; charset=utf-8"),
+    )
 }
 
-fn json_response(
-    status: StatusCode,
-    payload: Value,
-) -> Response<std::io::Cursor<Vec<u8>>> {
+fn json_response(status: StatusCode, payload: Value) -> Response<std::io::Cursor<Vec<u8>>> {
     let body = serde_json::to_vec(&payload).unwrap_or_else(|_| br#"{"error":1}"#.to_vec());
     binary_response(status, body, Some("application/json; charset=utf-8"))
 }
@@ -4307,7 +5139,10 @@ where
 
 fn read_local_plugin_list(resource_dir: Option<&PathBuf>) -> Result<Value, String> {
     let candidates = resolve_bundled_plugin_root_candidates(resource_dir);
-    let bundled_root_dir = candidates.iter().find(|candidate| is_usable_bundled_plugin_root_dir(candidate)).cloned();
+    let bundled_root_dir = candidates
+        .iter()
+        .find(|candidate| is_usable_bundled_plugin_root_dir(candidate))
+        .cloned();
     let mut records = read_local_plugin_registry_records()?;
     let mut record_map = HashMap::new();
     for record in records.drain(..) {
@@ -4316,7 +5151,8 @@ fn read_local_plugin_list(resource_dir: Option<&PathBuf>) -> Result<Value, Strin
     let mut items: Vec<LocalPluginCatalogItem> = vec![];
     let mut seen = HashSet::new();
     if let Some(root_dir) = bundled_root_dir.as_ref() {
-        for entry in fs::read_dir(root_dir).map_err(|error| format!("读取插件目录失败：{error}"))? {
+        for entry in fs::read_dir(root_dir).map_err(|error| format!("读取插件目录失败：{error}"))?
+        {
             let entry = entry.map_err(|error| format!("读取插件目录失败：{error}"))?;
             let plugin_dir = entry.path();
             if !plugin_dir.is_dir() {
@@ -4327,11 +5163,24 @@ fn read_local_plugin_list(resource_dir: Option<&PathBuf>) -> Result<Value, Strin
                 continue;
             }
             let manifest = read_json_file::<Value>(&manifest_path)?;
-            let plugin_id = manifest.get("id").and_then(Value::as_str).unwrap_or(entry.file_name().to_string_lossy().as_ref()).to_string();
-            let version = manifest.get("version").and_then(Value::as_str).unwrap_or("0.0.0").to_string();
-            let record = record_map.remove(&plugin_id).unwrap_or_else(|| build_default_plugin_registry_record(&plugin_id, &version, &plugin_dir));
+            let plugin_id = manifest
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or(entry.file_name().to_string_lossy().as_ref())
+                .to_string();
+            let version = manifest
+                .get("version")
+                .and_then(Value::as_str)
+                .unwrap_or("0.0.0")
+                .to_string();
+            let record = record_map.remove(&plugin_id).unwrap_or_else(|| {
+                build_default_plugin_registry_record(&plugin_id, &version, &plugin_dir)
+            });
             seen.insert(plugin_id.clone());
-            items.push(LocalPluginCatalogItem { manifest, registry: record });
+            items.push(LocalPluginCatalogItem {
+                manifest,
+                registry: record,
+            });
         }
     }
     for (plugin_id, record) in record_map {
@@ -4343,11 +5192,22 @@ fn read_local_plugin_list(resource_dir: Option<&PathBuf>) -> Result<Value, Strin
             continue;
         }
         let manifest = read_json_file::<Value>(&manifest_path)?;
-        items.push(LocalPluginCatalogItem { manifest, registry: record });
+        items.push(LocalPluginCatalogItem {
+            manifest,
+            registry: record,
+        });
     }
     items.sort_by(|left, right| {
-        let left_name = left.manifest.get("name").and_then(Value::as_str).unwrap_or(&left.registry.plugin_id);
-        let right_name = right.manifest.get("name").and_then(Value::as_str).unwrap_or(&right.registry.plugin_id);
+        let left_name = left
+            .manifest
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or(&left.registry.plugin_id);
+        let right_name = right
+            .manifest
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or(&right.registry.plugin_id);
         left_name.cmp(right_name)
     });
     Ok(json!({
@@ -4368,20 +5228,47 @@ fn set_local_plugin_enabled(
         return Err("插件 ID 不能为空".to_string());
     }
     let candidates = resolve_bundled_plugin_root_candidates(resource_dir);
-    let bundled_root_dir = candidates.iter().find(|candidate| is_usable_bundled_plugin_root_dir(candidate)).cloned();
+    let bundled_root_dir = candidates
+        .iter()
+        .find(|candidate| is_usable_bundled_plugin_root_dir(candidate))
+        .cloned();
     let mut records = read_local_plugin_registry_records()?;
     let mut catalog = vec![];
-    if let Some(items) = read_local_plugin_list(resource_dir)?.get("plugins").and_then(Value::as_array) {
+    if let Some(items) = read_local_plugin_list(resource_dir)?
+        .get("plugins")
+        .and_then(Value::as_array)
+    {
         catalog = items.clone();
     }
-    let current = catalog.into_iter().find(|item| item.get("registry").and_then(|value| value.get("pluginId")).and_then(Value::as_str) == Some(plugin_id))
+    let current = catalog
+        .into_iter()
+        .find(|item| {
+            item.get("registry")
+                .and_then(|value| value.get("pluginId"))
+                .and_then(Value::as_str)
+                == Some(plugin_id)
+        })
         .ok_or_else(|| format!("插件未安装：{plugin_id}"))?;
-    let manifest = current.get("manifest").cloned().ok_or_else(|| "插件 manifest 缺失".to_string())?;
-    let install_dir = current.get("registry").and_then(|value| value.get("installDir")).and_then(Value::as_str)
+    let manifest = current
+        .get("manifest")
+        .cloned()
+        .ok_or_else(|| "插件 manifest 缺失".to_string())?;
+    let install_dir = current
+        .get("registry")
+        .and_then(|value| value.get("installDir"))
+        .and_then(Value::as_str)
         .ok_or_else(|| "插件安装目录缺失".to_string())?;
-    let version = manifest.get("version").and_then(Value::as_str).unwrap_or("0.0.0");
-    let existing = records.iter().find(|item| item.plugin_id == plugin_id).cloned();
-    let mut next_record = existing.unwrap_or_else(|| build_default_plugin_registry_record(plugin_id, version, &PathBuf::from(install_dir)));
+    let version = manifest
+        .get("version")
+        .and_then(Value::as_str)
+        .unwrap_or("0.0.0");
+    let existing = records
+        .iter()
+        .find(|item| item.plugin_id == plugin_id)
+        .cloned();
+    let mut next_record = existing.unwrap_or_else(|| {
+        build_default_plugin_registry_record(plugin_id, version, &PathBuf::from(install_dir))
+    });
     next_record.enabled = enabled;
     next_record.updated_at = iso_now();
     if enabled {
@@ -4401,9 +5288,18 @@ fn set_local_plugin_enabled(
 
 fn read_local_http_server_state(state: &mut DesktopState) -> Value {
     let file_path = resolve_local_http_server_state_path();
-    let saved = read_optional_json_file::<Value>(&file_path).ok().flatten().unwrap_or_else(|| json!({}));
-    let enabled = saved.get("enabled").and_then(Value::as_bool).unwrap_or(true);
-    let host = saved.get("host").and_then(Value::as_str).unwrap_or("127.0.0.1");
+    let saved = read_optional_json_file::<Value>(&file_path)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| json!({}));
+    let enabled = saved
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let host = saved
+        .get("host")
+        .and_then(Value::as_str)
+        .unwrap_or("127.0.0.1");
     let port = saved.get("port").and_then(Value::as_u64).unwrap_or(17321);
     let backend_snapshot = state.backend.snapshot();
     let healthy_http = if enabled {
@@ -4416,10 +5312,18 @@ fn read_local_http_server_state(state: &mut DesktopState) -> Value {
     let last_error = if running {
         None
     } else {
-        saved.get("lastError").and_then(Value::as_str).map(ToString::to_string)
+        saved
+            .get("lastError")
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
             .or_else(|| backend_snapshot.last_error.clone())
     };
-    let lifecycle_state = match (enabled, running, &backend_snapshot.state, last_error.as_ref()) {
+    let lifecycle_state = match (
+        enabled,
+        running,
+        &backend_snapshot.state,
+        last_error.as_ref(),
+    ) {
         (false, _, _, _) => "disabled",
         (true, true, _, _) => "running",
         (true, false, BackendProcessState::Starting, _) => "starting",
@@ -4450,11 +5354,21 @@ fn save_local_http_server_state(
     request: NativeSaveHttpServerStateRequest,
 ) -> Result<Value, String> {
     let current = read_local_http_server_state(state);
-    let enabled = request.enabled.unwrap_or_else(|| current.get("enabled").and_then(Value::as_bool).unwrap_or(true));
-    let port = request.port.unwrap_or_else(|| current.get("port").and_then(Value::as_u64).unwrap_or(17321) as u16);
-    let persistent = request
-        .persistent
-        .unwrap_or_else(|| current.get("persistent").and_then(Value::as_bool).unwrap_or_else(default_backend_persistence));
+    let enabled = request.enabled.unwrap_or_else(|| {
+        current
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
+    });
+    let port = request
+        .port
+        .unwrap_or_else(|| current.get("port").and_then(Value::as_u64).unwrap_or(17321) as u16);
+    let persistent = request.persistent.unwrap_or_else(|| {
+        current
+            .get("persistent")
+            .and_then(Value::as_bool)
+            .unwrap_or_else(default_backend_persistence)
+    });
     let payload = json!({
         "enabled": enabled,
         "host": "127.0.0.1",
@@ -4534,21 +5448,32 @@ fn binding_to_stored(binding: &LocalLibraryBinding) -> StoredLibraryBinding {
 }
 
 fn write_library_config_sidecar(binding: &LocalLibraryBinding) -> Result<(), String> {
-    let relative_path = binding.config_relative_path.replace('\\', "/").trim_start_matches('/').to_string();
-    if relative_path.is_empty() || relative_path.split('/').any(|segment| segment == "." || segment == "..") {
+    let relative_path = binding
+        .config_relative_path
+        .replace('\\', "/")
+        .trim_start_matches('/')
+        .to_string();
+    if relative_path.is_empty()
+        || relative_path
+            .split('/')
+            .any(|segment| segment == "." || segment == "..")
+    {
         return Err("文档库配置路径无效".to_string());
     }
     let config_path = PathBuf::from(&binding.root_dir).join(relative_path);
-    write_json_file(&config_path, &json!({
-        "libraryId": binding.library_id,
-        "rootDir": binding.root_dir,
-        "enabled": binding.enabled,
-        "mirrorRoot": binding.mirror_root,
-        "allowedExtensions": binding.allowed_extensions,
-        "includedHiddenPaths": binding.included_hidden_paths,
-        "folderOpenBehavior": binding.folder_open_behavior,
-        "updatedAt": binding.updated_at,
-    }))
+    write_json_file(
+        &config_path,
+        &json!({
+            "libraryId": binding.library_id,
+            "rootDir": binding.root_dir,
+            "enabled": binding.enabled,
+            "mirrorRoot": binding.mirror_root,
+            "allowedExtensions": binding.allowed_extensions,
+            "includedHiddenPaths": binding.included_hidden_paths,
+            "folderOpenBehavior": binding.folder_open_behavior,
+            "updatedAt": binding.updated_at,
+        }),
+    )
 }
 
 fn default_allowed_extensions() -> Vec<String> {
@@ -4573,7 +5498,8 @@ fn normalize_nullable_path(value: String, fallback: Option<String>) -> Option<St
         None
     } else {
         Some(normalized)
-    }.or(fallback)
+    }
+    .or(fallback)
 }
 
 fn normalize_extensions(value: Vec<String>, fallback: Vec<String>) -> Vec<String> {
@@ -4587,7 +5513,11 @@ fn normalize_extensions(value: Vec<String>, fallback: Vec<String>) -> Vec<String
         if normalized.is_empty() {
             continue;
         }
-        let with_dot = if normalized.starts_with('.') { normalized } else { format!(".{normalized}") };
+        let with_dot = if normalized.starts_with('.') {
+            normalized
+        } else {
+            format!(".{normalized}")
+        };
         if seen.insert(with_dot.clone()) {
             items.push(with_dot);
         }
@@ -4613,7 +5543,9 @@ fn normalize_string_list(value: Vec<String>, fallback: Vec<String>) -> Vec<Strin
     items
 }
 
-fn list_local_child_directories(current_path: &str) -> Result<Vec<LocalHostDirectoryOption>, String> {
+fn list_local_child_directories(
+    current_path: &str,
+) -> Result<Vec<LocalHostDirectoryOption>, String> {
     let mut items = fs::read_dir(current_path)
         .map_err(|error| format!("读取目录失败：{error}"))?
         .filter_map(Result::ok)
@@ -4677,11 +5609,20 @@ fn resolve_default_local_host_browse_path(roots: &[LocalHostDirectoryOption]) ->
     if is_readable_directory(&home) {
         return home.to_string_lossy().to_string();
     }
-    roots.first().map(|item| item.path.clone()).unwrap_or_else(|| default_library_root_dir())
+    roots
+        .first()
+        .map(|item| item.path.clone())
+        .unwrap_or_else(|| default_library_root_dir())
 }
 
-fn resolve_local_host_browse_path(requested_path: Option<&str>, fallback_path: &str) -> Result<String, String> {
-    let Some(requested_path) = requested_path.map(str::trim).filter(|value| !value.is_empty()) else {
+fn resolve_local_host_browse_path(
+    requested_path: Option<&str>,
+    fallback_path: &str,
+) -> Result<String, String> {
+    let Some(requested_path) = requested_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
         return Ok(fallback_path.to_string());
     };
     let resolved = PathBuf::from(requested_path);
@@ -4706,7 +5647,9 @@ fn resolve_local_host_parent_path(current_path: &str) -> Option<String> {
 }
 
 fn is_readable_directory(path: &PathBuf) -> bool {
-    fs::metadata(path).map(|meta| meta.is_dir()).unwrap_or(false)
+    fs::metadata(path)
+        .map(|meta| meta.is_dir())
+        .unwrap_or(false)
 }
 
 fn x_file_data_dir() -> PathBuf {
@@ -4729,7 +5672,11 @@ fn resolve_local_http_server_state_path() -> PathBuf {
     x_file_data_dir().join("http-server-state.json")
 }
 
-fn build_default_plugin_registry_record(plugin_id: &str, version: &str, install_dir: &PathBuf) -> LocalPluginRegistryRecord {
+fn build_default_plugin_registry_record(
+    plugin_id: &str,
+    version: &str,
+    install_dir: &PathBuf,
+) -> LocalPluginRegistryRecord {
     let now = iso_now();
     LocalPluginRegistryRecord {
         plugin_id: plugin_id.to_string(),
@@ -4753,7 +5700,9 @@ fn read_local_plugin_registry_records() -> Result<Vec<LocalPluginRegistryRecord>
     Ok(payload.records)
 }
 
-fn write_local_plugin_registry_records(records: &[LocalPluginRegistryRecord]) -> Result<(), String> {
+fn write_local_plugin_registry_records(
+    records: &[LocalPluginRegistryRecord],
+) -> Result<(), String> {
     write_json_file(
         &x_file_data_dir().join("plugin-registry.json"),
         &LocalPluginRegistryFile {
@@ -4773,7 +5722,11 @@ fn resolve_bundled_plugin_root_candidates(resource_dir: Option<&PathBuf>) -> Vec
     if let Some(resource_dir) = resource_dir {
         candidates.push(resource_dir.join("x-file-plugins"));
     }
-    candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources").join("x-file-plugins"));
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("x-file-plugins"),
+    );
     candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../plugins"));
     let mut deduped = vec![];
     let mut seen = HashSet::new();
@@ -4790,9 +5743,14 @@ fn is_usable_bundled_plugin_root_dir(candidate: &PathBuf) -> bool {
     if !candidate.is_dir() {
         return false;
     }
-    fs::read_dir(candidate).ok().map(|entries| {
-        entries.filter_map(Result::ok).any(|entry| entry.path().join("manifest.json").is_file())
-    }).unwrap_or(false)
+    fs::read_dir(candidate)
+        .ok()
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .any(|entry| entry.path().join("manifest.json").is_file())
+        })
+        .unwrap_or(false)
 }
 
 fn build_local_plugin_list_item(manifest: &Value, registry: &LocalPluginRegistryRecord) -> Value {
@@ -4804,7 +5762,10 @@ fn build_local_plugin_list_item(manifest: &Value, registry: &LocalPluginRegistry
 }
 
 fn build_local_plugin_health(manifest: &Value, enabled: bool) -> Value {
-    let plugin_id = manifest.get("id").and_then(Value::as_str).unwrap_or("unknown");
+    let plugin_id = manifest
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
     if !enabled {
         return json!({
             "pluginId": plugin_id,
@@ -4827,12 +5788,23 @@ fn build_local_plugin_health(manifest: &Value, enabled: bool) -> Value {
         });
     }
     let provider = provider.unwrap();
-    let provider_id = provider.get("providerId").and_then(Value::as_str).unwrap_or(plugin_id);
-    let display_name = provider.get("displayName").and_then(Value::as_str).unwrap_or(plugin_id);
+    let provider_id = provider
+        .get("providerId")
+        .and_then(Value::as_str)
+        .unwrap_or(plugin_id);
+    let display_name = provider
+        .get("displayName")
+        .and_then(Value::as_str)
+        .unwrap_or(plugin_id);
     let command = provider.get("command").and_then(Value::as_str);
     let auth = provider.get("auth");
-    let auth_strategy = auth.and_then(|value| value.get("strategy")).and_then(Value::as_str).unwrap_or("file_exists");
-    let auth_path = auth.and_then(|value| value.get("path")).and_then(Value::as_str);
+    let auth_strategy = auth
+        .and_then(|value| value.get("strategy"))
+        .and_then(Value::as_str)
+        .unwrap_or("file_exists");
+    let auth_path = auth
+        .and_then(|value| value.get("path"))
+        .and_then(Value::as_str);
     if auth_strategy == "custom" {
         let command_ready = detect_local_command(command);
         return json!({
@@ -4880,7 +5852,11 @@ fn detect_local_command(command: Option<&str>) -> bool {
     let Some(command) = command.map(str::trim).filter(|value| !value.is_empty()) else {
         return false;
     };
-    let checker = if cfg!(target_os = "windows") { "where" } else { "which" };
+    let checker = if cfg!(target_os = "windows") {
+        "where"
+    } else {
+        "which"
+    };
     Command::new(checker)
         .arg(command)
         .stdin(Stdio::null())
@@ -4895,7 +5871,11 @@ fn detect_local_auth(provider_id: &str, strategy: &str, explicit_path: Option<&s
     let source_path = explicit_path
         .and_then(|value| {
             let trimmed = value.trim();
-            if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
         })
         .unwrap_or_else(|| match provider_id {
             "codex" => "~/.codex/auth.json".to_string(),
@@ -4920,7 +5900,10 @@ fn expand_home_dir(value: &str) -> PathBuf {
 }
 
 fn normalize_optional_text(value: Option<&str>) -> Option<String> {
-    value.map(str::trim).filter(|value| !value.is_empty()).map(ToString::to_string)
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
 }
 
 fn normalize_optional_absolute_url(value: Option<&str>) -> Result<Option<String>, String> {
@@ -4968,8 +5951,7 @@ fn detect_loopback_mismatch(server_url: &str, callback_base_url: &str) -> Option
     if is_loopback_url(server_url) != is_loopback_url(callback_base_url) {
         return Some(format!(
             "ONLYOFFICE 地址 {} 与回调地址 {} 的可达域不一致，请确认是否同属可互访网络。",
-            server,
-            callback,
+            server, callback,
         ));
     }
     None
@@ -4978,8 +5960,15 @@ fn detect_loopback_mismatch(server_url: &str, callback_base_url: &str) -> Option
 fn is_loopback_url(value: &str) -> bool {
     reqwest::Url::parse(value)
         .ok()
-        .and_then(|url| url.host_str().map(|host| host == "127.0.0.1" || host == "localhost" || host == "::1"))
+        .and_then(|url| {
+            url.host_str()
+                .map(|host| host == "127.0.0.1" || host == "localhost" || host == "::1")
+        })
         .unwrap_or(false)
+}
+
+fn is_summary_backfill_stage(stage: &str) -> bool {
+    matches!(stage, "summary_backfill" | "summary_backfill_search")
 }
 
 fn write_json_file<T>(path: &PathBuf, value: &T) -> Result<(), String>
@@ -4987,9 +5976,11 @@ where
     T: Serialize,
 {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| format!("创建目录失败 {}: {error}", parent.display()))?;
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("创建目录失败 {}: {error}", parent.display()))?;
     }
-    let mut buffer = serde_json::to_vec_pretty(value).map_err(|error| format!("序列化 JSON 失败 {}: {error}", path.display()))?;
+    let mut buffer = serde_json::to_vec_pretty(value)
+        .map_err(|error| format!("序列化 JSON 失败 {}: {error}", path.display()))?;
     buffer.push(b'\n');
     fs::write(path, buffer).map_err(|error| format!("写入文件失败 {}: {error}", path.display()))
 }
@@ -4997,6 +5988,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn test_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn resolve_backend_extra_env_会注入状态文件路径和已保存端口() {
@@ -5021,25 +6018,491 @@ mod tests {
             env_map.get("X_FILE_SERVER_STATE_PATH"),
             Some(&state_path.to_string_lossy().to_string())
         );
-        assert_eq!(env_map.get("X_FILE_SERVER_PORT"), Some(&"17322".to_string()));
-        assert_eq!(env_map.get("X_FILE_SERVER_HOST"), Some(&"127.0.0.1".to_string()));
+        assert_eq!(
+            env_map.get("X_FILE_SERVER_PORT"),
+            Some(&"17322".to_string())
+        );
+        assert_eq!(
+            env_map.get("X_FILE_SERVER_HOST"),
+            Some(&"127.0.0.1".to_string())
+        );
     }
 
     #[test]
     fn probe_local_http_service_对未监听端口返回_false() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("申请临时端口失败");
-        let port = listener
-            .local_addr()
-            .expect("读取临时端口失败")
-            .port();
+        let port = listener.local_addr().expect("读取临时端口失败").port();
         drop(listener);
 
         assert_eq!(probe_local_http_service("127.0.0.1", port), false);
     }
+
+    #[test]
+    fn native_文档列表在_manifest_缺失时回退_runtime_snapshot() {
+        let _guard = test_env_lock().lock().expect("测试环境锁被污染");
+        let nonce = epoch_millis();
+        let temp_root = env::temp_dir().join(format!("x-file-native-runtime-fallback-{nonce}"));
+        let data_dir = temp_root.join(".x-file-data");
+        let library_root = temp_root.join("library-root");
+        let runtime_dir = library_root.join(".ai-index").join("runtime");
+
+        fs::create_dir_all(&runtime_dir).expect("创建 runtime 目录失败");
+        fs::create_dir_all(&data_dir).expect("创建数据目录失败");
+
+        write_json_file(
+            &data_dir.join("library-binding.json"),
+            &json!({
+                "libraryId": "default",
+                "rootDir": library_root.to_string_lossy(),
+                "enabled": true,
+                "allowedExtensions": [".md"],
+                "includedHiddenPaths": [],
+                "folderOpenBehavior": "double_click",
+                "configRelativePath": ".ai-index/doc-semantic-index.config.json",
+                "exportMode": "v2",
+                "initialized": true,
+                "initializedAt": "2026-06-30T10:00:00Z",
+                "updatedAt": "2026-06-30T10:00:00Z"
+            }),
+        )
+        .expect("写入 binding 失败");
+
+        write_json_file(
+            &runtime_dir.join("export-catalog-snapshot.json"),
+            &json!({
+                "version": 1,
+                "generatedAt": "2026-06-30T10:01:00Z",
+                "tags": [
+                    {
+                        "path": "主题/示例",
+                        "name": "示例",
+                        "rootType": "主题",
+                        "parentPath": null,
+                        "depth": 0
+                    }
+                ],
+                "documents": [
+                    {
+                        "documentId": "doc_1",
+                        "path": "docs/a.md",
+                        "title": "A",
+                        "summary": "alpha",
+                        "tags": ["主题/示例"],
+                        "derivedTags": [],
+                        "mtime": "2026-06-30T10:01:00Z"
+                    }
+                ]
+            }),
+        )
+        .expect("写入 runtime snapshot 失败");
+
+        let previous_data_dir = env::var("X_FILE_DATA_DIR").ok();
+        unsafe {
+            env::set_var("X_FILE_DATA_DIR", data_dir.to_string_lossy().to_string());
+        }
+
+        let result = read_local_library_documents(NativeListDocumentsRequest {
+            browse_mode: "folder".to_string(),
+            selected_folder_path: Some("docs".to_string()),
+            selected_tag_path: None,
+            selected_tag_paths: None,
+            selected_favorite_id: None,
+            keyword: None,
+            offset: Some(0),
+            limit: Some(20),
+        })
+        .expect("读取本地文档列表失败");
+
+        match previous_data_dir {
+            Some(value) => unsafe {
+                env::set_var("X_FILE_DATA_DIR", value);
+            },
+            None => unsafe {
+                env::remove_var("X_FILE_DATA_DIR");
+            },
+        }
+        fs::remove_dir_all(&temp_root).ok();
+
+        assert_eq!(result.total, 1);
+        assert_eq!(result.items.len(), 1);
+        assert_eq!(result.items[0].path, "docs/a.md");
+        assert_eq!(result.items[0].title, "A");
+        assert_eq!(
+            result
+                .directory_status
+                .as_ref()
+                .and_then(|status| status.generated_at.clone()),
+            Some("2026-06-30T10:01:00Z".to_string())
+        );
+    }
+
+    #[test]
+    fn native_runtime_status_有新进度心跳时不误判卡死() {
+        let _guard = test_env_lock().lock().expect("测试环境锁被污染");
+        let nonce = epoch_millis();
+        let root_dir = env::temp_dir().join(format!("x-file-native-runtime-status-{nonce}"));
+        let ai_index_dir = root_dir.join(".ai-index");
+        fs::create_dir_all(&ai_index_dir).expect("创建 .ai-index 目录失败");
+        write_json_file(
+            &ai_index_dir.join("runtime-status.json"),
+            &json!({
+                "state": "running",
+                "lastRequestedAt": "2026-06-30T10:00:00Z",
+                "lastStartedAt": "2026-06-30T10:00:00Z",
+                "progressUpdatedAt": chrono::Utc::now().to_rfc3339(),
+                "runningStage": "index_text",
+                "errorSummary": null,
+                "progress": {
+                    "scannedCount": 321,
+                    "indexedCount": 128,
+                    "skippedCount": 7,
+                    "failedCount": 0,
+                    "unchangedCount": 186,
+                    "totalCount": 1000,
+                    "maxConcurrency": 1
+                }
+            }),
+        )
+        .expect("写入 runtime-status 失败");
+
+        let status = read_local_runtime_status(&root_dir.to_string_lossy())
+            .expect("读取 runtime status 失败")
+            .expect("runtime status 不应为空");
+        fs::remove_dir_all(&root_dir).ok();
+
+        assert_eq!(status.state, "running");
+        assert_eq!(status.running_stage.as_deref(), Some("index_text"));
+        assert_eq!(
+            status
+                .progress
+                .as_ref()
+                .and_then(|progress| progress.total_count),
+            Some(1000)
+        );
+        assert!(status.error_summary.is_none());
+    }
+
+    #[test]
+    fn native_runtime_status_导出阶段短暂无进度时不误判卡死() {
+        let _guard = test_env_lock().lock().expect("测试环境锁被污染");
+        let nonce = epoch_millis();
+        let root_dir = env::temp_dir().join(format!("x-file-native-export-runtime-status-{nonce}"));
+        let ai_index_dir = root_dir.join(".ai-index");
+        fs::create_dir_all(&ai_index_dir).expect("创建 .ai-index 目录失败");
+        let stale_at = (chrono::Utc::now() - chrono::Duration::seconds(61)).to_rfc3339();
+        write_json_file(
+            &ai_index_dir.join("runtime-status.json"),
+            &json!({
+                "state": "running",
+                "lastRequestedAt": "2026-06-30T10:00:00Z",
+                "lastStartedAt": "2026-06-30T10:00:00Z",
+                "progressUpdatedAt": stale_at,
+                "runningStage": "export_snapshot",
+                "errorSummary": null,
+                "progress": {
+                    "scannedCount": 2310,
+                    "indexedCount": 2264,
+                    "skippedCount": 0,
+                    "failedCount": 0,
+                    "unchangedCount": 46,
+                    "totalCount": 19529,
+                    "maxConcurrency": 1
+                }
+            }),
+        )
+        .expect("写入 runtime-status 失败");
+
+        let status = read_local_runtime_status(&root_dir.to_string_lossy())
+            .expect("读取 runtime status 失败")
+            .expect("runtime status 不应为空");
+        fs::remove_dir_all(&root_dir).ok();
+
+        assert_eq!(status.state, "running");
+        assert_eq!(status.running_stage.as_deref(), Some("export_snapshot"));
+        assert!(status.error_summary.is_none());
+    }
+
+    #[test]
+    fn native_读取快照时会自动续跑_summary_backfill() {
+        let _guard = test_env_lock().lock().expect("测试环境锁被污染");
+        let nonce = epoch_millis();
+        let temp_root = env::temp_dir().join(format!("x-file-native-auto-summary-backfill-{nonce}"));
+        let data_dir = temp_root.join(".x-file-data");
+        let library_root = temp_root.join("library-root");
+        let runtime_dir = library_root.join(".ai-index").join("runtime");
+        let ai_index_dir = library_root.join(".ai-index");
+
+        fs::create_dir_all(&runtime_dir).expect("创建 runtime 目录失败");
+        fs::create_dir_all(&data_dir).expect("创建数据目录失败");
+        fs::write(library_root.join("docs.md"), "# 文档\n\n这里应该自动补摘要").expect("写入测试文档失败");
+
+        write_json_file(
+            &data_dir.join("library-binding.json"),
+            &json!({
+                "libraryId": "default",
+                "rootDir": library_root.to_string_lossy(),
+                "enabled": true,
+                "allowedExtensions": [".md"],
+                "includedHiddenPaths": [],
+                "folderOpenBehavior": "double_click",
+                "configRelativePath": ".ai-index/doc-semantic-index.config.json",
+                "exportMode": "v2",
+                "initialized": true,
+                "initializedAt": "2026-06-30T10:00:00Z",
+                "updatedAt": "2026-06-30T10:00:00Z"
+            }),
+        )
+        .expect("写入 binding 失败");
+
+        write_json_file(
+            &runtime_dir.join("export-catalog-snapshot.json"),
+            &json!({
+                "version": 1,
+                "generatedAt": "2026-06-30T10:01:00Z",
+                "tags": [],
+                "documents": [
+                    {
+                        "documentId": "doc_1",
+                        "path": "docs.md",
+                        "title": "docs",
+                        "summary": "",
+                        "tags": [],
+                        "derivedTags": [],
+                        "mtime": "2026-06-30T10:01:00Z"
+                    }
+                ]
+            }),
+        )
+        .expect("写入 runtime snapshot 失败");
+
+        write_json_file(
+            &runtime_dir.join("active-file-state-snapshot.json"),
+            &json!({
+                "version": 1,
+                "generatedAt": "2026-06-30T10:01:00Z",
+                "files": [
+                    {
+                        "path": "docs.md",
+                        "extension": ".md",
+                        "size": 32,
+                        "mtime": "2026-06-30T10:01:00Z",
+                        "indexStatus": "indexed"
+                    }
+                ]
+            }),
+        )
+        .expect("写入 active state 失败");
+
+        write_json_file(
+            &ai_index_dir.join("runtime-status.json"),
+            &json!({
+                "state": "cooldown",
+                "lastRequestedAt": "2026-06-30T10:00:00Z",
+                "lastStartedAt": "2026-06-30T10:00:00Z",
+                "lastCompletedAt": "2026-06-30T10:01:00Z",
+                "nextAllowedAt": "2026-06-30T10:01:01Z",
+                "progressUpdatedAt": chrono::Utc::now().to_rfc3339(),
+                "runningStage": null,
+                "errorSummary": null,
+                "progress": {
+                    "scannedCount": 1,
+                    "indexedCount": 0,
+                    "skippedCount": 0,
+                    "failedCount": 0,
+                    "unchangedCount": 1,
+                    "totalCount": 1,
+                    "maxConcurrency": 1,
+                    "activeTaskCount": 0,
+                    "pendingTaskCount": 0,
+                    "completedTaskCount": 1
+                }
+            }),
+        )
+        .expect("写入 runtime-status 失败");
+
+        let previous_data_dir = env::var("X_FILE_DATA_DIR").ok();
+        unsafe {
+            env::set_var("X_FILE_DATA_DIR", data_dir.to_string_lossy().to_string());
+        }
+
+        let watcher = NativeLibraryWatcherStatus {
+            active: true,
+            root_dir: Some(library_root.to_string_lossy().to_string()),
+            started_at: Some("2026-06-30T10:00:00Z".to_string()),
+            last_event_at: None,
+            last_refresh_requested_at: None,
+            last_refresh_reason: None,
+            last_error: None,
+        };
+        let _snapshot = read_local_library_snapshot(&watcher).expect("读取 snapshot 失败");
+
+        let mut auto_backfill_observed = false;
+        for _ in 0..40 {
+            let status = read_local_runtime_status(&library_root.to_string_lossy())
+                .expect("读取 runtime status 失败")
+                .expect("runtime status 不应为空");
+            if status.running_stage.as_deref() == Some("summary_backfill")
+                || status.running_stage.as_deref() == Some("summary_backfill_search")
+                || status
+                    .progress
+                    .as_ref()
+                    .is_some_and(|progress| {
+                        progress.indexed_count > 0 && progress.total_count == Some(1)
+                    })
+            {
+                auto_backfill_observed = true;
+                break;
+            }
+            thread::sleep(std::time::Duration::from_millis(100));
+        }
+
+        match previous_data_dir {
+            Some(value) => unsafe {
+                env::set_var("X_FILE_DATA_DIR", value);
+            },
+            None => unsafe {
+                env::remove_var("X_FILE_DATA_DIR");
+            },
+        }
+        fs::remove_dir_all(&temp_root).ok();
+
+        assert!(
+            auto_backfill_observed,
+            "读取 snapshot 后应自动续跑 summary backfill，并写回可见进度"
+        );
+    }
+
+    #[test]
+    fn native_目录访问会写入索引优先级提示并保持最近访问优先() {
+        let _guard = test_env_lock().lock().expect("测试环境锁被污染");
+        let nonce = epoch_millis();
+        let root_dir = env::temp_dir().join(format!("x-file-native-priority-hint-{nonce}"));
+        fs::create_dir_all(root_dir.join(".ai-index").join("runtime"))
+            .expect("创建 runtime 目录失败");
+        write_json_file(
+            &root_dir.join(".ai-index").join("runtime-status.json"),
+            &json!({
+                "state": "running",
+                "lastRequestedAt": "2026-06-30T10:00:00Z",
+                "lastStartedAt": "2026-06-30T10:00:00Z",
+                "progressUpdatedAt": chrono::Utc::now().to_rfc3339(),
+                "runningStage": "index_text",
+                "errorSummary": null
+            }),
+        )
+        .expect("写入 runtime status 失败");
+
+        record_native_directory_priority_hint(&root_dir.to_string_lossy(), Some("深层/目录"))
+            .expect("写入第一个 priority hint 失败");
+        record_native_directory_priority_hint(&root_dir.to_string_lossy(), Some("浅层"))
+            .expect("写入第二个 priority hint 失败");
+        record_native_directory_priority_hint(&root_dir.to_string_lossy(), Some("深层/目录"))
+            .expect("重复写入 priority hint 失败");
+
+        let hints: LocalRuntimePriorityHints =
+            read_json_file(&priority_hints_path(&root_dir.to_string_lossy()))
+                .expect("读取 priority hint 失败");
+        fs::remove_dir_all(&root_dir).ok();
+
+        assert_eq!(
+            hints.paths,
+            vec!["深层/目录".to_string(), "浅层".to_string()]
+        );
+    }
+
+    #[test]
+    fn native_索引运行中无快照时文档列表返回空结果而不是失败() {
+        let _guard = test_env_lock().lock().expect("测试环境锁被污染");
+        let nonce = epoch_millis();
+        let temp_root = env::temp_dir().join(format!("x-file-native-running-no-snapshot-{nonce}"));
+        let data_dir = temp_root.join(".x-file-data");
+        let library_root = temp_root.join("library-root");
+        let ai_index_dir = library_root.join(".ai-index");
+
+        fs::create_dir_all(&ai_index_dir).expect("创建 .ai-index 目录失败");
+        fs::create_dir_all(&data_dir).expect("创建数据目录失败");
+
+        write_json_file(
+            &data_dir.join("library-binding.json"),
+            &json!({
+                "libraryId": "default",
+                "rootDir": library_root.to_string_lossy(),
+                "enabled": true,
+                "allowedExtensions": [".md"],
+                "includedHiddenPaths": [],
+                "folderOpenBehavior": "double_click",
+                "configRelativePath": ".ai-index/doc-semantic-index.config.json",
+                "exportMode": "v2",
+                "initialized": true,
+                "initializedAt": "2026-06-30T10:00:00Z",
+                "updatedAt": "2026-06-30T10:00:00Z"
+            }),
+        )
+        .expect("写入 binding 失败");
+        write_json_file(
+            &ai_index_dir.join("runtime-status.json"),
+            &json!({
+                "state": "running",
+                "lastRequestedAt": "2026-06-30T10:00:00Z",
+                "lastStartedAt": "2026-06-30T10:00:00Z",
+                "progressUpdatedAt": chrono::Utc::now().to_rfc3339(),
+                "runningStage": "count_files",
+                "errorSummary": null,
+                "progress": {
+                    "scannedCount": 10,
+                    "indexedCount": 0,
+                    "skippedCount": 0,
+                    "failedCount": 0,
+                    "unchangedCount": 0,
+                    "totalCount": 7,
+                    "maxConcurrency": 1
+                }
+            }),
+        )
+        .expect("写入 runtime-status 失败");
+
+        let previous_data_dir = env::var("X_FILE_DATA_DIR").ok();
+        unsafe {
+            env::set_var("X_FILE_DATA_DIR", data_dir.to_string_lossy().to_string());
+        }
+
+        let result = read_local_library_documents(NativeListDocumentsRequest {
+            browse_mode: "folder".to_string(),
+            selected_folder_path: Some(".".to_string()),
+            selected_tag_path: None,
+            selected_tag_paths: None,
+            selected_favorite_id: None,
+            keyword: None,
+            offset: Some(0),
+            limit: Some(20),
+        })
+        .expect("索引运行中无快照不应导致文档列表失败");
+
+        match previous_data_dir {
+            Some(value) => unsafe {
+                env::set_var("X_FILE_DATA_DIR", value);
+            },
+            None => unsafe {
+                env::remove_var("X_FILE_DATA_DIR");
+            },
+        }
+        fs::remove_dir_all(&temp_root).ok();
+
+        assert_eq!(result.total, 0);
+        assert_eq!(result.items.len(), 0);
+        assert_eq!(
+            result
+                .directory_status
+                .as_ref()
+                .map(|status| status.state.as_str()),
+            Some("running")
+        );
+    }
 }
 
 fn epoch_millis_to_iso(value: u64) -> String {
-    chrono::DateTime::<chrono::Utc>::from(UNIX_EPOCH + std::time::Duration::from_millis(value)).to_rfc3339()
+    chrono::DateTime::<chrono::Utc>::from(UNIX_EPOCH + std::time::Duration::from_millis(value))
+        .to_rfc3339()
 }
 
 fn default_library_root_dir() -> String {
@@ -5116,7 +6579,6 @@ fn configure_macos_window_chrome(app: &tauri::App) -> tauri::Result<()> {
     configure_macos_window_live_resize(&window).map_err(std::io::Error::other)?;
     Ok(())
 }
-
 
 #[cfg(target_os = "macos")]
 fn configure_macos_native_glass_sidebars(app: &AppHandle) -> tauri::Result<()> {
@@ -5206,8 +6668,14 @@ unsafe fn apply_macos_native_sidebar_layout(
         && sidebar_state.rendered_left_width > MACOS_NATIVE_SIDEBAR_MIN_VISIBLE_WIDTH;
     let right_visible = !sidebar_state.layout.right_collapsed
         && sidebar_state.rendered_right_width > MACOS_NATIVE_SIDEBAR_MIN_VISIBLE_WIDTH;
-    let left_width = sidebar_state.rendered_left_width.min(content_width).max(0.0);
-    let right_width = sidebar_state.rendered_right_width.min(content_width).max(0.0);
+    let left_width = sidebar_state
+        .rendered_left_width
+        .min(content_width)
+        .max(0.0);
+    let right_width = sidebar_state
+        .rendered_right_width
+        .min(content_width)
+        .max(0.0);
     let right_effect_width = if right_visible {
         (right_width + MACOS_NATIVE_RIGHT_SIDEBAR_OVERSCAN_WIDTH)
             .min(content_width)
@@ -5219,7 +6687,10 @@ unsafe fn apply_macos_native_sidebar_layout(
 
     apply_macos_native_sidebar_frame(
         left_view_ptr,
-        NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(left_width, content_height)),
+        NSRect::new(
+            NSPoint::new(0.0, 0.0),
+            NSSize::new(left_width, content_height),
+        ),
         left_visible,
         MACOS_NATIVE_LEFT_SIDEBAR_AUTOREZING_MASK,
     );
@@ -5234,18 +6705,12 @@ unsafe fn apply_macos_native_sidebar_layout(
     );
 
     if left_view_ptr.is_none() {
-        left_view_ptr = ensure_macos_native_sidebar_view(
-            &content_view,
-            None,
-            sidebar_appearance.as_deref(),
-        );
+        left_view_ptr =
+            ensure_macos_native_sidebar_view(&content_view, None, sidebar_appearance.as_deref());
     }
     if right_view_ptr.is_none() {
-        right_view_ptr = ensure_macos_native_sidebar_view(
-            &content_view,
-            None,
-            sidebar_appearance.as_deref(),
-        );
+        right_view_ptr =
+            ensure_macos_native_sidebar_view(&content_view, None, sidebar_appearance.as_deref());
     }
 
     native_sidebar_state.update_view_pointers(window_label, left_view_ptr, right_view_ptr);
@@ -5388,7 +6853,8 @@ fn attach_macos_native_sidebar_handlers(
     let window_for_events = window.clone();
     window.on_window_event(move |event| {
         if matches!(event, WindowEvent::Resized(_)) {
-            let _ = sync_cached_macos_native_sidebar_layout(&window_for_events, &native_sidebar_state);
+            let _ =
+                sync_cached_macos_native_sidebar_layout(&window_for_events, &native_sidebar_state);
             let _ = sync_macos_webview_frame(&window_for_events);
         }
     });
@@ -5402,9 +6868,7 @@ fn should_autostart_backend() -> bool {
 
 fn load_initial_backend_persistence() -> bool {
     let file_path = resolve_local_http_server_state_path();
-    let saved = read_optional_json_file::<Value>(&file_path)
-        .ok()
-        .flatten();
+    let saved = read_optional_json_file::<Value>(&file_path).ok().flatten();
 
     saved
         .as_ref()
@@ -5584,7 +7048,11 @@ fn try_run_library_worker_cli_from_args(args: &[String]) -> Result<String, Strin
                 })
                 .or_else(|| {
                     Some(file_path.as_str())
-                        .and_then(|value| std::path::Path::new(value).extension().and_then(|ext| ext.to_str()))
+                        .and_then(|value| {
+                            std::path::Path::new(value)
+                                .extension()
+                                .and_then(|ext| ext.to_str())
+                        })
                         .map(|ext| format!(".{ext}"))
                 })
                 .unwrap_or_default();
@@ -5616,14 +7084,12 @@ fn try_run_library_worker_cli_from_args(args: &[String]) -> Result<String, Strin
                 dirty_scope,
             })
         }
-        "search-only" => {
-            run_native_search_worker(NativeSearchRequest {
-                root_dir: payload.root_dir,
-                reason,
-                target_path,
-                dirty_scope: payload.dirty_scope,
-            })
-        }
+        "search-only" => run_native_search_worker(NativeSearchRequest {
+            root_dir: payload.root_dir,
+            reason,
+            target_path,
+            dirty_scope: payload.dirty_scope,
+        }),
         other => Err(format!("library worker CLI 不支持的 mode：{other}")),
     }?;
 
@@ -5672,6 +7138,7 @@ pub fn run() {
             native_save_library_config,
             native_browse_host_directories,
             native_get_library_snapshot,
+            native_get_library_status,
             native_list_library_tag_details,
             native_get_library_tag_detail,
             native_create_library_tag,
