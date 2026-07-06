@@ -8,6 +8,36 @@ export X_FILE_NODE_SIDECAR_PROFILE="${X_FILE_NODE_SIDECAR_PROFILE:-full}"
 
 children=()
 
+workspace_has_package() {
+  local package_name="$1"
+  rg -l "\"name\": \"${package_name}\"" apps packages --glob package.json >/dev/null 2>&1
+}
+
+run_workspace_script_if_exists() {
+  local package_name="$1"
+  local script_name="$2"
+
+  if workspace_has_package "$package_name"; then
+    pnpm --filter "$package_name" "$script_name"
+    return 0
+  fi
+
+  echo "跳过 ${package_name}#${script_name}：当前 workspace 不存在该包"
+}
+
+start_workspace_script_if_exists() {
+  local package_name="$1"
+  local script_name="$2"
+
+  if workspace_has_package "$package_name"; then
+    pnpm --filter "$package_name" "$script_name" &
+    children+=("$!")
+    return 0
+  fi
+
+  echo "跳过 ${package_name}#${script_name}：当前 workspace 不存在该包"
+}
+
 cleanup() {
   local exit_code=$?
   trap - INT TERM EXIT
@@ -21,19 +51,14 @@ cleanup() {
 trap cleanup INT TERM EXIT
 
 echo "预编译 X-File 开发依赖包"
-pnpm --filter @x-file/shared build
-pnpm --filter @x-file/indexer build
-pnpm --filter @x-file/library-engine build
+run_workspace_script_if_exists "@x-file/shared" build
+run_workspace_script_if_exists "@x-file/indexer" build
+run_workspace_script_if_exists "@x-file/library-engine" build
 
 echo "启动共享包监听编译"
-pnpm --filter @x-file/shared dev &
-children+=("$!")
-
-pnpm --filter @x-file/indexer dev &
-children+=("$!")
-
-pnpm --filter @x-file/library-engine dev &
-children+=("$!")
+start_workspace_script_if_exists "@x-file/shared" dev
+start_workspace_script_if_exists "@x-file/indexer" dev
+start_workspace_script_if_exists "@x-file/library-engine" dev
 
 bash scripts/dev-server.sh &
 children+=("$!")
