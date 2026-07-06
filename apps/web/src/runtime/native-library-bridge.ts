@@ -2,6 +2,7 @@ import type {
   HttpServerState,
   HostDirectoryBrowseResult,
   LibraryBinding,
+  LibraryIndexStatus,
   LibraryConfig,
   LibraryDocumentList,
   LibraryDocumentTagDetails,
@@ -158,6 +159,10 @@ export async function fetchNativeLibraryHealth(): Promise<LibraryHealth | null> 
 
 export async function fetchNativeLibrarySnapshot(): Promise<NativeLibrarySnapshotResponse | null> {
   return invokeOptional<NativeLibrarySnapshotResponse>("native_get_library_snapshot");
+}
+
+export async function fetchNativeLibraryStatus(): Promise<LibraryIndexStatus | null> {
+  return invokeOptional<LibraryIndexStatus>("native_get_library_status");
 }
 
 export async function requestNativeLibraryRefresh(input: {

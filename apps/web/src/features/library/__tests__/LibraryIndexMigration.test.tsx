@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { LibraryDocumentList } from "@x-file/shared";
 
 import {
   createDocumentList,
@@ -56,6 +57,9 @@ describe("第 6 批：索引状态、刷新策略和缓存替换", () => {
             failedCount: 0,
             totalCount: null,
             maxConcurrency: 1,
+            activeTaskCount: 1,
+            pendingTaskCount: 0,
+            completedTaskCount: 12,
           },
         }),
       }),
@@ -68,7 +72,7 @@ describe("第 6 批：索引状态、刷新策略和缓存替换", () => {
     expect(screen.queryByText("文档库索引器状态")).not.toBeInTheDocument();
 
     // 运行中的进度摘要以行内文本形式出现在触发按钮上
-    expect(await screen.findByText("已扫描 12，已索引 3，失败 0")).toBeInTheDocument();
+    expect(await screen.findByText("已处理 12，其中新增索引 3，失败 0")).toBeInTheDocument();
 
     await userEvent.hover(indicator);
 
@@ -81,9 +85,9 @@ describe("第 6 批：索引状态、刷新策略和缓存替换", () => {
     expect(within(popover).getByText("错误摘要")).toBeInTheDocument();
     expect(within(popover).getByText("测试错误摘要")).toBeInTheDocument();
 
-    // 摘要指标四栏：当前数量 / 更新数量 等标签可见
-    expect(within(popover).getByText("当前数量")).toBeInTheDocument();
-    expect(within(popover).getByText("更新数量")).toBeInTheDocument();
+    // 摘要指标四栏：已扫描数量 / 已索引数量 等标签可见
+    expect(within(popover).getByText("已扫描数量")).toBeInTheDocument();
+    expect(within(popover).getByText("已索引数量")).toBeInTheDocument();
 
     // 技术详情默认折叠，点击展开后才显示时间线
     const technicalToggle = within(popover).getByRole("button", { name: "技术详情" });
@@ -92,6 +96,42 @@ describe("第 6 批：索引状态、刷新策略和缓存替换", () => {
 
     const technical = within(popover).getByText("最近完成");
     expect(technical).toBeInTheDocument();
+  });
+
+  it("第一次初始化扫描时，中间主区显示全幅进度态而不是空白空态", async () => {
+    libraryApiMock.getLibrarySnapshot.mockResolvedValue(
+      createLibrarySnapshot({
+        documentCount: 0,
+        status: createIndexStatus({
+          state: "running",
+          runningTaskId: "task-bootstrap",
+          runningStage: "index_text",
+          lastCompletedAt: null,
+          progress: {
+            scannedCount: 45,
+            indexedCount: 32,
+            unchangedCount: 13,
+            skippedCount: 0,
+            failedCount: 0,
+            totalCount: 100,
+            maxConcurrency: 1,
+            activeTaskCount: 1,
+            pendingTaskCount: 0,
+            completedTaskCount: 45,
+          },
+        }),
+      }),
+    );
+    libraryApiMock.listLibraryDocuments.mockResolvedValue(createDocumentList());
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
+
+    expect(await screen.findByText("正在初始化文档库")).toBeInTheDocument();
+    expect(screen.getByText("索引进度 45%")).toBeInTheDocument();
+    expect(screen.getByText("已处理 45 / 100（其中新增索引 32）")).toBeInTheDocument();
+    expect(screen.getByText("已处理 45，其中新增索引 32，失败 0")).toBeInTheDocument();
+    expect(screen.queryByText("这个位置暂时没有可显示的文档。")).not.toBeInTheDocument();
   });
 
   it("点击刷新按钮会手动请求文档库刷新", async () => {
@@ -183,11 +223,11 @@ describe("第 6 批：索引状态、刷新策略和缓存替换", () => {
     const popover = await screen.findByRole("dialog", { name: "文档库索引器状态" });
     // progress 缺失时摘要网格不再空白：四栏标签全部出现
     expect(within(popover).getByText("索引总数")).toBeInTheDocument();
-    expect(within(popover).getByText("当前数量")).toBeInTheDocument();
+    expect(within(popover).getByText("已扫描数量")).toBeInTheDocument();
     expect(within(popover).getByText("问题数量")).toBeInTheDocument();
-    expect(within(popover).getByText("更新数量")).toBeInTheDocument();
-    // 用 documentCount 兜底后，“索引总数 / 当前数量”取值均为文档计数
-    expect(within(popover).getAllByText("17316").length).toBeGreaterThanOrEqual(1);
+    expect(within(popover).getByText("已索引数量")).toBeInTheDocument();
+    // 用 documentCount 兜底后，“索引总数 / 已扫描数量 / 已索引数量”都会回到文档计数。
+    expect(within(popover).getAllByText("17316").length).toBeGreaterThanOrEqual(2);
     // 当前概览补充目录状态两行（对齐父仓库图2）
     expect(within(popover).getByText("当前目录")).toBeInTheDocument();
     expect(within(popover).getByText("根目录")).toBeInTheDocument();
@@ -296,5 +336,67 @@ describe("第 6 批：索引状态、刷新策略和缓存替换", () => {
     });
     expect(await screen.findByText("账号_副本.md")).toBeInTheDocument();
   }, 10_000);
+
+  it("空列表在索引轮询期间保持空态稳定，不会反复闪回骨架屏", async () => {
+    let resolveSecondDocuments: ((value: LibraryDocumentList) => void) | undefined;
+    let pollCallback: (() => void) | null = null;
+    const setIntervalSpy = vi
+      .spyOn(window, "setInterval")
+      .mockImplementation((((handler: TimerHandler) => {
+        if (typeof handler === "function") {
+          pollCallback = handler as () => void;
+        }
+        return 1;
+      }) as typeof window.setInterval));
+    const clearIntervalSpy = vi
+      .spyOn(window, "clearInterval")
+      .mockImplementation((() => undefined) as typeof window.clearInterval);
+
+    libraryApiMock.getLibrarySnapshot.mockResolvedValue(
+      createLibrarySnapshot({
+        status: createIndexStatus({
+          state: "running",
+          runningTaskId: "task-running",
+          runningStage: "index",
+        }),
+      }),
+    );
+    libraryApiMock.listLibraryDocuments
+      .mockResolvedValueOnce(createDocumentList())
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveSecondDocuments = resolve;
+          }),
+      )
+      .mockResolvedValue(createDocumentList());
+
+    const { LibraryPage } = await import("../LibraryPage");
+    const rendered = render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("这个位置暂时没有可显示的文档。")).toBeInTheDocument();
+    });
+    expect(document.querySelector(".affairs-stage-skeleton")).toBeNull();
+
+    await act(async () => {
+      pollCallback?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("这个位置暂时没有可显示的文档。")).toBeInTheDocument();
+    expect(document.querySelector(".affairs-stage-skeleton")).toBeNull();
+
+    if (resolveSecondDocuments) {
+      resolveSecondDocuments(createDocumentList());
+    }
+    await act(async () => {
+      await Promise.resolve();
+    });
+    rendered.unmount();
+    clearIntervalSpy.mockRestore();
+    setIntervalSpy.mockRestore();
+  });
 
 });

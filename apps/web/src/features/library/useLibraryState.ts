@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   LibraryBinding,
   LibraryDocumentRecord,
   LibraryDocumentList,
   LibraryFavoriteRecord,
+  LibraryFileList,
   LibraryFileNode,
   LibraryIndexStatus,
   LibraryOperationType,
@@ -26,6 +27,7 @@ import {
 } from "../../api/library";
 import { toApiErrorMessage } from "../../api/http";
 import {
+  fetchNativeLibraryStatus,
   fetchNativeLibrarySnapshot,
   getNativeLibraryPreview,
   getNativeOnlyOfficePreview,
@@ -48,6 +50,10 @@ import {
 
 const DOCUMENT_PAGE_LIMIT = 60;
 const FILE_LIST_LIMIT = 200;
+const RUNNING_INDEX_POLL_INTERVAL_MS = 4000;
+const DIRECTORY_PRIORITY_POLL_INTERVAL_MS = 800;
+const DIRECTORY_PRIORITY_POLL_COUNT = 12;
+const SUMMARY_BACKFILL_DIRECTORY_POLL_INTERVAL_MS = 3000;
 let activeNativeWatcherRootDir: string | null = null;
 
 function normalizeLibraryIndexStatus(
@@ -68,6 +74,14 @@ function normalizeLibraryIndexStatus(
     progress: status?.progress ?? null,
     runtimeIndexState: status?.runtimeIndexState ?? null,
   };
+}
+
+function isLiveIndexState(state: string | null | undefined): boolean {
+  return state === "queued" || state === "running" || state === "stale" || state === "queue_timeout";
+}
+
+function isSummaryBackfillStage(stage: string | null | undefined): boolean {
+  return stage === "summary_backfill" || stage === "summary_backfill_search";
 }
 
 type LibraryDebugTransport = "native" | "http" | "idle";
@@ -154,6 +168,7 @@ export function useLibraryState(): LibraryState {
   const [error, setError] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const nativeWatcherRootDirRef = useRef<string | null>(activeNativeWatcherRootDir);
+  const listSignatureRef = useRef<{ queryKey: string; signature: string } | null>(null);
   const [debugChannels, setDebugChannels] = useState<Record<keyof Omit<LibraryDebugState, "enabled" | "runtime" | "mode" | "nativeBridgeEligible" | "nativeBridgeAvailable">, LibraryDebugChannelState>>(() => ({
     watcher: createIdleDebugChannelState("未尝试"),
     health: createIdleDebugChannelState("未读取"),
@@ -163,14 +178,27 @@ export function useLibraryState(): LibraryState {
     preview: createIdleDebugChannelState("未读取"),
     refresh: createIdleDebugChannelState("未触发"),
   }));
+  const folderDocumentCountMap = useMemo(
+    () => buildFolderDocumentCountMap(snapshot?.folders ?? []),
+    [snapshot?.folders],
+  );
 
   const entries = useMemo(
-    () => buildVisibleEntries(snapshot, documentPage, fileItems, viewState),
-    [documentPage, fileItems, snapshot, viewState]
+    () => buildVisibleEntries(folderDocumentCountMap, documentPage, fileItems, viewState),
+    [
+      documentPage,
+      fileItems,
+      folderDocumentCountMap,
+      viewState.browseMode,
+      viewState.librarySort,
+      viewState.selectedTagPaths.length,
+      viewState.tagResultStructureMode,
+      viewState.viewMode
+    ]
   );
   const visibleEntryTotal = useMemo(
     () => resolveVisibleEntryTotal(documentPage, fileItems, entries.length, viewState),
-    [documentPage, entries.length, fileItems, viewState]
+    [documentPage, entries.length, fileItems, viewState.browseMode]
   );
 
   const selectedDocument = useMemo(
@@ -198,13 +226,13 @@ export function useLibraryState(): LibraryState {
   const initializationRedirectPath = snapshot?.initializationRedirectPath ?? "/init";
   const hasMore = (documentPage?.items.length ?? 0) < (documentPage?.total ?? 0);
 
-  function setViewState(updater: LibraryViewState | ((current: LibraryViewState) => LibraryViewState)): void {
+  const setViewState = useCallback((updater: LibraryViewState | ((current: LibraryViewState) => LibraryViewState)): void => {
     setViewStateState((current) => {
       const next = typeof updater === "function" ? updater(current) : updater;
       writeLibraryViewState(next);
       return next;
     });
-  }
+  }, []);
 
   const runtimeConfig = getRuntimeConfigSnapshot().config;
   const nativeBridgeEligible = runtimeConfig.mode === "local";
@@ -329,17 +357,28 @@ export function useLibraryState(): LibraryState {
     }
   }
 
-  async function reloadDocuments(reset = true): Promise<void> {
+  async function reloadDocuments(
+    reset = true,
+    showLoading = true,
+    options: { commitUnchanged?: boolean } = {},
+  ): Promise<void> {
     if (requiresInitialization || !snapshot?.binding?.enabled) {
+      listSignatureRef.current = null;
       setDocumentPage(null);
       setFileItems([]);
       return;
     }
 
-    setDocumentsLoading(true);
+    if (showLoading) {
+      setDocumentsLoading(true);
+    }
     setError(null);
     try {
       const offset = reset ? 0 : documentPage?.items.length ?? 0;
+      const limit = reset
+        ? Math.max(DOCUMENT_PAGE_LIMIT, documentPage?.items.length ?? 0)
+        : DOCUMENT_PAGE_LIMIT;
+      const queryKey = buildLibraryListQueryKey(viewState);
       const [nextDocuments, nextFiles] = await Promise.all([
         shouldUseNativeLibraryBridge()
           ? listNativeLibraryDocuments({
@@ -349,7 +388,7 @@ export function useLibraryState(): LibraryState {
               selectedTagPaths: viewState.selectedTagPaths,
               selectedFavoriteId: viewState.selectedFavoriteId,
               offset,
-              limit: DOCUMENT_PAGE_LIMIT
+              limit
             }).then((result) => {
               updateDebugChannel(
                 "documents",
@@ -365,7 +404,7 @@ export function useLibraryState(): LibraryState {
                 selectedTagPaths: viewState.selectedTagPaths,
                 selectedFavoriteId: viewState.selectedFavoriteId,
                 offset,
-                limit: DOCUMENT_PAGE_LIMIT
+                limit
               });
             })
           : listLibraryDocuments({
@@ -375,7 +414,7 @@ export function useLibraryState(): LibraryState {
               selectedTagPaths: viewState.selectedTagPaths,
               selectedFavoriteId: viewState.selectedFavoriteId,
               offset,
-              limit: DOCUMENT_PAGE_LIMIT
+              limit
             }),
         viewState.browseMode === "folder"
           ? shouldUseNativeLibraryBridge()
@@ -405,21 +444,35 @@ export function useLibraryState(): LibraryState {
         updateDebugChannel("files", "idle", "标签视图不读取目录文件列表");
       }
 
-      setDocumentPage((current) => {
-        if (reset || !current) {
-          return nextDocuments;
-        }
-        return {
-          ...nextDocuments,
-          items: [...current.items, ...nextDocuments.items],
-          offset: current.offset
-        };
-      });
-      setFileItems(nextFiles.items);
+      const nextSignature = buildLibraryListSignature(nextDocuments, nextFiles);
+      const previousSignature = listSignatureRef.current;
+      const canSkipCommit =
+        reset &&
+        options.commitUnchanged !== true &&
+        previousSignature?.queryKey === queryKey &&
+        previousSignature.signature === nextSignature &&
+        documentPage !== null;
+
+      if (!canSkipCommit) {
+        listSignatureRef.current = { queryKey, signature: nextSignature };
+        setDocumentPage((current) => {
+          if (reset || !current) {
+            return nextDocuments;
+          }
+          return {
+            ...nextDocuments,
+            items: [...current.items, ...nextDocuments.items],
+            offset: current.offset
+          };
+        });
+        setFileItems(nextFiles.items);
+      }
     } catch (err) {
       setError(toApiErrorMessage(err));
     } finally {
-      setDocumentsLoading(false);
+      if (showLoading) {
+        setDocumentsLoading(false);
+      }
     }
   }
 
@@ -427,7 +480,7 @@ export function useLibraryState(): LibraryState {
     if (!hasMore || documentsLoading) {
       return;
     }
-    await reloadDocuments(false);
+    await reloadDocuments(false, true, { commitUnchanged: true });
   }
 
   async function refresh(): Promise<void> {
@@ -461,6 +514,9 @@ export function useLibraryState(): LibraryState {
       );
       await reload();
       await reloadDocuments(true);
+      if (shouldUseNativeLibraryBridge()) {
+        await waitForNativeRefreshProgress(viewState.browseMode === "folder");
+      }
     } catch (err) {
       setError(toApiErrorMessage(err));
     } finally {
@@ -468,10 +524,30 @@ export function useLibraryState(): LibraryState {
     }
   }
 
-  function selectFolder(
+  async function waitForNativeRefreshProgress(includeDocumentsReload: boolean): Promise<void> {
+    const maxPollCount = 30;
+    for (let attempt = 0; attempt < maxPollCount; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 1200));
+      const nativeSnapshot = await fetchNativeLibrarySnapshot().catch(() => null);
+      const nextSnapshot = nativeSnapshot?.snapshot ?? await getLibrarySnapshot();
+      setSnapshot(nextSnapshot);
+      await syncNativeLibraryWatcher(
+        nextSnapshot.binding?.enabled ? nextSnapshot.binding?.rootDir ?? null : null,
+      );
+      if (includeDocumentsReload) {
+        await reloadDocuments(true, false, { commitUnchanged: false });
+      }
+      const state = nextSnapshot.status.state;
+      if (!isLiveIndexState(state)) {
+        return;
+      }
+    }
+  }
+
+  const selectFolder = useCallback((
     path: string | null,
     selectedEntryPath: string | null = null,
-  ): void {
+  ): void => {
     setPreview(null);
     setPreviewError(null);
     setViewState((current) => ({
@@ -486,9 +562,9 @@ export function useLibraryState(): LibraryState {
       selectedDocumentId: null,
       selectedDocumentIds: []
     }));
-  }
+  }, [setViewState]);
 
-  function selectFolderEntry(path: string | null): void {
+  const selectFolderEntry = useCallback((path: string | null): void => {
     setPreview(null);
     setPreviewError(null);
     setViewState((current) => ({
@@ -498,9 +574,9 @@ export function useLibraryState(): LibraryState {
       selectedDocumentId: null,
       selectedDocumentIds: []
     }));
-  }
+  }, [setViewState]);
 
-  function toggleFolderEntrySelection(path: string, additive = false): void {
+  const toggleFolderEntrySelection = useCallback((path: string, additive = false): void => {
     setPreview(null);
     setPreviewError(null);
     setViewState((current) => {
@@ -519,9 +595,9 @@ export function useLibraryState(): LibraryState {
         selectedDocumentIds: []
       };
     });
-  }
+  }, [setViewState]);
 
-  function selectTag(path: string | null): void {
+  const selectTag = useCallback((path: string | null): void => {
     setPreview(null);
     setPreviewError(null);
     setViewState((current) => {
@@ -538,9 +614,9 @@ export function useLibraryState(): LibraryState {
         selectedFolderEntryPaths: []
       };
     });
-  }
+  }, [setViewState, tags]);
 
-  function selectFavorite(favorite: LibraryFavoriteRecord): void {
+  const selectFavorite = useCallback((favorite: LibraryFavoriteRecord): void => {
     if (favorite.kind === "folder") {
       selectFolder(favorite.path);
       setViewState((current) => ({ ...current, selectedFavoriteId: favorite.path }));
@@ -561,9 +637,9 @@ export function useLibraryState(): LibraryState {
       selectedFolderEntryPath: null,
       selectedFolderEntryPaths: []
     }));
-  }
+  }, [selectFolder, setViewState]);
 
-  function selectDocument(documentId: string): void {
+  const selectDocument = useCallback((documentId: string): void => {
     setViewState((current) => ({
       ...current,
       selectedDocumentId: documentId,
@@ -571,9 +647,9 @@ export function useLibraryState(): LibraryState {
       selectedFolderEntryPath: null,
       selectedFolderEntryPaths: []
     }));
-  }
+  }, [setViewState]);
 
-  function toggleDocumentSelection(documentId: string, additive = false): void {
+  const toggleDocumentSelection = useCallback((documentId: string, additive = false): void => {
     setViewState((current) => {
       const currentIds = current.selectedDocumentIds;
       const exists = currentIds.includes(documentId);
@@ -590,7 +666,7 @@ export function useLibraryState(): LibraryState {
         selectedFolderEntryPaths: []
       };
     });
-  }
+  }, [setViewState]);
 
   async function openPreview(path: string): Promise<void> {
     setPreviewLoading(true);
@@ -688,21 +764,97 @@ export function useLibraryState(): LibraryState {
 
   useEffect(() => {
     const state = snapshot?.status.state;
-    if (state !== "queued" && state !== "running" && state !== "stale" && state !== "queue_timeout") {
+    if (!isLiveIndexState(state)) {
       return;
+    }
+
+    if (isSummaryBackfillStage(snapshot?.status.runningStage)) {
+      const timer = window.setInterval(() => {
+        void (async () => {
+          const nextStatus = shouldUseNativeLibraryBridge()
+            ? await fetchNativeLibraryStatus().catch(() => null)
+            : null;
+          if (!nextStatus) {
+            await reload();
+            return;
+          }
+          setSnapshot((current) =>
+            current
+              ? { ...current, status: normalizeLibraryIndexStatus(nextStatus) }
+              : current,
+          );
+          if (viewState.browseMode === "folder") {
+            await reloadDocuments(true, false, { commitUnchanged: false });
+          }
+          if (!isLiveIndexState(nextStatus.state)) {
+            await reload();
+            if (viewState.browseMode === "folder") {
+              await reloadDocuments(true, false, { commitUnchanged: false });
+            }
+          }
+        })();
+      }, SUMMARY_BACKFILL_DIRECTORY_POLL_INTERVAL_MS);
+      return () => window.clearInterval(timer);
     }
 
     const timer = window.setInterval(() => {
       void (async () => {
         await reload();
         if (viewState.browseMode === "folder") {
-          await reloadDocuments(true);
+          await reloadDocuments(true, false, { commitUnchanged: false });
         }
       })();
-    }, 4000);
+    }, RUNNING_INDEX_POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [
     snapshot?.status.state,
+    snapshot?.status.runningStage,
+    snapshot?.status.runningTaskId,
+    viewState.browseMode,
+    viewState.selectedFolderPath,
+  ]);
+
+  useEffect(() => {
+    if (
+      !shouldUseNativeLibraryBridge() ||
+      viewState.browseMode !== "folder" ||
+      !isLiveIndexState(snapshot?.status.state) ||
+      isSummaryBackfillStage(snapshot?.status.runningStage)
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    let timer: number | null = null;
+    let pollCount = 0;
+
+    const pollDirectory = () => {
+      if (cancelled || pollCount >= DIRECTORY_PRIORITY_POLL_COUNT) {
+        return;
+      }
+      void (async () => {
+        await reloadDocuments(true, false, { commitUnchanged: false });
+        // 每几次同步一次整体状态即可；目录列表需要快，状态面板不用抢主线程。
+        if (pollCount % 3 === 0) {
+          await reload();
+        }
+        pollCount += 1;
+        if (!cancelled && pollCount < DIRECTORY_PRIORITY_POLL_COUNT) {
+          timer = window.setTimeout(pollDirectory, DIRECTORY_PRIORITY_POLL_INTERVAL_MS);
+        }
+      })();
+    };
+
+    timer = window.setTimeout(pollDirectory, DIRECTORY_PRIORITY_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      if (timer != null) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, [
+    snapshot?.status.state,
+    snapshot?.status.runningStage,
     snapshot?.status.runningTaskId,
     viewState.browseMode,
     viewState.selectedFolderPath,
@@ -758,13 +910,66 @@ function createIdleDebugChannelState(detail: string): LibraryDebugChannelState {
   };
 }
 
+function buildLibraryListQueryKey(viewState: LibraryViewState): string {
+  return [
+    viewState.browseMode,
+    viewState.selectedFolderPath ?? "",
+    viewState.selectedTagPath ?? "",
+    viewState.selectedTagPaths.join("\u001f"),
+    viewState.selectedFavoriteId ?? "",
+    viewState.keyword,
+  ].join("\u001e");
+}
+
+function buildLibraryListSignature(
+  documents: LibraryDocumentList,
+  files: LibraryFileList,
+): string {
+  const documentSignature = documents.items
+    .map((item) =>
+      [
+        item.documentId,
+        item.path,
+        item.updatedAt,
+        item.sizeBytes ?? "",
+        item.title,
+        item.tags.join("\u001d"),
+        item.derivedTags.join("\u001d"),
+      ].join("\u001c"),
+    )
+    .join("\u001b");
+  const fileSignature = files.items
+    .map((item) =>
+      [
+        item.kind,
+        item.path,
+        item.name,
+        item.updatedAt ?? "",
+        item.size ?? "",
+      ].join("\u001c"),
+    )
+    .join("\u001b");
+
+  return [
+    documents.total,
+    documents.visibleEntryTotal ?? "",
+    documents.offset,
+    documents.limit,
+    files.path ?? "",
+    files.total ?? "",
+    files.limit ?? "",
+    documentSignature,
+    fileSignature,
+  ].join("\u001a");
+}
+
 function buildVisibleEntries(
-  snapshot: LibrarySnapshot | null,
+  folderDocumentCountMap: Map<string, number>,
   documentPage: LibraryDocumentList | null,
   fileItems: LibraryFileNode[],
   viewState: LibraryViewState
 ): LibraryEntry[] {
-  const baseEntries = buildEntries(snapshot, documentPage, fileItems, viewState);
+  const baseEntries = buildEntries(folderDocumentCountMap, documentPage, fileItems, viewState);
   if (
     viewState.browseMode === "tag" &&
     viewState.viewMode === "list" &&
@@ -777,7 +982,7 @@ function buildVisibleEntries(
 }
 
 function buildEntries(
-  snapshot: LibrarySnapshot | null,
+  folderDocumentCountMap: Map<string, number>,
   documentPage: LibraryDocumentList | null,
   fileItems: LibraryFileNode[],
   viewState: LibraryViewState
@@ -789,7 +994,7 @@ function buildEntries(
           kind: "folder",
           path: item.path,
           name: item.name || getPathName(item.path),
-          documentCount: resolveFolderCount(snapshot, item.path),
+          documentCount: resolveFolderCount(folderDocumentCountMap, item.path),
           updatedAt: item.updatedAt
         }))
     : [];
@@ -904,8 +1109,16 @@ function buildTagDirectoryEntries(
   return entries;
 }
 
-function resolveFolderCount(snapshot: LibrarySnapshot | null, folderPath: string): number {
-  return snapshot?.folders.find((folder) => folder.path === folderPath)?.documentCount ?? 0;
+function buildFolderDocumentCountMap(folders: LibrarySnapshot["folders"] | null | undefined): Map<string, number> {
+  const map = new Map<string, number>();
+  for (const folder of folders ?? []) {
+    map.set(folder.path, folder.documentCount);
+  }
+  return map;
+}
+
+function resolveFolderCount(folderDocumentCountMap: Map<string, number>, folderPath: string): number {
+  return folderDocumentCountMap.get(folderPath) ?? 0;
 }
 
 function normalizeFolderPath(value: string): string {

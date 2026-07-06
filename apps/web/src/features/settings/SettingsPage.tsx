@@ -1249,6 +1249,10 @@ function LibraryIndexStatusCard({
   status?: LibraryIndexStatus | null;
 }) {
   const progress = status?.progress ?? null;
+  const progressPercent =
+    progress?.totalCount && progress.totalCount > 0
+      ? Math.max(0, Math.min(100, Math.round((progress.indexedCount / progress.totalCount) * 100)))
+      : 0;
   return (
     <section className="settings-index-status-card" data-state={status?.state ?? "unknown"}>
       <div className="settings-index-status-main">
@@ -1259,9 +1263,35 @@ function LibraryIndexStatusCard({
         </div>
       </div>
       <div className="settings-index-status-grid">
+        <StatusMetric label={t("settingsIndexTotal")} value={formatNullableNumber(progress?.totalCount ?? null)} />
         <StatusMetric label={t("settingsIndexScanned")} value={formatNullableNumber(progress?.scannedCount)} />
         <StatusMetric label={t("settingsIndexIndexed")} value={formatNullableNumber(progress?.indexedCount)} />
         <StatusMetric label={t("settingsIndexFailed")} value={formatNullableNumber(progress?.failedCount)} tone={(progress?.failedCount ?? 0) > 0 ? "danger" : undefined} />
+      </div>
+      {status?.state === "running" ? (
+        <div className="settings-index-progress">
+          <div className="settings-index-progress-copy">
+            <strong>{t("settingsIndexProgressLabel", { percent: progressPercent })}</strong>
+            <span>
+              {progress?.totalCount && progress.totalCount > 0
+                ? t("settingsIndexProgressDetail", {
+                    indexed: progress.indexedCount,
+                    total: progress.totalCount,
+                  })
+                : t("settingsIndexProgressPending", {
+                    indexed: progress?.indexedCount ?? 0,
+                  })}
+            </span>
+          </div>
+          <div className="library-tag-task-progress-track" aria-hidden="true">
+            <span
+              className="library-tag-task-progress-fill library-index-progress-fill"
+              style={{ width: `${progressPercent}%` }}
+            />
+          </div>
+        </div>
+      ) : null}
+      <div className="settings-index-status-grid">
         <StatusMetric label={t("settingsIndexUpdatedAt")} value={formatDateTime(status?.lastCompletedAt)} />
       </div>
       {status?.errorSummary ? <div className="inline-alert compact">{status.errorSummary}</div> : null}

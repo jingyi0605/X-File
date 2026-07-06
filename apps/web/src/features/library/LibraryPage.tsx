@@ -1,5 +1,6 @@
 import {
   Fragment,
+  memo,
   useCallback,
   useEffect,
   useId,
@@ -303,6 +304,11 @@ interface IndexStatusPopoverSection {
 interface IndexStatusPopoverModel {
   summaryMetrics: IndexStatusPopoverMetric[];
   primaryRows: IndexStatusPopoverRow[];
+  progressVisual: {
+    percent: number;
+    label: string;
+    detail: string;
+  } | null;
   technicalSections: IndexStatusPopoverSection[];
 }
 
@@ -1125,11 +1131,31 @@ function LibraryDesktopSidebar({
   const tagSearchInputRef = useRef<HTMLInputElement | null>(null);
   const selectedTagPaths = library.viewState.selectedTagPaths;
   const hasTagSelection = selectedTagPaths.length > 0;
-  const tagFacetCounts = library.documentPage?.tagFacetCounts ?? {};
-  const tagTree = useMemo(() => buildLibraryTagTree(tags), [tags]);
+  const isSummaryBackfillRunning = isRunningSummaryBackfill(library.snapshot?.status.runningStage);
+  const liveTagFacetCounts = library.documentPage?.tagFacetCounts ?? {};
+  const [frozenTags, setFrozenTags] = useState<LibraryTagNode[]>(tags);
+  const [frozenTagFacetCounts, setFrozenTagFacetCounts] = useState<Record<string, number>>(liveTagFacetCounts);
+
+  useEffect(() => {
+    if (isSummaryBackfillRunning) {
+      return;
+    }
+    setFrozenTags(tags);
+  }, [isSummaryBackfillRunning, tags]);
+
+  useEffect(() => {
+    if (isSummaryBackfillRunning) {
+      return;
+    }
+    setFrozenTagFacetCounts(liveTagFacetCounts);
+  }, [isSummaryBackfillRunning, liveTagFacetCounts]);
+
+  const effectiveTags = isSummaryBackfillRunning ? frozenTags : tags;
+  const effectiveTagFacetCounts = isSummaryBackfillRunning ? frozenTagFacetCounts : liveTagFacetCounts;
+  const tagTree = useMemo(() => buildLibraryTagTree(effectiveTags), [effectiveTags]);
   const tagTreeWithCounts = useMemo(
-    () => applyTagFacetCountsToTree(tagTree, tagFacetCounts, hasTagSelection),
-    [hasTagSelection, tagFacetCounts, tagTree],
+    () => applyTagFacetCountsToTree(tagTree, effectiveTagFacetCounts, hasTagSelection),
+    [effectiveTagFacetCounts, hasTagSelection, tagTree],
   );
   const tagTreeVisibility = useMemo(
     () => buildTagTreeVisibility(tagTreeWithCounts, selectedTagPaths),
@@ -1395,6 +1421,10 @@ function LibraryDesktopSidebar({
       ) : null}
     </aside>
   );
+}
+
+function isRunningSummaryBackfill(stage: string | null | undefined): boolean {
+  return stage === "summary_backfill" || stage === "summary_backfill_search";
 }
 
 function LibraryTagFilterFavoriteModal({
@@ -2271,8 +2301,13 @@ function LibraryStage({
     kind: "blank",
     folderPath: library.viewState.selectedFolderPath,
   };
+  const initialIndexStatus = resolveInitialIndexStatus(library);
+  // 只在首屏阻塞加载时展示骨架屏；空列表进入轮询后应该保持空态稳定，不能每次轮询都闪回 skeleton。
   const shouldShowBlockingSkeleton =
-    library.entries.length === 0 && (library.loading || library.documentsLoading);
+    !initialIndexStatus &&
+    library.documentPage === null &&
+    library.entries.length === 0 &&
+    (library.loading || library.documentsLoading);
 
   return (
     <section className="affairs-stage-panel">
@@ -2290,7 +2325,9 @@ function LibraryStage({
         aria-label={t("libraryDocumentList")}
         onContextMenu={(event) => onOpenContextMenu(event, blankTarget)}
       >
-        {shouldShowBlockingSkeleton ? (
+        {initialIndexStatus ? (
+          <LibraryInitialIndexStage status={initialIndexStatus} />
+        ) : shouldShowBlockingSkeleton ? (
           <LibrarySkeleton viewMode={library.viewState.viewMode} />
         ) : library.entries.length === 0 ? (
           <div className="affairs-stage-empty">
@@ -2581,6 +2618,75 @@ function LibrarySkeleton({ viewMode }: { viewMode: "grid" | "list" }) {
   );
 }
 
+function resolveInitialIndexStatus(library: LibraryState): LibraryIndexStatus | null {
+  const status = library.snapshot?.status ?? null;
+  if (!status || status.state !== "running" || !status.progress) {
+    return null;
+  }
+  const hasVisibleEntries = library.entries.length > 0 || (library.documentPage?.items.length ?? 0) > 0;
+  if (hasVisibleEntries) {
+    return null;
+  }
+  const isRootFolderView =
+    library.viewState.browseMode === "folder" &&
+    (library.viewState.selectedFolderPath == null || library.viewState.selectedFolderPath === ".");
+  if (!isRootFolderView) {
+    return null;
+  }
+  const isFirstPass = !status.lastCompletedAt;
+  return isFirstPass ? status : null;
+}
+
+function LibraryInitialIndexStage({ status }: { status: LibraryIndexStatus }) {
+  const progress = status.progress;
+  if (!progress) {
+    return null;
+  }
+  const percent = resolveIndexProgressPercent(progress);
+  const detail =
+    typeof progress.totalCount === "number" && progress.totalCount > 0
+      ? t("libraryStatusProgressBarDetail", {
+          processed: resolveIndexProcessedCount(progress),
+          indexed: progress.indexedCount,
+          total: progress.totalCount,
+        })
+      : t("libraryStatusProgressPendingDetail", {
+          processed: resolveIndexProcessedCount(progress),
+          indexed: progress.indexedCount,
+        });
+  return (
+    <div className="affairs-stage-initial-index" data-stage={status.runningStage ?? "running"}>
+      <div className="affairs-stage-initial-index-card">
+        <div className="affairs-stage-initial-index-title">{t("libraryInitialIndexTitle")}</div>
+        <p className="affairs-stage-initial-index-description">{t("libraryInitialIndexDescription")}</p>
+        <div className="affairs-stage-initial-index-meta">
+          <span>{resolveIndexStatusLabel(status.state)}</span>
+          <span>{resolveIndexStageLabel(status.runningStage)}</span>
+        </div>
+        <div className="affairs-stage-initial-index-progress">
+          <div className="affairs-stage-initial-index-progress-copy">
+            <strong>{t("libraryStatusProgressBarLabel", { percent })}</strong>
+            <span>{detail}</span>
+          </div>
+          <div className="library-tag-task-progress-track" aria-hidden="true">
+            <span
+              className="library-tag-task-progress-fill library-index-progress-fill"
+              style={{ width: `${percent}%` }}
+            />
+          </div>
+        </div>
+        <div className="affairs-stage-initial-index-summary">
+          {t("libraryInitialIndexSummary", {
+            processed: resolveIndexProcessedCount(progress),
+            indexed: progress.indexedCount,
+            failed: progress.failedCount,
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const VIRTUAL_GRID_TRACK_MIN_WIDTH = 132;
 const VIRTUAL_GRID_COLUMN_GAP = 8;
 const VIRTUAL_GRID_ITEM_HEIGHT = 106;
@@ -2620,6 +2726,18 @@ function VirtualLibraryGrid({
     VIRTUAL_GRID_ITEM_HEIGHT,
   );
   const [measuredRowGap, setMeasuredRowGap] = useState(VIRTUAL_GRID_ROW_GAP);
+  const selectedFolderEntryPathSet = useMemo(
+    () => new Set(library.viewState.selectedFolderEntryPaths),
+    [library.viewState.selectedFolderEntryPaths],
+  );
+  const selectedDocumentIdSet = useMemo(
+    () => new Set(library.viewState.selectedDocumentIds),
+    [library.viewState.selectedDocumentIds],
+  );
+  const folderOpenBehavior =
+    library.snapshot?.binding?.folderOpenBehavior === "single_click"
+      ? "single_click"
+      : "double_click";
 
   useLayoutEffect(() => {
     const element = viewportRef.current;
@@ -2756,10 +2874,20 @@ function VirtualLibraryGrid({
     >
       {visibleSlots.map((slot) =>
         slot.entry ? (
-          <LibraryEntryCard
+          <MemoizedLibraryEntryCard
             key={resolveLibraryEntryKey(slot.entry)}
             entry={slot.entry}
-            library={library}
+            active={
+              slot.entry.kind === "document"
+                ? selectedDocumentIdSet.has(slot.entry.documentId)
+                : selectedFolderEntryPathSet.has(slot.entry.path)
+            }
+            folderOpenBehavior={folderOpenBehavior}
+            onSelectFolder={library.selectFolder}
+            onSelectFolderEntry={library.selectFolderEntry}
+            onToggleFolderEntrySelection={library.toggleFolderEntrySelection}
+            onSelectDocument={library.selectDocument}
+            onToggleDocumentSelection={library.toggleDocumentSelection}
             onOpenContextMenu={onOpenContextMenu}
             onOpenLibraryViewer={onOpenLibraryViewer}
           />
@@ -2813,10 +2941,24 @@ function VirtualLibraryFinderList({
     VIRTUAL_LIST_ROW_HEIGHT,
   );
   const finderResizeStateRef = useRef<FinderResizeState | null>(null);
+  const scrollFrameRef = useRef<number | null>(null);
+  const pendingScrollElementRef = useRef<HTMLDivElement | null>(null);
   const finderGridTemplateColumns = useMemo(
     () => buildFinderGridTemplateColumns(library.viewState.finderColumnWidths),
     [library.viewState.finderColumnWidths],
   );
+  const selectedFolderEntryPathSet = useMemo(
+    () => new Set(library.viewState.selectedFolderEntryPaths),
+    [library.viewState.selectedFolderEntryPaths],
+  );
+  const selectedDocumentIdSet = useMemo(
+    () => new Set(library.viewState.selectedDocumentIds),
+    [library.viewState.selectedDocumentIds],
+  );
+  const folderOpenBehavior =
+    library.snapshot?.binding?.folderOpenBehavior === "single_click"
+      ? "single_click"
+      : "double_click";
 
   useEffect(
     () => () => {
@@ -2883,6 +3025,17 @@ function VirtualLibraryFinderList({
     return installAutoHideScrollbarBehavior(element);
   }, []);
 
+  useEffect(
+    () => () => {
+      if (scrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(scrollFrameRef.current);
+      }
+      scrollFrameRef.current = null;
+      pendingScrollElementRef.current = null;
+    },
+    [],
+  );
+
   const virtualItemCount = Math.max(entries.length, library.visibleEntryTotal);
   const metrics = computeVirtualListMetrics(
     virtualItemCount,
@@ -2896,7 +3049,7 @@ function VirtualLibraryFinderList({
     metrics.endIndex,
   );
 
-  function handleScroll(element: HTMLDivElement): void {
+  function syncScrollViewport(element: HTMLDivElement): void {
     const nextScrollTop = clampScrollTop(
       element.scrollTop,
       virtualItemCount,
@@ -2933,6 +3086,21 @@ function VirtualLibraryFinderList({
     ) {
       void library.loadMore();
     }
+  }
+
+  function handleScroll(element: HTMLDivElement): void {
+    pendingScrollElementRef.current = element;
+    if (scrollFrameRef.current !== null) {
+      return;
+    }
+    scrollFrameRef.current = window.requestAnimationFrame(() => {
+      scrollFrameRef.current = null;
+      const pendingElement = pendingScrollElementRef.current;
+      pendingScrollElementRef.current = null;
+      if (pendingElement) {
+        syncScrollViewport(pendingElement);
+      }
+    });
   }
 
   function handleFinderColumnResizeStart(
@@ -3079,10 +3247,20 @@ function VirtualLibraryFinderList({
           >
             {visibleSlots.map((slot) =>
               slot.entry ? (
-                <LibraryFinderRow
+                <MemoizedLibraryFinderRow
                   key={resolveLibraryEntryKey(slot.entry)}
                   entry={slot.entry}
-                  library={library}
+                  active={
+                    slot.entry.kind === "document"
+                      ? selectedDocumentIdSet.has(slot.entry.documentId)
+                      : selectedFolderEntryPathSet.has(slot.entry.path)
+                  }
+                  folderOpenBehavior={folderOpenBehavior}
+                  onSelectFolder={library.selectFolder}
+                  onSelectFolderEntry={library.selectFolderEntry}
+                  onToggleFolderEntrySelection={library.toggleFolderEntrySelection}
+                  onSelectDocument={library.selectDocument}
+                  onToggleDocumentSelection={library.toggleDocumentSelection}
                   gridTemplateColumns={finderGridTemplateColumns}
                   onOpenContextMenu={onOpenContextMenu}
                   onOpenLibraryViewer={onOpenLibraryViewer}
@@ -3432,12 +3610,24 @@ function AffairsFinderPlaceholderRow({
 
 function LibraryEntryCard({
   entry,
-  library,
+  active,
+  folderOpenBehavior,
+  onSelectFolder,
+  onSelectFolderEntry,
+  onToggleFolderEntrySelection,
+  onSelectDocument,
+  onToggleDocumentSelection,
   onOpenContextMenu,
   onOpenLibraryViewer,
 }: {
   entry: LibraryEntry;
-  library: LibraryState;
+  active: boolean;
+  folderOpenBehavior: "single_click" | "double_click";
+  onSelectFolder: (path: string | null, selectedEntryPath?: string | null) => void;
+  onSelectFolderEntry: (path: string | null) => void;
+  onToggleFolderEntrySelection: (path: string, additive?: boolean) => void;
+  onSelectDocument: (documentId: string) => void;
+  onToggleDocumentSelection: (documentId: string, additive?: boolean) => void;
   onOpenContextMenu: (
     event: ReactMouseEvent<HTMLElement>,
     target: LibraryContextMenuTarget,
@@ -3445,7 +3635,6 @@ function LibraryEntryCard({
   onOpenLibraryViewer: (entry: LibraryDocumentEntry) => void;
 }) {
   if (entry.kind !== "document") {
-    const active = library.viewState.selectedFolderEntryPaths.includes(entry.path);
     return (
       <button
         type="button"
@@ -3456,18 +3645,22 @@ function LibraryEntryCard({
           if (entry.kind !== "folder") {
             return;
           }
-          if (library.snapshot?.binding?.folderOpenBehavior === "single_click") {
-            handleFolderClick(library, entry.path);
+          if (folderOpenBehavior === "single_click") {
+            onSelectFolder(entry.path);
             return;
           }
-          library.toggleFolderEntrySelection(entry.path, event.metaKey || event.ctrlKey);
+          onToggleFolderEntrySelection(entry.path, event.metaKey || event.ctrlKey);
         }}
-        onDoubleClick={() => { if (entry.kind === "folder") library.selectFolder(entry.path); }}
+        onDoubleClick={() => {
+          if (entry.kind === "folder") {
+            onSelectFolder(entry.path);
+          }
+        }}
         onContextMenu={(event) => {
           if (entry.kind !== "folder") {
             return;
           }
-          library.selectFolderEntry(entry.path);
+          onSelectFolderEntry(entry.path);
           onOpenContextMenu(event, { kind: "folder", entry });
         }}
       >
@@ -3483,17 +3676,17 @@ function LibraryEntryCard({
       </button>
     );
   }
-
-  const active = library.viewState.selectedDocumentIds.includes(entry.documentId);
   return (
     <button
       type="button"
       className={
         active ? "affairs-doc-item grid active" : "affairs-doc-item grid"
       }
-      onClick={(event) => library.toggleDocumentSelection(entry.documentId, event.metaKey || event.ctrlKey)}
+      onClick={(event) =>
+        onToggleDocumentSelection(entry.documentId, event.metaKey || event.ctrlKey)
+      }
       onContextMenu={(event) => {
-        library.selectDocument(entry.documentId);
+        onSelectDocument(entry.documentId);
         onOpenContextMenu(event, { kind: "document", entry });
       }}
       onDoubleClick={() => {
@@ -3524,15 +3717,29 @@ function LibraryEntryCard({
   );
 }
 
+const MemoizedLibraryEntryCard = memo(LibraryEntryCard);
+
 function LibraryFinderRow({
   entry,
-  library,
+  active,
+  folderOpenBehavior,
+  onSelectFolder,
+  onSelectFolderEntry,
+  onToggleFolderEntrySelection,
+  onSelectDocument,
+  onToggleDocumentSelection,
   gridTemplateColumns,
   onOpenContextMenu,
   onOpenLibraryViewer,
 }: {
   entry: LibraryEntry;
-  library: LibraryState;
+  active: boolean;
+  folderOpenBehavior: "single_click" | "double_click";
+  onSelectFolder: (path: string | null, selectedEntryPath?: string | null) => void;
+  onSelectFolderEntry: (path: string | null) => void;
+  onToggleFolderEntrySelection: (path: string, additive?: boolean) => void;
+  onSelectDocument: (documentId: string) => void;
+  onToggleDocumentSelection: (documentId: string, additive?: boolean) => void;
   gridTemplateColumns: string;
   onOpenContextMenu: (
     event: ReactMouseEvent<HTMLElement>,
@@ -3541,7 +3748,6 @@ function LibraryFinderRow({
   onOpenLibraryViewer: (entry: LibraryDocumentEntry) => void;
 }) {
   if (entry.kind !== "document") {
-    const active = library.viewState.selectedFolderEntryPaths.includes(entry.path);
     return (
       <button
         type="button"
@@ -3555,18 +3761,22 @@ function LibraryFinderRow({
           if (entry.kind !== "folder") {
             return;
           }
-          if (library.snapshot?.binding?.folderOpenBehavior === "single_click") {
-            handleFolderClick(library, entry.path);
+          if (folderOpenBehavior === "single_click") {
+            onSelectFolder(entry.path);
             return;
           }
-          library.toggleFolderEntrySelection(entry.path, event.metaKey || event.ctrlKey);
+          onToggleFolderEntrySelection(entry.path, event.metaKey || event.ctrlKey);
         }}
-        onDoubleClick={() => { if (entry.kind === "folder") library.selectFolder(entry.path); }}
+        onDoubleClick={() => {
+          if (entry.kind === "folder") {
+            onSelectFolder(entry.path);
+          }
+        }}
         onContextMenu={(event) => {
           if (entry.kind !== "folder") {
             return;
           }
-          library.selectFolderEntry(entry.path);
+          onSelectFolderEntry(entry.path);
           onOpenContextMenu(event, { kind: "folder", entry });
         }}
       >
@@ -3596,15 +3806,16 @@ function LibraryFinderRow({
     );
   }
 
-  const active = library.viewState.selectedDocumentIds.includes(entry.documentId);
   return (
     <button
       type="button"
       className={active ? "affairs-finder-row active" : "affairs-finder-row"}
       style={{ gridTemplateColumns }}
-      onClick={(event) => library.toggleDocumentSelection(entry.documentId, event.metaKey || event.ctrlKey)}
+      onClick={(event) =>
+        onToggleDocumentSelection(entry.documentId, event.metaKey || event.ctrlKey)
+      }
       onContextMenu={(event) => {
-        library.selectDocument(entry.documentId);
+        onSelectDocument(entry.documentId);
         onOpenContextMenu(event, { kind: "document", entry });
       }}
       onDoubleClick={() => {
@@ -3645,6 +3856,8 @@ function LibraryFinderRow({
     </button>
   );
 }
+
+const MemoizedLibraryFinderRow = memo(LibraryFinderRow);
 
 function LibraryDetail({
   library,
@@ -7547,6 +7760,20 @@ function LibraryIndexStatusPopover({
                 ))}
               </div>
             ) : null}
+            {popoverModel.progressVisual ? (
+              <div className="library-index-progress-visual">
+                <div className="library-index-progress-visual-header">
+                  <strong>{popoverModel.progressVisual.label}</strong>
+                  <span>{popoverModel.progressVisual.detail}</span>
+                </div>
+                <div className="library-tag-task-progress-track" aria-hidden="true">
+                  <span
+                    className="library-tag-task-progress-fill library-index-progress-fill"
+                    style={{ width: `${popoverModel.progressVisual.percent}%` }}
+                  />
+                </div>
+              </div>
+            ) : null}
             <div className="library-index-status-primary">
               <div className="library-index-status-section-title">{t("libraryStatusPrimaryTitle")}</div>
               <div className="library-index-status-popover-grid">
@@ -7675,9 +7902,12 @@ function resolveIndexStageLabel(stage: string | null): string {
   const labels: Record<string, string> = {
     load_config: t("libraryIndexStageLoadConfig"),
     init_catalog: t("libraryIndexStageInitCatalog"),
+    count_files: t("libraryIndexStageCountFiles"),
     incremental_index: t("libraryIndexStageIncrementalIndex"),
     index: t("libraryIndexStageIndex"),
     index_text: t("libraryIndexStageIndexText"),
+    summary_backfill: t("libraryIndexStageSummaryBackfill"),
+    summary_backfill_search: t("libraryIndexStageSummaryBackfillSearch"),
     export_snapshot: t("libraryIndexStageExportSnapshot"),
     export_search: t("libraryIndexStageExportSearch"),
     sqlite: t("libraryIndexStageSqlite"),
@@ -7737,12 +7967,14 @@ function buildIndexStatusPopoverModel(
   const workerRows: IndexStatusPopoverRow[] = [];
 
   if (!normalizedStatus) {
-    return { summaryMetrics: [], primaryRows, technicalSections: [] };
+    return { summaryMetrics: [], primaryRows, progressVisual: null, technicalSections: [] };
   }
 
   // 摘要指标（四栏网格）：优先用实时进度，缺失时用导出文档计数兜底，
-  // 保证稳态下面板一定能展示“索引总数/当前数量/问题数量/更新数量”，不再出现空白。
-  const progress = normalizedStatus.progress ?? deriveSteadyProgressFallback(documentCount);
+  // 保证稳态下面板一定能展示“索引总数/已扫描数量/问题数量/已索引数量”，不再出现空白。
+  const progress = normalizedStatus.progress
+    ? normalizeIndexProgress(normalizedStatus.progress)
+    : deriveSteadyProgressFallback(documentCount);
   const summaryMetrics: IndexStatusPopoverMetric[] = progress
     ? [
         {
@@ -7765,6 +7997,7 @@ function buildIndexStatusPopoverModel(
         },
       ]
     : [];
+  const progressVisual = resolveIndexStatusProgressVisual(normalizedStatus, progress);
 
   // 时间线
   pushIndexStatusDetail(timelineRows, t("libraryStatusLastRequestedAtLabel"), normalizedStatus.lastRequestedAt);
@@ -7791,6 +8024,22 @@ function buildIndexStatusPopoverModel(
 
   // 进度详情
   if (progress) {
+    progressRows.push({
+      label: t("libraryStatusProgressMaxConcurrencyLabel"),
+      value: formatIndexStatusMetricValue(progress.maxConcurrency),
+    });
+    progressRows.push({
+      label: t("libraryStatusProgressActiveTasksLabel"),
+      value: String(progress.activeTaskCount),
+    });
+    progressRows.push({
+      label: t("libraryStatusProgressPendingTasksLabel"),
+      value: String(progress.pendingTaskCount),
+    });
+    progressRows.push({
+      label: t("libraryStatusProgressCompletedTasksLabel"),
+      value: String(progress.completedTaskCount),
+    });
     progressRows.push({
       label: t("libraryStatusProgressUnchangedLabel"),
       value: String(progress.unchangedCount),
@@ -7930,7 +8179,7 @@ function buildIndexStatusPopoverModel(
   pushIndexStatusSection(sections, t("libraryStatusSectionDirectoryTitle"), directoryRows);
   pushIndexStatusSection(sections, t("libraryStatusSectionWorkerTitle"), workerRows);
 
-  return { summaryMetrics, primaryRows, technicalSections: sections };
+  return { summaryMetrics, primaryRows, progressVisual, technicalSections: sections };
 }
 
 function pushIndexStatusDetail(
@@ -7961,12 +8210,26 @@ function deriveSteadyProgressFallback(documentCount: number): LibraryIndexProgre
   }
   return {
     scannedCount: documentCount,
-    indexedCount: 0,
+    indexedCount: documentCount,
     skippedCount: 0,
     failedCount: 0,
-    unchangedCount: documentCount,
+    unchangedCount: 0,
     totalCount: documentCount,
     maxConcurrency: null,
+    activeTaskCount: 0,
+    pendingTaskCount: 0,
+    completedTaskCount: documentCount,
+  };
+}
+
+function normalizeIndexProgress(progress: LibraryIndexProgress): LibraryIndexProgress {
+  return {
+    ...progress,
+    activeTaskCount: Number.isFinite(progress.activeTaskCount) ? progress.activeTaskCount : 0,
+    pendingTaskCount: Number.isFinite(progress.pendingTaskCount) ? progress.pendingTaskCount : 0,
+    completedTaskCount: Number.isFinite(progress.completedTaskCount)
+      ? progress.completedTaskCount
+      : resolveIndexProcessedCount(progress),
   };
 }
 
@@ -7979,13 +8242,98 @@ function resolveIndexStatusInlineProgressLabel(
   status: LibraryIndexStatus | null,
 ): string | null {
   if (status?.state === "running" && status.progress) {
+    if (status.runningStage === "summary_backfill") {
+      if (typeof status.progress.totalCount === "number" && status.progress.totalCount > 0) {
+        return t("libraryStatusSummaryBackfillProgressBarDetail", {
+          indexed: status.progress.indexedCount,
+          total: status.progress.totalCount,
+          unchanged: status.progress.unchangedCount,
+          skipped: status.progress.skippedCount,
+        });
+      }
+      return t("libraryStatusSummaryBackfillPendingDetail", {
+        processed: resolveIndexProcessedCount(status.progress),
+        indexed: status.progress.indexedCount,
+        unchanged: status.progress.unchangedCount,
+      });
+    }
+    if (typeof status.progress.totalCount === "number" && status.progress.totalCount > 0) {
+      return t("libraryProgressSummaryWithTotal", {
+        processed: resolveIndexProcessedCount(status.progress),
+        indexed: status.progress.indexedCount,
+        total: status.progress.totalCount,
+        percent: resolveIndexProgressPercent(status.progress),
+      });
+    }
     return t("libraryProgressSummary", {
-      scanned: status.progress.scannedCount,
+      processed: resolveIndexProcessedCount(status.progress),
       indexed: status.progress.indexedCount,
       failed: status.progress.failedCount,
     });
   }
   return null;
+}
+
+function resolveIndexStatusProgressVisual(
+  status: LibraryIndexStatus,
+  progress: LibraryIndexProgress | null,
+): IndexStatusPopoverModel["progressVisual"] {
+  if (status.state !== "running" || !progress) {
+    return null;
+  }
+  const isSummaryBackfill = status.runningStage === "summary_backfill";
+  const total = progress.totalCount;
+  if (typeof total === "number" && total > 0) {
+    const percent = resolveIndexProgressPercent(progress);
+    return {
+      percent,
+      label: isSummaryBackfill
+        ? t("libraryStatusSummaryBackfillProgressBarLabel", { percent })
+        : t("libraryStatusProgressBarLabel", { percent }),
+      detail: isSummaryBackfill
+        ? t("libraryStatusSummaryBackfillProgressBarDetail", {
+            indexed: progress.indexedCount,
+            total,
+            unchanged: progress.unchangedCount,
+            skipped: progress.skippedCount,
+          })
+        : t("libraryStatusProgressBarDetail", {
+            processed: resolveIndexProcessedCount(progress),
+            indexed: progress.indexedCount,
+            total,
+          }),
+    };
+  }
+  return {
+    percent: 0,
+    label: isSummaryBackfill
+      ? t("libraryStatusSummaryBackfillPendingLabel")
+      : t("libraryStatusProgressPendingLabel"),
+    detail: isSummaryBackfill
+      ? t("libraryStatusSummaryBackfillPendingDetail", {
+          processed: resolveIndexProcessedCount(progress),
+          indexed: progress.indexedCount,
+          unchanged: progress.unchangedCount,
+        })
+      : t("libraryStatusProgressPendingDetail", {
+          processed: resolveIndexProcessedCount(progress),
+          indexed: progress.indexedCount,
+        }),
+  };
+}
+
+function resolveIndexProcessedCount(progress: LibraryIndexProgress): number {
+  return progress.indexedCount + progress.unchangedCount + progress.skippedCount + progress.failedCount;
+}
+
+function resolveIndexProgressPercent(progress: LibraryIndexProgress): number {
+  if (typeof progress.totalCount !== "number" || progress.totalCount <= 0) {
+    return 0;
+  }
+  return Math.max(
+    0,
+    Math.min(100, Math.round((resolveIndexProcessedCount(progress) / progress.totalCount) * 100)),
+  );
 }
 
 function resolveWorkerHealthStateLabel(
