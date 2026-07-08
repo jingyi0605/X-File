@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   LibraryBinding,
   LibraryDocumentRecord,
@@ -167,7 +167,9 @@ export function useLibraryState(): LibraryState {
   const [refreshPending, setRefreshPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const previewRequestTokenRef = useRef(0);
   const nativeWatcherRootDirRef = useRef<string | null>(activeNativeWatcherRootDir);
+  const pendingInitialQuickSyncRef = useRef(false);
   const listSignatureRef = useRef<{ queryKey: string; signature: string } | null>(null);
   const [debugChannels, setDebugChannels] = useState<Record<keyof Omit<LibraryDebugState, "enabled" | "runtime" | "mode" | "nativeBridgeEligible" | "nativeBridgeAvailable">, LibraryDebugChannelState>>(() => ({
     watcher: createIdleDebugChannelState("未尝试"),
@@ -309,6 +311,7 @@ export function useLibraryState(): LibraryState {
     setError(null);
     try {
       const binding = await saveLibraryBinding({ rootDir, completeInitialization: true });
+      pendingInitialQuickSyncRef.current = true;
       setSnapshot((current) => current ? { ...current, binding } : current);
       setViewState(readLibraryViewState(binding.libraryId));
       await syncNativeLibraryWatcher(binding.enabled ? binding.rootDir : null);
@@ -316,6 +319,7 @@ export function useLibraryState(): LibraryState {
       await reloadDocuments(true);
       return binding;
     } catch (err) {
+      pendingInitialQuickSyncRef.current = false;
       setError(toApiErrorMessage(err));
       throw err;
     } finally {
@@ -483,14 +487,14 @@ export function useLibraryState(): LibraryState {
     await reloadDocuments(false, true, { commitUnchanged: true });
   }
 
-  async function refresh(): Promise<void> {
+  async function refreshWithReason(reason: string): Promise<void> {
     setRefreshPending(true);
     setError(null);
     try {
       const nativeResult = shouldUseNativeLibraryBridge()
         ? await requestNativeLibraryRefresh({
             mode: "full",
-            reason: "manual_refresh",
+            reason,
             targetPath: viewState.browseMode === "folder" ? viewState.selectedFolderPath : null
           }).catch(() => null)
         : null;
@@ -498,13 +502,13 @@ export function useLibraryState(): LibraryState {
         "refresh",
         nativeResult ? "native" : "http",
         nativeResult
-          ? `refresh 入口命中 Rust；桌面宿主先跑 index-only，再用 dirtyScope 驱动 export-only，reason=manual_refresh`
+          ? `refresh 入口命中 Rust；桌面宿主先跑 index-only，再用 dirtyScope 驱动 export-only，reason=${reason}`
           : shouldUseNativeLibraryBridge()
             ? "native refresh 不可用，已直连 HTTP /api/library/refresh"
             : "当前运行模式不走 native refresh",
       );
       const result = nativeResult?.backendResponse ?? await requestLibraryRefresh({
-        reason: "manual_refresh",
+        reason,
         targetPath: viewState.browseMode === "folder" ? viewState.selectedFolderPath : null
       });
       setSnapshot((current) =>
@@ -522,6 +526,10 @@ export function useLibraryState(): LibraryState {
     } finally {
       setRefreshPending(false);
     }
+  }
+
+  async function refresh(): Promise<void> {
+    await refreshWithReason("manual_refresh");
   }
 
   async function waitForNativeRefreshProgress(includeDocumentsReload: boolean): Promise<void> {
@@ -669,8 +677,12 @@ export function useLibraryState(): LibraryState {
   }, [setViewState]);
 
   async function openPreview(path: string): Promise<void> {
-    setPreviewLoading(true);
-    setPreviewError(null);
+    const requestToken = previewRequestTokenRef.current + 1;
+    previewRequestTokenRef.current = requestToken;
+    startTransition(() => {
+      setPreviewLoading(true);
+      setPreviewError(null);
+    });
     try {
       const nativePreview = shouldUseNativeLibraryBridge()
         ? await getNativeLibraryPreview(path, "reading").catch(() => null)
@@ -687,12 +699,28 @@ export function useLibraryState(): LibraryState {
             ? `native preview 不可用，已回退 HTTP /api/library/preview (${path})`
             : "当前运行模式不走 native preview",
       );
-      setPreview(resolvedNativePreview ?? await getLibraryPreview(path, "reading"));
+      const nextPreview = resolvedNativePreview ?? await getLibraryPreview(path, "reading");
+      if (previewRequestTokenRef.current !== requestToken) {
+        return;
+      }
+      startTransition(() => {
+        setPreview(nextPreview);
+      });
     } catch (err) {
-      setPreview(null);
-      setPreviewError(toApiErrorMessage(err));
+      if (previewRequestTokenRef.current !== requestToken) {
+        return;
+      }
+      startTransition(() => {
+        setPreview(null);
+        setPreviewError(toApiErrorMessage(err));
+      });
     } finally {
-      setPreviewLoading(false);
+      if (previewRequestTokenRef.current !== requestToken) {
+        return;
+      }
+      startTransition(() => {
+        setPreviewLoading(false);
+      });
     }
   }
 
@@ -757,6 +785,22 @@ export function useLibraryState(): LibraryState {
   ]);
 
   useEffect(() => {
+    if (!pendingInitialQuickSyncRef.current) {
+      return;
+    }
+    if (requiresInitialization || !snapshot?.binding?.enabled || refreshPending) {
+      return;
+    }
+    pendingInitialQuickSyncRef.current = false;
+    void refreshWithReason("initial_quick_sync");
+  }, [
+    refreshPending,
+    requiresInitialization,
+    snapshot?.binding?.enabled,
+    snapshot?.binding?.libraryId,
+  ]);
+
+  useEffect(() => {
     if (selectedDocument) {
       void openPreview(selectedDocument.path);
     }
@@ -778,14 +822,13 @@ export function useLibraryState(): LibraryState {
             await reload();
             return;
           }
-          setSnapshot((current) =>
-            current
-              ? { ...current, status: normalizeLibraryIndexStatus(nextStatus) }
-              : current,
-          );
-          if (viewState.browseMode === "folder") {
-            await reloadDocuments(true, false, { commitUnchanged: false });
-          }
+          startTransition(() => {
+            setSnapshot((current) =>
+              current
+                ? { ...current, status: normalizeLibraryIndexStatus(nextStatus) }
+                : current,
+            );
+          });
           if (!isLiveIndexState(nextStatus.state)) {
             await reload();
             if (viewState.browseMode === "folder") {

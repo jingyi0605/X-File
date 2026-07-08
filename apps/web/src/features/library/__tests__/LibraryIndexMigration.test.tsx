@@ -71,8 +71,8 @@ describe("第 6 批：索引状态、刷新策略和缓存替换", () => {
     const indicator = await screen.findByRole("button", { name: /索引状态.*正在刷新/ });
     expect(screen.queryByText("文档库索引器状态")).not.toBeInTheDocument();
 
-    // 运行中的进度摘要以行内文本形式出现在触发按钮上
-    expect(await screen.findByText("已处理 12，其中新增索引 3，失败 0")).toBeInTheDocument();
+    // 顶部索引状态按钮不再展示长句进度说明
+    expect(screen.queryByText("已处理 12，其中新增索引 3，失败 0")).not.toBeInTheDocument();
 
     await userEvent.hover(indicator);
 
@@ -127,7 +127,9 @@ describe("第 6 批：索引状态、刷新策略和缓存替换", () => {
     const { LibraryPage } = await import("../LibraryPage");
     render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
 
+    const indicator = await screen.findByRole("button", { name: /索引状态.*正在刷新/ });
     expect(await screen.findByText("正在初始化文档库")).toBeInTheDocument();
+    expect(within(indicator).getByText("45%")).toBeInTheDocument();
     expect(screen.getByText("索引进度 45%")).toBeInTheDocument();
     expect(screen.getByText("已处理 45 / 100（其中新增索引 32）")).toBeInTheDocument();
     expect(screen.getByText("已处理 45，其中新增索引 32，失败 0")).toBeInTheDocument();

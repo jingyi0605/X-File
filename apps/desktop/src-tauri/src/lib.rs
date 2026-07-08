@@ -41,7 +41,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::menu::{Menu, MenuBuilder, MenuEvent, MenuItemBuilder, SubmenuBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow, Window, WindowEvent};
@@ -508,6 +508,9 @@ struct DesktopState {
     backend_persistent: bool,
     is_quitting: bool,
     main_window_geometry: Option<MainWindowGeometry>,
+    initialization_window_restore_geometry: Option<MainWindowGeometry>,
+    initialization_window_restore_maximized: bool,
+    initialization_window_active: bool,
     backend: BackendProcessManager,
     resource_dir: Option<PathBuf>,
     native_context_menu_selection: Option<String>,
@@ -522,6 +525,9 @@ impl DesktopState {
             backend_persistent,
             is_quitting: false,
             main_window_geometry: None,
+            initialization_window_restore_geometry: None,
+            initialization_window_restore_maximized: false,
+            initialization_window_active: false,
             backend: BackendProcessManager::from_env(),
             resource_dir: None,
             native_context_menu_selection: None,
@@ -532,6 +538,16 @@ impl DesktopState {
 }
 
 const MAIN_WINDOW_GEOMETRY_FILE_NAME: &str = "main-window-geometry.json";
+const INITIALIZATION_WINDOW_WIDTH: f64 = 1088.0;
+const INITIALIZATION_WINDOW_HEIGHT: f64 = 760.0;
+const INITIALIZATION_WINDOW_MIN_WIDTH: f64 = 1088.0;
+const INITIALIZATION_WINDOW_MIN_HEIGHT: f64 = 720.0;
+const WORKBENCH_WINDOW_MIN_WIDTH: f64 = 1100.0;
+const WORKBENCH_WINDOW_MIN_HEIGHT: f64 = 720.0;
+const POST_INITIALIZATION_WORKBENCH_SCALE: f64 = 1.5;
+const POST_INITIALIZATION_RESIZE_ANIMATION_STEPS: u32 = 12;
+const POST_INITIALIZATION_RESIZE_ANIMATION_FRAME_MS: u64 = 16;
+const WINDOW_GEOMETRY_SIZE_TOLERANCE_PX: i32 = 24;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -716,7 +732,7 @@ struct NativeLibraryRefreshRequest {
     mode: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct NativeLibraryWorkerCliPayload {
     root_dir: String,
@@ -959,6 +975,17 @@ struct PersistedRuntimeStatus {
     progress: Option<LocalLibraryIndexProgress>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyPersistedRuntimeStatus {
+    status: Option<String>,
+    stage: Option<String>,
+    command: Option<String>,
+    updated_at: Option<String>,
+    error_summary: Option<String>,
+    progress: Option<LocalLibraryIndexProgress>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LocalLibraryIndexProgress {
@@ -993,6 +1020,14 @@ struct LocalLibraryIndexStatus {
     worker_health: Option<Value>,
     progress: Option<LocalLibraryIndexProgress>,
     runtime_index_state: Option<LocalRuntimeIndexState>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeResetApplicationDataResult {
+    data_dir: String,
+    app_data_dir: Option<String>,
+    cleared_library_index_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1490,6 +1525,297 @@ impl NativeLibraryState {
 fn summary_backfill_spawn_registry() -> &'static Mutex<HashSet<String>> {
     static REGISTRY: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+#[cfg(not(test))]
+fn resolve_library_worker_cli_path() -> Result<PathBuf, String> {
+    if let Ok(explicit) = env::var("X_FILE_DESKTOP_CLI_PATH") {
+        let trimmed = explicit.trim();
+        if !trimmed.is_empty() {
+            return Ok(PathBuf::from(trimmed));
+        }
+    }
+    env::current_exe().map_err(|error| format!("解析 library worker helper 路径失败：{error}"))
+}
+
+fn normalize_library_worker_reason(reason: Option<&str>, fallback: &str) -> String {
+    reason
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(fallback)
+        .to_string()
+}
+
+fn normalize_library_worker_target_path(target_path: Option<&str>) -> Option<String> {
+    target_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn build_native_library_worker_payload(
+    binding: &LocalLibraryBinding,
+    reason: String,
+    target_path: Option<String>,
+    dirty_scope: Option<Value>,
+) -> NativeLibraryWorkerCliPayload {
+    NativeLibraryWorkerCliPayload {
+        root_dir: binding.root_dir.clone(),
+        target_path,
+        allowed_extensions: Some(binding.allowed_extensions.clone()),
+        included_hidden_paths: Some(binding.included_hidden_paths.clone()),
+        reason: Some(reason),
+        dirty_scope,
+        file_path: None,
+        extension: None,
+    }
+}
+
+fn run_native_summary_backfill_followed_by_search(
+    request: NativeIndexRequest,
+) -> Result<Value, String> {
+    println!(
+        "[x-file native] summary-backfill.start reason={} targetPath={}",
+        request.reason,
+        request.target_path.as_deref().unwrap_or("<root>")
+    );
+    let result = run_native_summary_backfill_worker(request.clone());
+    match result {
+        Ok(value) => {
+            println!("[x-file native] summary-backfill.done result={value}");
+            let changed_paths = value
+                .get("changedPaths")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if changed_paths.is_empty() {
+                return Ok(value);
+            }
+            let dirty_scope = json!({
+                "trigger": "summary_backfill",
+                "changedPaths": changed_paths,
+                "deletedPaths": [],
+                "dirtyDirectories": [],
+                "dirtyTagPaths": [],
+                "dirtyMetaShards": [],
+                "dirtyDetailShards": [],
+                "dirtyPostingBuckets": [],
+                "dirtyRelations": [],
+            });
+            match run_native_search_worker(NativeSearchRequest {
+                root_dir: request.root_dir.clone(),
+                reason: "summary_backfill".to_string(),
+                target_path: request.target_path.clone(),
+                dirty_scope: Some(dirty_scope),
+            }) {
+                Ok(search_result) => {
+                    println!(
+                        "[x-file native] summary-backfill.search-only.done result={search_result}"
+                    );
+                    Ok(value)
+                }
+                Err(error) => {
+                    eprintln!("[x-file native] summary-backfill.search-only.failed: {error}");
+                    Err(error)
+                }
+            }
+        }
+        Err(error) => {
+            eprintln!("[x-file native] summary-backfill.failed: {error}");
+            Err(error)
+        }
+    }
+}
+
+fn run_native_library_worker_mode(
+    mode: &str,
+    payload: NativeLibraryWorkerCliPayload,
+) -> Result<Value, String> {
+    let reason = normalize_library_worker_reason(payload.reason.as_deref(), "desktop_native_worker_cli");
+    let target_path = normalize_library_worker_target_path(payload.target_path.as_deref());
+
+    match mode {
+        "parse-file" => {
+            let file_path = payload
+                .file_path
+                .clone()
+                .or_else(|| payload.target_path.clone())
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| payload.root_dir.clone());
+            let extension = payload
+                .extension
+                .clone()
+                .filter(|value| !value.trim().is_empty())
+                .or_else(|| {
+                    payload
+                        .allowed_extensions
+                        .as_ref()
+                        .and_then(|items| items.first().cloned())
+                })
+                .or_else(|| {
+                    Some(file_path.as_str())
+                        .and_then(|value| {
+                            std::path::Path::new(value)
+                                .extension()
+                                .and_then(|ext| ext.to_str())
+                        })
+                        .map(|ext| format!(".{ext}"))
+                })
+                .unwrap_or_default();
+            run_native_parser(NativeParserRequest {
+                file_path,
+                extension,
+            })
+        }
+        "index-only" => {
+            let allowed_extensions = payload.allowed_extensions.unwrap_or_default();
+            let included_hidden_paths = payload.included_hidden_paths.unwrap_or_default();
+            run_native_index_worker(NativeIndexRequest {
+                root_dir: payload.root_dir,
+                allowed_extensions,
+                included_hidden_paths,
+                config_relative_path: ".ai-index/doc-semantic-index.config.json".to_string(),
+                reason,
+                target_path,
+            })
+        }
+        "export-only" => {
+            let dirty_scope = payload
+                .dirty_scope
+                .ok_or_else(|| "library worker CLI export-only 缺少 dirtyScope".to_string())?;
+            run_native_export_worker(NativeExportRequest {
+                root_dir: payload.root_dir,
+                reason,
+                target_path,
+                dirty_scope,
+            })
+        }
+        "search-only" => run_native_search_worker(NativeSearchRequest {
+            root_dir: payload.root_dir,
+            reason,
+            target_path,
+            dirty_scope: payload.dirty_scope,
+        }),
+        "summary-backfill" => {
+            let allowed_extensions = payload.allowed_extensions.unwrap_or_default();
+            let included_hidden_paths = payload.included_hidden_paths.unwrap_or_default();
+            run_native_summary_backfill_followed_by_search(NativeIndexRequest {
+                root_dir: payload.root_dir,
+                allowed_extensions,
+                included_hidden_paths,
+                config_relative_path: ".ai-index/doc-semantic-index.config.json".to_string(),
+                reason,
+                target_path,
+            })
+        }
+        "full" => {
+            let allowed_extensions = payload.allowed_extensions.unwrap_or_default();
+            let included_hidden_paths = payload.included_hidden_paths.unwrap_or_default();
+            let index_request = NativeIndexRequest {
+                root_dir: payload.root_dir.clone(),
+                allowed_extensions,
+                included_hidden_paths,
+                config_relative_path: ".ai-index/doc-semantic-index.config.json".to_string(),
+                reason: reason.clone(),
+                target_path: target_path.clone(),
+            };
+            let index_result = run_native_index_worker(index_request.clone())?;
+            let dirty_scope = index_result.get("dirtyScope").cloned().ok_or_else(|| {
+                "index-only worker 未返回 dirtyScope，无法继续执行 export-only".to_string()
+            })?;
+            if dirty_scope.is_null() {
+                return Err("index-only worker 返回了空 dirtyScope，宿主不会继续触发 export-only".to_string());
+            }
+            let export_result = run_native_export_worker(NativeExportRequest {
+                root_dir: payload.root_dir.clone(),
+                reason: reason.clone(),
+                target_path: target_path.clone(),
+                dirty_scope: dirty_scope.clone(),
+            })?;
+            run_native_search_worker(NativeSearchRequest {
+                root_dir: payload.root_dir,
+                reason,
+                target_path,
+                dirty_scope: Some(dirty_scope),
+            })?;
+            run_native_summary_backfill_followed_by_search(index_request)?;
+            Ok(export_result)
+        }
+        other => Err(format!("library worker CLI 不支持的 mode：{other}")),
+    }
+}
+
+fn spawn_native_library_worker_process(
+    mode: &str,
+    payload: NativeLibraryWorkerCliPayload,
+    registry_root_dir: Option<String>,
+) -> Result<(), String> {
+    #[cfg(test)]
+    {
+        let mode = mode.to_string();
+        thread::spawn(move || {
+            let result = run_native_library_worker_mode(&mode, payload);
+            if let Some(root_dir) = registry_root_dir {
+                if let Ok(mut guard) = summary_backfill_spawn_registry().lock() {
+                    guard.remove(&root_dir);
+                }
+            }
+            if let Err(error) = result {
+                eprintln!("[x-file native] worker mode={mode} failed: {error}");
+            }
+        });
+        return Ok(());
+    }
+
+    #[cfg(not(test))]
+    {
+        let helper_path = resolve_library_worker_cli_path()?;
+        let raw_payload = serde_json::to_string(&payload)
+            .map_err(|error| format!("序列化 library worker payload 失败：{error}"))?;
+        let mut child = Command::new(&helper_path)
+            .arg("library-worker")
+            .arg(mode)
+            .arg(raw_payload)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|error| {
+                format!(
+                    "启动 library worker helper 失败 mode={} path={}: {error}",
+                    mode,
+                    helper_path.display()
+                )
+            })?;
+        let mode_label = mode.to_string();
+        thread::spawn(move || {
+            let wait_result = child.wait();
+            if let Some(root_dir) = registry_root_dir {
+                if let Ok(mut guard) = summary_backfill_spawn_registry().lock() {
+                    guard.remove(&root_dir);
+                }
+            }
+            match wait_result {
+                Ok(status) if status.success() => {}
+                Ok(status) => eprintln!(
+                    "[x-file native] worker helper exited abnormally mode={} code={:?}",
+                    mode_label,
+                    status.code()
+                ),
+                Err(error) => eprintln!(
+                    "[x-file native] worker helper wait failed mode={}: {error}",
+                    mode_label
+                ),
+            }
+        });
+        Ok(())
+    }
 }
 
 #[derive(Serialize)]
@@ -2419,6 +2745,167 @@ fn capture_main_window_geometry_from_window(window: &Window) -> Option<MainWindo
     })
 }
 
+fn initialization_window_size() -> tauri::Size {
+    tauri::Size::Logical(tauri::LogicalSize::new(
+        INITIALIZATION_WINDOW_WIDTH,
+        INITIALIZATION_WINDOW_HEIGHT,
+    ))
+}
+
+fn initialization_window_min_size() -> tauri::Size {
+    tauri::Size::Logical(tauri::LogicalSize::new(
+        INITIALIZATION_WINDOW_MIN_WIDTH,
+        INITIALIZATION_WINDOW_MIN_HEIGHT,
+    ))
+}
+
+fn workbench_window_min_size() -> tauri::Size {
+    tauri::Size::Logical(tauri::LogicalSize::new(
+        WORKBENCH_WINDOW_MIN_WIDTH,
+        WORKBENCH_WINDOW_MIN_HEIGHT,
+    ))
+}
+
+fn geometry_has_similar_size(left: MainWindowGeometry, right: MainWindowGeometry) -> bool {
+    let width_delta = left.width as i64 - right.width as i64;
+    let height_delta = left.height as i64 - right.height as i64;
+    width_delta.abs() <= i64::from(WINDOW_GEOMETRY_SIZE_TOLERANCE_PX)
+        && height_delta.abs() <= i64::from(WINDOW_GEOMETRY_SIZE_TOLERANCE_PX)
+}
+
+fn scale_main_window_geometry_from_center(
+    geometry: MainWindowGeometry,
+    scale: f64,
+) -> MainWindowGeometry {
+    let center_x = geometry.position_x as f64 + geometry.width as f64 / 2.0;
+    let center_y = geometry.position_y as f64 + geometry.height as f64 / 2.0;
+    let scaled_width = ((geometry.width as f64) * scale).round().max(1.0) as u32;
+    let scaled_height = ((geometry.height as f64) * scale).round().max(1.0) as u32;
+
+    MainWindowGeometry {
+        position_x: (center_x - scaled_width as f64 / 2.0).round() as i32,
+        position_y: (center_y - scaled_height as f64 / 2.0).round() as i32,
+        width: scaled_width,
+        height: scaled_height,
+    }
+}
+
+fn resolve_post_initialization_workbench_geometry(
+    current_geometry: Option<MainWindowGeometry>,
+    restore_geometry: Option<MainWindowGeometry>,
+) -> Option<MainWindowGeometry> {
+    if let Some(restore) = restore_geometry {
+        if let Some(current) = current_geometry {
+            if !geometry_has_similar_size(restore, current) {
+                return Some(restore);
+            }
+        } else {
+            return Some(restore);
+        }
+    }
+
+    current_geometry
+        .or(restore_geometry)
+        .map(|geometry| scale_main_window_geometry_from_center(geometry, POST_INITIALIZATION_WORKBENCH_SCALE))
+}
+
+fn resolve_monitor_for_geometry(
+    window: &WebviewWindow,
+    geometry: MainWindowGeometry,
+) -> Option<tauri::Monitor> {
+    let center_x = geometry.position_x as i64 + geometry.width as i64 / 2;
+    let center_y = geometry.position_y as i64 + geometry.height as i64 / 2;
+    window
+        .monitor_from_point(center_x as f64, center_y as f64)
+        .ok()
+        .flatten()
+        .or_else(|| window.current_monitor().ok().flatten())
+}
+
+fn clamp_main_window_geometry_to_monitor(
+    window: &WebviewWindow,
+    geometry: MainWindowGeometry,
+) -> MainWindowGeometry {
+    let Some(monitor) = resolve_monitor_for_geometry(window, geometry) else {
+        return geometry;
+    };
+
+    let work_area = monitor.work_area();
+    let work_left = work_area.position.x as i64;
+    let work_top = work_area.position.y as i64;
+    let work_width = work_area.size.width as i64;
+    let work_height = work_area.size.height as i64;
+    if work_width <= 0 || work_height <= 0 {
+        return geometry;
+    }
+
+    let width = (geometry.width as i64).min(work_width).max(1);
+    let height = (geometry.height as i64).min(work_height).max(1);
+    let center_x = geometry.position_x as i64 + geometry.width as i64 / 2;
+    let center_y = geometry.position_y as i64 + geometry.height as i64 / 2;
+    let max_x = work_left + work_width - width;
+    let max_y = work_top + work_height - height;
+    let position_x = (center_x - width / 2).clamp(work_left, max_x);
+    let position_y = (center_y - height / 2).clamp(work_top, max_y);
+
+    MainWindowGeometry {
+        position_x: position_x as i32,
+        position_y: position_y as i32,
+        width: width as u32,
+        height: height as u32,
+    }
+}
+
+fn interpolate_main_window_geometry(
+    from: MainWindowGeometry,
+    to: MainWindowGeometry,
+    progress: f64,
+) -> MainWindowGeometry {
+    let interpolate_i32 = |start: i32, end: i32| -> i32 {
+        (start as f64 + (end - start) as f64 * progress).round() as i32
+    };
+    let interpolate_u32 = |start: u32, end: u32| -> u32 {
+        (start as f64 + (end as f64 - start as f64) * progress)
+            .round()
+            .max(1.0) as u32
+    };
+
+    MainWindowGeometry {
+        position_x: interpolate_i32(from.position_x, to.position_x),
+        position_y: interpolate_i32(from.position_y, to.position_y),
+        width: interpolate_u32(from.width, to.width),
+        height: interpolate_u32(from.height, to.height),
+    }
+}
+
+fn animate_main_window_geometry_transition(
+    window: WebviewWindow,
+    from: MainWindowGeometry,
+    to: MainWindowGeometry,
+) {
+    if from.position_x == to.position_x
+        && from.position_y == to.position_y
+        && from.width == to.width
+        && from.height == to.height
+    {
+        apply_main_window_geometry(&window, to);
+        return;
+    }
+
+    thread::spawn(move || {
+        for step in 1..=POST_INITIALIZATION_RESIZE_ANIMATION_STEPS {
+            let linear_progress = step as f64 / POST_INITIALIZATION_RESIZE_ANIMATION_STEPS as f64;
+            let eased_progress = 1.0 - (1.0 - linear_progress).powi(3);
+            let frame_geometry =
+                interpolate_main_window_geometry(from, to, eased_progress);
+            apply_main_window_geometry(&window, frame_geometry);
+            thread::sleep(Duration::from_millis(
+                POST_INITIALIZATION_RESIZE_ANIMATION_FRAME_MS,
+            ));
+        }
+    });
+}
+
 fn capture_main_window_geometry_from_webview(window: &WebviewWindow) -> Option<MainWindowGeometry> {
     let position = window.outer_position().ok()?;
     let size = window.outer_size().ok()?;
@@ -2456,6 +2943,15 @@ fn remember_main_window_geometry_from_webview(window: &WebviewWindow) {
 }
 
 fn persist_main_window_geometry_from_window(window: &Window) {
+    {
+        let desktop_state = window.state::<Mutex<DesktopState>>();
+        let Some(state) = desktop_state.try_lock().ok() else {
+            return;
+        };
+        if state.initialization_window_active {
+            return;
+        }
+    }
     let Some(geometry) = capture_main_window_geometry_from_window(window) else {
         return;
     };
@@ -2463,6 +2959,134 @@ fn persist_main_window_geometry_from_window(window: &Window) {
     if let Err(error) = persist_main_window_geometry(geometry) {
         eprintln!("持久化主窗口尺寸失败: {error}");
     }
+}
+
+fn set_main_window_initialization_mode(
+    window: &WebviewWindow,
+    active: bool,
+    state: &tauri::State<'_, Mutex<DesktopState>>,
+) -> Result<(), String> {
+    let mut desktop_state = lock_desktop_state(state);
+
+    if active {
+        if desktop_state.initialization_window_active {
+            return Ok(());
+        }
+
+        let restore_geometry = capture_main_window_geometry_from_webview(window)
+            .or(desktop_state.main_window_geometry);
+        let restore_maximized = window.is_maximized().unwrap_or(false);
+        desktop_state.initialization_window_restore_geometry =
+            restore_geometry;
+        desktop_state.initialization_window_restore_maximized = restore_maximized;
+        // 先标记为初始化态，避免下面的原生缩放事件把初始化尺寸错误持久化。
+        desktop_state.initialization_window_active = true;
+        drop(desktop_state);
+
+        if restore_maximized {
+            let _ = window.unmaximize();
+        }
+
+        let activation_result = (|| -> Result<(), String> {
+            #[cfg(target_os = "macos")]
+            set_macos_window_background_mode(window, false)?;
+
+            window
+                .set_maximizable(false)
+                .map_err(|error| format!("禁用初始化窗口最大化失败：{error}"))?;
+            window
+                .set_resizable(false)
+                .map_err(|error| format!("禁用初始化窗口缩放失败：{error}"))?;
+            window
+                .set_min_size(Some(initialization_window_min_size()))
+                .map_err(|error| format!("设置初始化窗口最小尺寸失败：{error}"))?;
+            window
+                .set_max_size(Some(initialization_window_size()))
+                .map_err(|error| format!("设置初始化窗口最大尺寸失败：{error}"))?;
+            window
+                .set_size(initialization_window_size())
+                .map_err(|error| format!("设置初始化窗口尺寸失败：{error}"))?;
+            window
+                .center()
+                .map_err(|error| format!("初始化窗口居中失败：{error}"))?;
+            Ok(())
+        })();
+
+        if let Err(error) = activation_result {
+            let mut rollback_state = lock_desktop_state(state);
+            rollback_state.initialization_window_restore_geometry = None;
+            rollback_state.initialization_window_restore_maximized = false;
+            rollback_state.initialization_window_active = false;
+            return Err(error);
+        }
+
+        return Ok(());
+    }
+
+    if !desktop_state.initialization_window_active {
+        return Ok(());
+    }
+
+    let restore_geometry = desktop_state.initialization_window_restore_geometry;
+    let restore_maximized = desktop_state.initialization_window_restore_maximized;
+    desktop_state.initialization_window_restore_geometry = None;
+    desktop_state.initialization_window_restore_maximized = false;
+    desktop_state.initialization_window_active = false;
+    drop(desktop_state);
+
+    #[cfg(target_os = "macos")]
+    set_macos_window_background_mode(window, true)?;
+
+    window
+        .set_max_size(None::<tauri::Size>)
+        .map_err(|error| format!("清除初始化窗口最大尺寸失败：{error}"))?;
+    window
+        .set_min_size(Some(workbench_window_min_size()))
+        .map_err(|error| format!("恢复工作台最小尺寸失败：{error}"))?;
+    window
+        .set_resizable(true)
+        .map_err(|error| format!("恢复工作台缩放失败：{error}"))?;
+    window
+        .set_maximizable(true)
+        .map_err(|error| format!("恢复工作台最大化失败：{error}"))?;
+
+    if restore_maximized {
+        window
+            .maximize()
+            .map_err(|error| format!("恢复工作台最大化状态失败：{error}"))?;
+    } else {
+        let current_geometry = capture_main_window_geometry_from_webview(window);
+        let target_geometry = resolve_post_initialization_workbench_geometry(
+            current_geometry,
+            restore_geometry,
+        )
+        .map(|geometry| clamp_main_window_geometry_to_monitor(window, geometry));
+
+        if let Some(geometry) = target_geometry {
+            if let Some(current) = current_geometry {
+                animate_main_window_geometry_transition(window.clone(), current, geometry);
+            } else {
+                apply_main_window_geometry(window, geometry);
+            }
+            update_main_window_geometry_state(&window.app_handle(), geometry);
+            if let Err(error) = persist_main_window_geometry(geometry) {
+                eprintln!("恢复工作台尺寸后持久化失败: {error}");
+            }
+        } else {
+            let scaled_size = tauri::Size::Logical(tauri::LogicalSize::new(
+                INITIALIZATION_WINDOW_WIDTH * POST_INITIALIZATION_WORKBENCH_SCALE,
+                INITIALIZATION_WINDOW_HEIGHT * POST_INITIALIZATION_WORKBENCH_SCALE,
+            ));
+            window
+                .set_size(scaled_size)
+                .map_err(|error| format!("设置工作台默认尺寸失败：{error}"))?;
+            window
+                .center()
+                .map_err(|error| format!("工作台默认居中失败：{error}"))?;
+        }
+    }
+
+    Ok(())
 }
 
 fn show_main_window(app: &AppHandle) {
@@ -2714,69 +3338,18 @@ fn spawn_native_summary_backfill_worker(
     reason: String,
     target_path: Option<String>,
 ) {
-    thread::spawn(move || {
-        let root_dir = binding.root_dir.clone();
-        println!(
-            "[x-file native] summary-backfill.start reason={} targetPath={}",
-            reason,
-            target_path.as_deref().unwrap_or("<root>")
-        );
-        let result = run_native_summary_backfill_worker(NativeIndexRequest {
-            root_dir: binding.root_dir.clone(),
-            allowed_extensions: binding.allowed_extensions.clone(),
-            included_hidden_paths: binding.included_hidden_paths.clone(),
-            config_relative_path: binding.config_relative_path.clone(),
-            reason,
-            target_path: target_path.clone(),
-        });
-        match result {
-            Ok(value) => {
-                println!("[x-file native] summary-backfill.done result={value}");
-                let changed_paths = value
-                    .get("changedPaths")
-                    .and_then(Value::as_array)
-                    .map(|items| {
-                        items
-                            .iter()
-                            .filter_map(Value::as_str)
-                            .map(ToString::to_string)
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                if changed_paths.is_empty() {
-                    return;
-                }
-                let dirty_scope = json!({
-                    "trigger": "summary_backfill",
-                    "changedPaths": changed_paths,
-                    "deletedPaths": [],
-                    "dirtyDirectories": [],
-                    "dirtyTagPaths": [],
-                    "dirtyMetaShards": [],
-                    "dirtyDetailShards": [],
-                    "dirtyPostingBuckets": [],
-                    "dirtyRelations": [],
-                });
-                match run_native_library_search_once(
-                    &binding,
-                    "summary_backfill",
-                    target_path,
-                    Some(dirty_scope),
-                ) {
-                    Ok(search_result) => println!(
-                        "[x-file native] summary-backfill.search-only.done result={search_result}"
-                    ),
-                    Err(error) => {
-                        eprintln!("[x-file native] summary-backfill.search-only.failed: {error}")
-                    }
-                }
-            }
-            Err(error) => eprintln!("[x-file native] summary-backfill.failed: {error}"),
-        }
+    let root_dir = binding.root_dir.clone();
+    let payload = build_native_library_worker_payload(&binding, reason, target_path, None);
+    if let Err(error) = spawn_native_library_worker_process(
+        "summary-backfill",
+        payload,
+        Some(root_dir.clone()),
+    ) {
         if let Ok(mut guard) = summary_backfill_spawn_registry().lock() {
             guard.remove(&root_dir);
         }
-    });
+        eprintln!("[x-file native] summary-backfill.spawn failed: {error}");
+    }
 }
 
 fn run_native_library_index_worker_once(
@@ -2853,12 +3426,23 @@ fn run_native_library_index_once(
 }
 
 fn run_native_library_index_worker_detached(
-    resource_dir: Option<PathBuf>,
+    _resource_dir: Option<PathBuf>,
     request: NativeLibraryRefreshRequest,
-) -> Result<Value, String> {
-    let mut state = DesktopState::new();
-    state.resource_dir = resource_dir;
-    run_native_library_index_worker(&mut state, request)
+) -> Result<(), String> {
+    let binding = read_local_library_binding()?
+        .ok_or_else(|| "文档库绑定不存在，无法执行索引 worker".to_string())?;
+    let reason =
+        normalize_library_worker_reason(request.reason.as_deref(), "native_manual_refresh");
+    let target_path = normalize_library_worker_target_path(request.target_path.as_deref());
+    let mode = request
+        .mode
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("full")
+        .to_string();
+    let payload = build_native_library_worker_payload(&binding, reason, target_path, None);
+    spawn_native_library_worker_process(&mode, payload, None)
 }
 
 fn read_local_library_snapshot(
@@ -3946,7 +4530,7 @@ fn read_local_runtime_status(root_dir: &str) -> Result<Option<LocalLibraryIndexS
     let file_path = PathBuf::from(root_dir)
         .join(".ai-index")
         .join("runtime-status.json");
-    let Some(payload) = read_optional_json_file::<PersistedRuntimeStatus>(&file_path)? else {
+    let Some(payload) = read_optional_runtime_status_file(&file_path)? else {
         return Ok(None);
     };
     let stale_reference_at = payload
@@ -3998,6 +4582,96 @@ fn read_local_runtime_status(root_dir: &str) -> Result<Option<LocalLibraryIndexS
         progress: payload.progress,
         runtime_index_state: read_local_runtime_index_state(root_dir)?,
     }))
+}
+
+fn read_optional_runtime_status_file(
+    path: &PathBuf,
+) -> Result<Option<PersistedRuntimeStatus>, String> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(path)
+        .map_err(|error| format!("读取文件失败 {}: {error}", path.display()))?;
+    let value = serde_json::from_str::<Value>(&raw)
+        .map_err(|error| format!("解析 JSON 失败 {}: {error}", path.display()))?;
+    Ok(normalize_runtime_status_payload(value))
+}
+
+fn normalize_runtime_status_payload(value: Value) -> Option<PersistedRuntimeStatus> {
+    if let Ok(payload) = serde_json::from_value::<PersistedRuntimeStatus>(value.clone()) {
+        return Some(payload);
+    }
+    let legacy = serde_json::from_value::<LegacyPersistedRuntimeStatus>(value).ok()?;
+    let state = map_legacy_runtime_status_state(
+        legacy.status.as_deref(),
+        legacy.stage.as_deref(),
+        legacy.command.as_deref(),
+    )?;
+    let updated_at = legacy
+        .updated_at
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    let last_completed_at = if state == "fresh" {
+        updated_at.clone()
+    } else {
+        None
+    };
+    let last_failed_at = if state == "failed" {
+        updated_at.clone()
+    } else {
+        None
+    };
+    let running_stage = legacy
+        .stage
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "finished")
+        .map(ToString::to_string);
+    Some(PersistedRuntimeStatus {
+        state,
+        last_requested_at: None,
+        last_started_at: updated_at.clone(),
+        last_completed_at,
+        last_failed_at,
+        next_allowed_at: None,
+        progress_updated_at: updated_at,
+        running_stage,
+        error_summary: legacy.error_summary,
+        progress: legacy.progress,
+    })
+}
+
+fn map_legacy_runtime_status_state(
+    status: Option<&str>,
+    stage: Option<&str>,
+    command: Option<&str>,
+) -> Option<String> {
+    let normalized_status = status
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match normalized_status {
+        Some("fresh" | "stale" | "queued" | "running" | "queue_timeout" | "cooldown" | "failed") => {
+            return normalized_status.map(ToString::to_string);
+        }
+        Some("finished" | "success") => return Some("fresh".to_string()),
+        Some("error") => return Some("failed".to_string()),
+        Some("pending") => return Some("queued".to_string()),
+        Some(_) => {}
+        None => {}
+    }
+    let normalized_stage = stage.map(str::trim).filter(|value| !value.is_empty());
+    if matches!(normalized_stage, Some("finished")) {
+        return Some("fresh".to_string());
+    }
+    if matches!(normalized_stage, Some("failed" | "error")) {
+        return Some("failed".to_string());
+    }
+    if matches!(command.map(str::trim), Some("index" | "export" | "search")) {
+        return Some("running".to_string());
+    }
+    None
 }
 
 fn resolve_runtime_status_stale_timeout_ms(state: &str, running_stage: Option<&str>) -> i64 {
@@ -5672,6 +6346,58 @@ fn resolve_local_http_server_state_path() -> PathBuf {
     x_file_data_dir().join("http-server-state.json")
 }
 
+fn remove_path_if_exists(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let metadata = fs::metadata(path)
+        .map_err(|error| format!("读取待删除路径失败 {}: {error}", path.display()))?;
+    if metadata.is_dir() {
+        fs::remove_dir_all(path)
+            .map_err(|error| format!("删除目录失败 {}: {error}", path.display()))?;
+    } else {
+        fs::remove_file(path)
+            .map_err(|error| format!("删除文件失败 {}: {error}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn clear_native_application_data(app: &AppHandle) -> Result<NativeResetApplicationDataResult, String> {
+    let binding = read_local_library_binding()?;
+    let cleared_library_index_dir = binding
+        .as_ref()
+        .and_then(|item| {
+            let candidate = PathBuf::from(&item.root_dir).join(".ai-index");
+            if candidate.exists() {
+                Some(candidate)
+            } else {
+                None
+            }
+        });
+    if let Some(index_dir) = cleared_library_index_dir.as_ref() {
+        remove_path_if_exists(index_dir)?;
+    }
+
+    let data_dir = x_file_data_dir();
+    let app_data_dir = app.path().app_data_dir().ok();
+    let server_state_path = resolve_local_http_server_state_path();
+
+    remove_path_if_exists(&data_dir)?;
+    if server_state_path != data_dir.join("http-server-state.json") {
+        remove_path_if_exists(&server_state_path)?;
+    }
+    if let Some(path) = app_data_dir.as_ref() {
+        remove_path_if_exists(path)?;
+    }
+
+    Ok(NativeResetApplicationDataResult {
+        data_dir: data_dir.to_string_lossy().to_string(),
+        app_data_dir: app_data_dir.map(|path| path.to_string_lossy().to_string()),
+        cleared_library_index_dir: cleared_library_index_dir
+            .map(|path| path.to_string_lossy().to_string()),
+    })
+}
+
 fn build_default_plugin_registry_record(
     plugin_id: &str,
     version: &str,
@@ -5975,14 +6701,32 @@ fn write_json_file<T>(path: &PathBuf, value: &T) -> Result<(), String>
 where
     T: Serialize,
 {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("创建目录失败 {}: {error}", parent.display()))?;
-    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("目标路径缺少父目录：{}", path.display()))?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("创建目录失败 {}: {error}", parent.display()))?;
     let mut buffer = serde_json::to_vec_pretty(value)
         .map_err(|error| format!("序列化 JSON 失败 {}: {error}", path.display()))?;
     buffer.push(b'\n');
-    fs::write(path, buffer).map_err(|error| format!("写入文件失败 {}: {error}", path.display()))
+    let temp_path = parent.join(format!(
+        ".{}.tmp-{}-{}",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("runtime-json"),
+        std::process::id(),
+        epoch_millis()
+    ));
+    fs::write(&temp_path, buffer)
+        .map_err(|error| format!("写入临时文件失败 {}: {error}", temp_path.display()))?;
+    fs::rename(&temp_path, path).map_err(|error| {
+        let _ = fs::remove_file(&temp_path);
+        format!(
+            "原子替换 JSON 文件失败 {} -> {}: {error}",
+            temp_path.display(),
+            path.display()
+        )
+    })
 }
 
 #[cfg(test)]
@@ -6220,6 +6964,106 @@ mod tests {
         assert_eq!(status.state, "running");
         assert_eq!(status.running_stage.as_deref(), Some("export_snapshot"));
         assert!(status.error_summary.is_none());
+    }
+
+    #[test]
+    fn 退出初始化时若恢复尺寸与初始化一致则放大到一倍半() {
+        let initialization_geometry = MainWindowGeometry {
+            position_x: 100,
+            position_y: 120,
+            width: INITIALIZATION_WINDOW_WIDTH as u32,
+            height: INITIALIZATION_WINDOW_HEIGHT as u32,
+        };
+
+        let next_geometry = resolve_post_initialization_workbench_geometry(
+            Some(initialization_geometry),
+            Some(initialization_geometry),
+        )
+        .expect("应生成工作台尺寸");
+
+        assert_eq!(
+            next_geometry.width,
+            (INITIALIZATION_WINDOW_WIDTH * POST_INITIALIZATION_WORKBENCH_SCALE).round() as u32
+        );
+        assert_eq!(
+            next_geometry.height,
+            (INITIALIZATION_WINDOW_HEIGHT * POST_INITIALIZATION_WORKBENCH_SCALE).round() as u32
+        );
+    }
+
+    #[test]
+    fn 退出初始化时已有自定义主窗口尺寸则优先恢复() {
+        let initialization_geometry = MainWindowGeometry {
+            position_x: 100,
+            position_y: 120,
+            width: INITIALIZATION_WINDOW_WIDTH as u32,
+            height: INITIALIZATION_WINDOW_HEIGHT as u32,
+        };
+        let customized_workbench_geometry = MainWindowGeometry {
+            position_x: 32,
+            position_y: 48,
+            width: 1720,
+            height: 1180,
+        };
+
+        let next_geometry = resolve_post_initialization_workbench_geometry(
+            Some(initialization_geometry),
+            Some(customized_workbench_geometry),
+        )
+        .expect("应恢复自定义工作台尺寸");
+
+        assert_eq!(next_geometry.position_x, customized_workbench_geometry.position_x);
+        assert_eq!(next_geometry.position_y, customized_workbench_geometry.position_y);
+        assert_eq!(next_geometry.width, customized_workbench_geometry.width);
+        assert_eq!(next_geometry.height, customized_workbench_geometry.height);
+    }
+
+    #[test]
+    fn native_runtime_status_兼容旧版_finished_payload() {
+        let _guard = test_env_lock().lock().expect("测试环境锁被污染");
+        let nonce = epoch_millis();
+        let root_dir = env::temp_dir().join(format!("x-file-native-legacy-runtime-status-{nonce}"));
+        let ai_index_dir = root_dir.join(".ai-index");
+        fs::create_dir_all(&ai_index_dir).expect("创建 .ai-index 目录失败");
+        write_json_file(
+            &ai_index_dir.join("runtime-status.json"),
+            &json!({
+                "version": 1,
+                "command": "index",
+                "status": "finished",
+                "stage": "finished",
+                "updatedAt": "2026-07-06T09:56:22.640Z",
+                "taskId": "c563e4c4-afdd-4b75-a30e-b5af74ef4acd",
+                "taskType": "affairs.library_index",
+                "errorSummary": null,
+                "progress": {
+                    "scannedCount": 17320,
+                    "indexedCount": 0,
+                    "skippedCount": 0,
+                    "failedCount": 0,
+                    "unchangedCount": 17320,
+                    "totalCount": 17320,
+                    "maxConcurrency": 1
+                }
+            }),
+        )
+        .expect("写入旧版 runtime-status 失败");
+
+        let status = read_local_runtime_status(&root_dir.to_string_lossy())
+            .expect("读取旧版 runtime status 失败")
+            .expect("旧版 runtime status 不应为空");
+        fs::remove_dir_all(&root_dir).ok();
+
+        assert_eq!(status.state, "fresh");
+        assert_eq!(status.last_completed_at.as_deref(), Some("2026-07-06T09:56:22.640Z"));
+        assert_eq!(status.running_stage, None);
+        assert_eq!(
+            status
+                .progress
+                .as_ref()
+                .and_then(|progress| progress.total_count),
+            Some(17320)
+        );
     }
 
     #[test]
@@ -6517,6 +7361,26 @@ fn dirs_home_dir() -> PathBuf {
 
 fn iso_now() -> String {
     chrono::Utc::now().to_rfc3339()
+}
+
+#[cfg(target_os = "macos")]
+fn set_macos_window_background_mode(window: &WebviewWindow, transparent: bool) -> Result<(), String> {
+    let native_window = window.clone();
+    window
+        .run_on_main_thread(move || unsafe {
+            let Ok(ns_window_ptr) = native_window.ns_window() else {
+                return;
+            };
+            let ns_window: &NSWindow = &*ns_window_ptr.cast();
+            let background_color = if transparent {
+                NSColor::clearColor()
+            } else {
+                NSColor::colorWithSRGBRed_green_blue_alpha(0.176, 0.196, 0.239, 1.0)
+            };
+            ns_window.setBackgroundColor(Some(&background_color));
+            ns_window.setOpaque(!transparent);
+        })
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(target_os = "macos")]
@@ -6958,6 +7822,28 @@ fn get_runtime_info(app: AppHandle) -> updater::DesktopRuntimeInfo {
 }
 
 #[tauri::command]
+fn set_initialization_window_mode(
+    window: WebviewWindow,
+    active: bool,
+    state: tauri::State<'_, Mutex<DesktopState>>,
+) -> Result<(), String> {
+    set_main_window_initialization_mode(&window, active, &state)
+}
+
+#[tauri::command]
+fn native_clear_application_data(
+    app: AppHandle,
+) -> Result<NativeResetApplicationDataResult, String> {
+    clear_native_application_data(&app)
+}
+
+#[tauri::command]
+fn request_native_app_restart(app: AppHandle) -> Result<bool, String> {
+    app.request_restart();
+    Ok(true)
+}
+
+#[tauri::command]
 async fn download_update(
     app: AppHandle,
     channel: String,
@@ -7014,84 +7900,7 @@ fn try_run_library_worker_cli_from_args(args: &[String]) -> Result<String, Strin
         .ok_or_else(|| "library worker CLI 缺少 payload 参数".to_string())?;
     let payload: NativeLibraryWorkerCliPayload = serde_json::from_str(raw_payload)
         .map_err(|error| format!("library worker CLI payload 无法解析：{error}"))?;
-    let reason = payload
-        .reason
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("desktop_native_worker_cli")
-        .to_string();
-    let target_path = payload
-        .target_path
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string);
-
-    let result = match mode {
-        "parse-file" => {
-            let file_path = payload
-                .file_path
-                .clone()
-                .or_else(|| payload.target_path.clone())
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| payload.root_dir.clone());
-            let extension = payload
-                .extension
-                .clone()
-                .filter(|value| !value.trim().is_empty())
-                .or_else(|| {
-                    payload
-                        .allowed_extensions
-                        .as_ref()
-                        .and_then(|items| items.first().cloned())
-                })
-                .or_else(|| {
-                    Some(file_path.as_str())
-                        .and_then(|value| {
-                            std::path::Path::new(value)
-                                .extension()
-                                .and_then(|ext| ext.to_str())
-                        })
-                        .map(|ext| format!(".{ext}"))
-                })
-                .unwrap_or_default();
-            run_native_parser(NativeParserRequest {
-                file_path,
-                extension,
-            })
-        }
-        "index-only" => {
-            let allowed_extensions = payload.allowed_extensions.unwrap_or_default();
-            let included_hidden_paths = payload.included_hidden_paths.unwrap_or_default();
-            run_native_index_worker(NativeIndexRequest {
-                root_dir: payload.root_dir,
-                allowed_extensions,
-                included_hidden_paths,
-                config_relative_path: ".ai-index/doc-semantic-index.config.json".to_string(),
-                reason,
-                target_path,
-            })
-        }
-        "export-only" => {
-            let dirty_scope = payload
-                .dirty_scope
-                .ok_or_else(|| "library worker CLI export-only 缺少 dirtyScope".to_string())?;
-            run_native_export_worker(NativeExportRequest {
-                root_dir: payload.root_dir,
-                reason,
-                target_path,
-                dirty_scope,
-            })
-        }
-        "search-only" => run_native_search_worker(NativeSearchRequest {
-            root_dir: payload.root_dir,
-            reason,
-            target_path,
-            dirty_scope: payload.dirty_scope,
-        }),
-        other => Err(format!("library worker CLI 不支持的 mode：{other}")),
-    }?;
+    let result = run_native_library_worker_mode(mode, payload)?;
 
     serde_json::to_string(&result)
         .map_err(|error| format!("library worker CLI 输出序列化失败：{error}"))
@@ -7168,6 +7977,9 @@ pub fn run() {
             reveal_path_in_file_manager,
             show_library_context_menu,
             get_runtime_info,
+            set_initialization_window_mode,
+            native_clear_application_data,
+            request_native_app_restart,
             check_for_update,
             download_update,
             install_update,

@@ -8,8 +8,13 @@ import { AssistantComposer } from "./AssistantComposer";
 import { AssistantMessageTimeline } from "./AssistantMessageTimeline";
 import { AssistantPermissionList } from "./AssistantPermissionList";
 
+type AssistantSelectionBridge = Pick<
+  LibraryState,
+  "selectedDocuments" | "selectedFolderEntries"
+>;
+
 interface DocumentAssistantPanelProps {
-  library: LibraryState;
+  library: AssistantSelectionBridge;
   assistant: DocumentAssistantState;
 }
 
@@ -110,8 +115,8 @@ export function DocumentAssistantPanel({ library, assistant }: DocumentAssistant
 }
 
 function buildAssistantContextTargets(
-  selectedDocuments: LibraryState["selectedDocuments"],
-  selectedFolders: LibraryState["selectedFolderEntries"]
+  selectedDocuments: AssistantSelectionBridge["selectedDocuments"],
+  selectedFolders: AssistantSelectionBridge["selectedFolderEntries"]
 ): Array<{ kind: "file" | "folder"; path: string; label: string }> {
   return [
     ...selectedDocuments.map((item) => ({

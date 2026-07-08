@@ -66,6 +66,12 @@ export interface NativeDesktopRuntimeInfo {
   windowChrome?: NativeDesktopWindowChromeInfo | null;
 }
 
+export interface NativeResetApplicationDataResult {
+  dataDir: string;
+  appDataDir: string | null;
+  clearedLibraryIndexDir: string | null;
+}
+
 export interface NativeSidebarLayoutInput {
   leftWidth: number;
   rightWidth: number;
@@ -224,6 +230,25 @@ export async function stopNativeLibraryWatcher(): Promise<NativeLibraryWatcherSt
 
 export async function getNativeDesktopRuntimeInfo(): Promise<NativeDesktopRuntimeInfo | null> {
   return invokeOptional<NativeDesktopRuntimeInfo>("get_runtime_info");
+}
+
+export async function setInitializationWindowMode(active: boolean): Promise<boolean> {
+  if (!isDesktopTauriRuntime()) {
+    return false;
+  }
+  await invoke<void>("set_initialization_window_mode", { active });
+  return true;
+}
+
+export async function clearNativeApplicationData(): Promise<NativeResetApplicationDataResult | null> {
+  return invokeOptional<NativeResetApplicationDataResult>("native_clear_application_data");
+}
+
+export async function requestNativeAppRestart(): Promise<boolean> {
+  if (!isDesktopTauriRuntime()) {
+    return false;
+  }
+  return invoke<boolean>("request_native_app_restart");
 }
 
 export async function notifyWindowReadyForNativeSidebar(): Promise<boolean> {

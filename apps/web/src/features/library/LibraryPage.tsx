@@ -2,6 +2,7 @@ import {
   Fragment,
   memo,
   useCallback,
+  useDeferredValue,
   useEffect,
   useId,
   useLayoutEffect,
@@ -60,6 +61,7 @@ import {
   notifyWindowReadyForNativeSidebar,
   getNativeLibraryPreview,
   getNativeOnlyOfficePreview,
+  setInitializationWindowMode,
   syncNativeSidebarLayout,
 } from "../../runtime/native-library-bridge";
 import {
@@ -69,6 +71,10 @@ import {
   toggleDesktopWindowMaximize,
 } from "../../runtime/window-drag";
 import { updateRuntimeConfig } from "../../runtime/runtime-config-store";
+import {
+  updatePreferences,
+  usePreferencesSelector,
+} from "../../preferences/preferences-store";
 import {
   getFileOpenModeForPath,
   getFileOpenPreferenceItems,
@@ -341,6 +347,58 @@ interface PendingTagFilterFavoriteState {
   error: string | null;
 }
 
+type StageLibraryState = Pick<
+  LibraryState,
+  | "documentPage"
+  | "documentsLoading"
+  | "entries"
+  | "hasMore"
+  | "loading"
+  | "loadMore"
+  | "refresh"
+  | "refreshPending"
+  | "selectDocument"
+  | "selectFolder"
+  | "selectFolderEntry"
+  | "selectTag"
+  | "setViewState"
+  | "snapshot"
+  | "toggleDocumentSelection"
+  | "toggleFolderEntrySelection"
+  | "viewState"
+  | "visibleEntryTotal"
+>;
+
+type DetailLibraryState = Pick<
+  LibraryState,
+  | "documentPage"
+  | "downloadSelected"
+  | "entries"
+  | "openPreview"
+  | "preview"
+  | "previewError"
+  | "previewLoading"
+  | "reload"
+  | "reloadDocuments"
+  | "selectedDocument"
+  | "selectedDocuments"
+  | "selectedFolderEntries"
+  | "selectFolder"
+  | "snapshot"
+  | "viewState"
+>;
+
+type LibraryReloadBridge = Pick<LibraryState, "reload" | "reloadDocuments">;
+type LibrarySnapshotBridge = Pick<LibraryState, "snapshot">;
+type AssistantSelectionBridge = Pick<
+  LibraryState,
+  "selectedDocuments" | "selectedFolderEntries"
+>;
+type AssistantContextSource = Pick<
+  LibraryState,
+  "selectedDocuments" | "selectedFolderEntries" | "viewState"
+>;
+
 const LIBRARY_TAG_TREE_DEFAULT_ROOTS = new Set(["时间", "类型", "time", "type"]);
 const LIBRARY_TAG_TREE_NOISE_ROOTS = new Set([
   "来源",
@@ -414,9 +472,19 @@ export function LibraryPage({
   const [tagManagerOpen, setTagManagerOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchDraft, setSearchDraft] = useState("");
+  const libraryRef = useRef(library);
+  const libraryClipboardRef = useRef<LibraryClipboardState | null>(libraryClipboard);
   const overlayMacOsTitlebar = platformData.runtimePlatform === "desktop"
     && platformData.osFamily === "macos"
     && platformData.overlayTitlebar;
+
+  useEffect(() => {
+    libraryRef.current = library;
+  }, [library]);
+
+  useEffect(() => {
+    libraryClipboardRef.current = libraryClipboard;
+  }, [libraryClipboard]);
 
   useEffect(() => {
     if (!overlayMacOsTitlebar) {
@@ -534,12 +602,88 @@ export function LibraryPage({
     void toggleDesktopWindowMaximize();
   }, [overlayMacOsTitlebar, platformData]);
 
-  function openLibraryViewer(entry: LibraryDocumentEntry): void {
+  const openLibraryViewer = useCallback((entry: LibraryDocumentEntry): void => {
     setViewerState({
       filePath: entry.path,
       title: resolveLibraryDocumentDisplayName(entry),
     });
-  }
+  }, []);
+
+  const handleRequestCreate = useCallback((state: PendingCreateState): void => {
+    setPendingCreate(state);
+  }, []);
+
+  const handleRequestRename = useCallback((path: string): void => {
+    setPendingRename({ path, fileName: getPathName(path) });
+  }, []);
+
+  const handleRequestDelete = useCallback((target: LibraryContextMenuTarget): void => {
+    setPendingDelete(target);
+  }, []);
+
+  const handleRequestTagAssignment = useCallback((target: LibraryContextMenuTarget): void => {
+    setPendingTagAssignment(resolvePendingTagAssignmentTarget(target));
+  }, []);
+
+  const handleOpenSearch = useCallback((): void => {
+    setSearchOpen(true);
+  }, []);
+
+  const handleOpenTagManager = useCallback((): void => {
+    setTagManagerOpen(true);
+  }, []);
+
+  const callLibraryLoadMore = useCallback<LibraryState["loadMore"]>(async () => {
+    await libraryRef.current.loadMore();
+  }, []);
+
+  const callLibraryRefresh = useCallback<LibraryState["refresh"]>(async () => {
+    await libraryRef.current.refresh();
+  }, []);
+
+  const callLibraryReload = useCallback<LibraryState["reload"]>(async () => {
+    await libraryRef.current.reload();
+  }, []);
+
+  const callLibraryReloadDocuments = useCallback<LibraryState["reloadDocuments"]>(async (reset) => {
+    await libraryRef.current.reloadDocuments(reset);
+  }, []);
+
+  const callLibrarySetViewState = useCallback<LibraryState["setViewState"]>((updater) => {
+    libraryRef.current.setViewState(updater);
+  }, []);
+
+  const callLibrarySelectFolder = useCallback<LibraryState["selectFolder"]>((path, selectedEntryPath) => {
+    libraryRef.current.selectFolder(path, selectedEntryPath);
+  }, []);
+
+  const callLibrarySelectFolderEntry = useCallback<LibraryState["selectFolderEntry"]>((path) => {
+    libraryRef.current.selectFolderEntry(path);
+  }, []);
+
+  const callLibraryToggleFolderEntrySelection = useCallback<LibraryState["toggleFolderEntrySelection"]>((path, additive) => {
+    libraryRef.current.toggleFolderEntrySelection(path, additive);
+  }, []);
+
+  const callLibrarySelectTag = useCallback<LibraryState["selectTag"]>((path) => {
+    libraryRef.current.selectTag(path);
+  }, []);
+
+  const callLibrarySelectDocument = useCallback<LibraryState["selectDocument"]>((documentId) => {
+    libraryRef.current.selectDocument(documentId);
+  }, []);
+
+  const callLibraryToggleDocumentSelection = useCallback<LibraryState["toggleDocumentSelection"]>((documentId, additive) => {
+    libraryRef.current.toggleDocumentSelection(documentId, additive);
+  }, []);
+
+  const callLibraryOpenPreview = useCallback<LibraryState["openPreview"]>(async (path) => {
+    await libraryRef.current.openPreview(path);
+  }, []);
+
+  const callLibraryDownloadSelected = useCallback<LibraryState["downloadSelected"]>(async (path) => {
+    await libraryRef.current.downloadSelected(path);
+  }, []);
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -559,52 +703,55 @@ export function LibraryPage({
     };
   }, [contextMenu]);
 
-  async function pasteIntoTarget(
+  const pasteIntoTarget = useCallback(async (
     target: LibraryContextMenuTarget,
-  ): Promise<void> {
-    if (!libraryClipboard) return;
+  ): Promise<void> => {
+    const currentClipboard = libraryClipboardRef.current;
+    if (!currentClipboard) return;
+    const currentLibrary = libraryRef.current;
     const folderPath = resolvePasteDestinationFolder(target);
-    const sourcePath = resolveContextPath(libraryClipboard.target);
+    const sourcePath = resolveContextPath(currentClipboard.target);
     const destinationPath = buildUniqueLibraryTargetPath(
       folderPath,
       getPathName(sourcePath),
-      library.entries,
+      currentLibrary.entries,
     );
-    await library.operateFile({
-      opType: libraryClipboard.mode === "cut" ? "move" : "copy",
+    await currentLibrary.operateFile({
+      opType: currentClipboard.mode === "cut" ? "move" : "copy",
       srcPath: sourcePath,
       dstPath: destinationPath,
     });
-    if (libraryClipboard.mode === "cut") {
+    if (currentClipboard.mode === "cut") {
       setLibraryClipboard(null);
     }
-  }
+  }, []);
 
-  async function runContextAction(
+  const runContextAction = useCallback(async (
     actionId: LibraryContextActionId,
     target: LibraryContextMenuTarget,
-  ): Promise<void> {
+  ): Promise<void> => {
+    const currentLibrary = libraryRef.current;
     const absolutePath =
       target.kind === "document" || target.kind === "folder"
-        ? resolveTargetAbsolutePath(library, target)
+        ? resolveTargetAbsolutePath(currentLibrary, target)
         : null;
     switch (actionId) {
       case "preview":
         if (target.kind === "document") {
-          library.selectDocument(target.entry.documentId);
+          currentLibrary.selectDocument(target.entry.documentId);
           openLibraryViewer(target.entry);
         }
         return;
       case "open":
         if (target.kind === "document" || target.kind === "folder") {
-          await openContextTarget(library, target);
+          await openContextTarget(currentLibrary, target);
         }
         return;
       case "locate":
         if (target.kind === "document") {
-          await locateDocumentFolder(library, target.entry.path);
+          await locateDocumentFolder(currentLibrary, target.entry.path);
         } else if (target.kind === "folder") {
-          library.selectFolder(target.entry.path);
+          currentLibrary.selectFolder(target.entry.path);
         }
         return;
       case "open-local-app":
@@ -624,7 +771,7 @@ export function LibraryPage({
         return;
       case "download":
         if (target.kind === "document") {
-          await library.downloadSelected(target.entry.path);
+          await currentLibrary.downloadSelected(target.entry.path);
         }
         return;
       case "new-directory":
@@ -683,20 +830,20 @@ export function LibraryPage({
         return;
       }
       case "refresh":
-        await library.reloadDocuments(true);
+        await currentLibrary.reloadDocuments(true);
         return;
       case "properties":
-        selectContextProperties(library, target);
+        selectContextProperties(currentLibrary, target);
         return;
       default:
         return;
     }
-  }
+  }, [openLibraryViewer, pasteIntoTarget]);
 
-  async function openDesktopLibraryContextMenu(
+  const openDesktopLibraryContextMenu = useCallback(async (
     event: ReactMouseEvent<HTMLElement>,
     target: LibraryContextMenuTarget,
-  ): Promise<boolean> {
+  ): Promise<boolean> => {
     if (
       platformData.runtimePlatform !== "desktop" ||
       platformData.osFamily !== "macos"
@@ -704,10 +851,11 @@ export function LibraryPage({
       return false;
     }
 
+    const currentLibrary = libraryRef.current;
     const items = buildNativeLibraryContextMenuItems(
-      library,
+      currentLibrary,
       target,
-      libraryClipboard,
+      libraryClipboardRef.current,
     );
     if (items.length === 0) {
       return false;
@@ -748,19 +896,20 @@ export function LibraryPage({
     } catch {
       return false;
     }
-  }
+  }, [platformData.osFamily, platformData.runtimePlatform, runContextAction]);
 
-  async function handleOpenLibraryContextMenu(
+  const handleOpenLibraryContextMenu = useCallback(async (
     event: ReactMouseEvent<HTMLElement>,
     target: LibraryContextMenuTarget,
-  ): Promise<void> {
+  ): Promise<void> => {
     event.preventDefault();
     event.stopPropagation();
+    const currentLibrary = libraryRef.current;
     if (target.kind === "document") {
-      library.selectDocument(target.entry.documentId);
+      currentLibrary.selectDocument(target.entry.documentId);
     }
     if (target.kind === "folder") {
-      library.selectFolderEntry(target.entry.path);
+      currentLibrary.selectFolderEntry(target.entry.path);
     }
 
     if (await openDesktopLibraryContextMenu(event, target)) {
@@ -768,7 +917,81 @@ export function LibraryPage({
     }
 
     setContextMenu({ left: event.clientX, top: event.clientY, target });
-  }
+  }, [openDesktopLibraryContextMenu]);
+
+  const stageLibrary = useMemo<StageLibraryState>(() => ({
+    documentPage: library.documentPage,
+    documentsLoading: library.documentsLoading,
+    entries: library.entries,
+    hasMore: library.hasMore,
+    loading: library.loading,
+    loadMore: callLibraryLoadMore,
+    refresh: callLibraryRefresh,
+    refreshPending: library.refreshPending,
+    selectDocument: callLibrarySelectDocument,
+    selectFolder: callLibrarySelectFolder,
+    selectFolderEntry: callLibrarySelectFolderEntry,
+    selectTag: callLibrarySelectTag,
+    setViewState: callLibrarySetViewState,
+    snapshot: library.snapshot,
+    toggleDocumentSelection: callLibraryToggleDocumentSelection,
+    toggleFolderEntrySelection: callLibraryToggleFolderEntrySelection,
+    viewState: library.viewState,
+    visibleEntryTotal: library.visibleEntryTotal,
+  }), [
+    callLibraryLoadMore,
+    callLibraryRefresh,
+    callLibrarySelectDocument,
+    callLibrarySelectFolder,
+    callLibrarySelectFolderEntry,
+    callLibrarySelectTag,
+    callLibrarySetViewState,
+    callLibraryToggleDocumentSelection,
+    callLibraryToggleFolderEntrySelection,
+    library.documentPage,
+    library.documentsLoading,
+    library.entries,
+    library.hasMore,
+    library.loading,
+    library.refreshPending,
+    library.snapshot,
+    library.viewState,
+    library.visibleEntryTotal,
+  ]);
+
+  const detailLibrary = useMemo<DetailLibraryState>(() => ({
+    documentPage: library.documentPage,
+    downloadSelected: callLibraryDownloadSelected,
+    entries: library.entries,
+    openPreview: callLibraryOpenPreview,
+    preview: library.preview,
+    previewError: library.previewError,
+    previewLoading: library.previewLoading,
+    reload: callLibraryReload,
+    reloadDocuments: callLibraryReloadDocuments,
+    selectedDocument: library.selectedDocument,
+    selectedDocuments: library.selectedDocuments,
+    selectedFolderEntries: library.selectedFolderEntries,
+    selectFolder: callLibrarySelectFolder,
+    snapshot: library.snapshot,
+    viewState: library.viewState,
+  }), [
+    callLibraryDownloadSelected,
+    callLibraryOpenPreview,
+    callLibraryReload,
+    callLibraryReloadDocuments,
+    callLibrarySelectFolder,
+    library.documentPage,
+    library.entries,
+    library.preview,
+    library.previewError,
+    library.previewLoading,
+    library.selectedDocument,
+    library.selectedDocuments,
+    library.selectedFolderEntries,
+    library.snapshot,
+    library.viewState,
+  ]);
 
   if (shouldShowInitialization) {
     return (
@@ -814,7 +1037,7 @@ export function LibraryPage({
         <LibraryDesktopSidebar
           library={library}
           onOpenSettings={onOpenSettings}
-          onOpenTagManager={() => setTagManagerOpen(true)}
+          onOpenTagManager={handleOpenTagManager}
           overlayMacOsTitlebar={overlayMacOsTitlebar}
         />
         <WorkbenchPanelResizer
@@ -831,22 +1054,16 @@ export function LibraryPage({
               <span>{library.error}</span>
             </div>
           ) : null}
-          <LibraryStage
-            library={library}
+          <MemoizedLibraryStage
+            library={stageLibrary}
             platformData={platformData}
             onOpenSettings={onOpenSettings}
-            onOpenContextMenu={(event, target) =>
-              void handleOpenLibraryContextMenu(event, target)
-            }
-            onRequestCreate={(state) => setPendingCreate(state)}
-            onRequestRename={(path) =>
-              setPendingRename({ path, fileName: getPathName(path) })
-            }
-            onRequestDelete={(target) => setPendingDelete(target)}
-            onRequestTagAssignment={(target) =>
-              setPendingTagAssignment(resolvePendingTagAssignmentTarget(target))
-            }
-            onOpenSearch={() => setSearchOpen(true)}
+            onOpenContextMenu={handleOpenLibraryContextMenu}
+            onRequestCreate={handleRequestCreate}
+            onRequestRename={handleRequestRename}
+            onRequestDelete={handleRequestDelete}
+            onRequestTagAssignment={handleRequestTagAssignment}
+            onOpenSearch={handleOpenSearch}
             onOpenLibraryViewer={openLibraryViewer}
             tagAssignmentTask={tagAssignmentTask}
           />
@@ -858,16 +1075,12 @@ export function LibraryPage({
           onResizeStart={panels.startResize}
           onReset={panels.resetSize}
         />
-        <LibraryDetail
-          library={library}
+        <MemoizedLibraryDetail
+          library={detailLibrary}
           overlayMacOsTitlebar={overlayMacOsTitlebar}
-          onRequestRename={(path) =>
-            setPendingRename({ path, fileName: getPathName(path) })
-          }
-          onRequestDelete={(target) => setPendingDelete(target)}
-          onRequestTagAssignment={(target) =>
-            setPendingTagAssignment(resolvePendingTagAssignmentTarget(target))
-          }
+          onRequestRename={handleRequestRename}
+          onRequestDelete={handleRequestDelete}
+          onRequestTagAssignment={handleRequestTagAssignment}
         />
       </section>
       {contextMenu ? (
@@ -878,14 +1091,10 @@ export function LibraryPage({
           onOpenLibraryViewer={openLibraryViewer}
           onSetClipboard={setLibraryClipboard}
           onClose={() => setContextMenu(null)}
-          onRequestCreate={(state) => setPendingCreate(state)}
-          onRequestRename={(path) =>
-            setPendingRename({ path, fileName: getPathName(path) })
-          }
-          onRequestDelete={(target) => setPendingDelete(target)}
-          onRequestTagAssignment={(target) =>
-            setPendingTagAssignment(resolvePendingTagAssignmentTarget(target))
-          }
+          onRequestCreate={handleRequestCreate}
+          onRequestRename={handleRequestRename}
+          onRequestDelete={handleRequestDelete}
+          onRequestTagAssignment={handleRequestTagAssignment}
         />
       ) : null}
       {searchOpen ? (
@@ -1650,7 +1859,6 @@ function SidebarPlainItem({
 
 function LibraryBindingPanel({
   library,
-  onOpenSettings,
   platformData,
   runtimeConfig,
 }: {
@@ -1680,10 +1888,39 @@ function LibraryBindingPanel({
   const [modeDraft, setModeDraft] = useState<"local" | "mirror">(runtimeConfig.mode);
   const [wizardStep, setWizardStep] = useState<"mode" | "setup">("mode");
   const [mirrorSourceReady, setMirrorSourceReady] = useState(runtimeConfig.mode === "mirror" ? !library.requiresInitialization : false);
+  const language = usePreferencesSelector((state) => state.profile.language);
+  const { theme, setTheme } = useTheme();
   const pendingBindingRootDir = library.snapshot?.binding?.rootDir ?? "";
   const defaultRootDir = library.snapshot?.defaultRootDir ?? "";
   const busy = saving || browserLoading;
   const isMirrorMode = modeDraft === "mirror";
+  const isDarkTheme = theme === "dark";
+
+  useEffect(() => {
+    if (platformData.runtimePlatform !== "desktop") {
+      return;
+    }
+    void setInitializationWindowMode(true);
+
+    return () => {
+      void setInitializationWindowMode(false);
+    };
+  }, [platformData.runtimePlatform]);
+
+  useEffect(() => {
+    if (platformData.runtimePlatform !== "desktop") {
+      return;
+    }
+    const html = document.documentElement;
+    const body = document.body;
+    html.dataset.windowMode = "initialization";
+    body.dataset.windowMode = "initialization";
+
+    return () => {
+      delete html.dataset.windowMode;
+      delete body.dataset.windowMode;
+    };
+  }, [platformData.runtimePlatform]);
 
   useEffect(() => {
     const suggestedRootDir = pendingBindingRootDir || defaultRootDir;
@@ -1875,19 +2112,51 @@ function LibraryBindingPanel({
     setMessage(null);
   }
 
+  function toggleTheme(): void {
+    setTheme(isDarkTheme ? "light" : "dark");
+  }
+
+  function toggleLanguage(): void {
+    void updatePreferences({
+      language: language === "zh-CN" ? "en-US" : "zh-CN",
+    }).catch(() => undefined);
+  }
+
   return (
     <main
       className="app-shell workbench-shell xfile-workbench-shell"
       data-runtime-platform={platformData.runtimePlatform}
       data-os-family={platformData.osFamily}
       data-overlay-titlebar={String(platformData.overlayTitlebar)}
+      data-window-mode="initialization"
     >
       <section className="library-init-page affairs-binding-shell">
         <div className="library-init-panel affairs-binding-card">
           <header className="library-init-header">
-            <span className="affairs-inline-pill">{t("libraryInitPill")}</span>
+            <div className="library-init-header-toprow">
+              <span className="affairs-inline-pill">{t("libraryInitPill")}</span>
+              <div className="library-init-toolbar" aria-label={t("settingsAppearanceTitle")}>
+                <button
+                  type="button"
+                  className="library-init-toolbar-button"
+                  aria-label={isDarkTheme ? t("libraryInitSwitchToLight") : t("libraryInitSwitchToDark")}
+                  title={isDarkTheme ? t("libraryInitSwitchToLight") : t("libraryInitSwitchToDark")}
+                  onClick={toggleTheme}
+                >
+                  {isDarkTheme ? <SunIcon /> : <MoonIcon />}
+                </button>
+                <button
+                  type="button"
+                  className="library-init-toolbar-button"
+                  aria-label={language === "zh-CN" ? t("libraryInitSwitchToEnglish") : t("libraryInitSwitchToChinese")}
+                  title={language === "zh-CN" ? t("libraryInitSwitchToEnglish") : t("libraryInitSwitchToChinese")}
+                  onClick={toggleLanguage}
+                >
+                  <LanguageIcon />
+                </button>
+              </div>
+            </div>
             <h1>{t("libraryInitTitle")}</h1>
-            <p>{t("libraryInitSubtitle")}</p>
           </header>
 
           <div className="library-init-body">
@@ -1913,7 +2182,6 @@ function LibraryBindingPanel({
                 <>
                   <section className="library-init-mode-intro">
                     <h2>{t("libraryInitModeTitle")}</h2>
-                    <p>{t("libraryInitModeSubtitle")}</p>
                   </section>
                   <div className="library-init-mode-grid" role="group" aria-label={t("runtimeModeSectionTitle")}>
                     <button
@@ -1948,13 +2216,6 @@ function LibraryBindingPanel({
                       onClick={() => setWizardStep("setup")}
                     >
                       {isMirrorMode ? t("libraryInitContinueToMirror") : t("libraryInitContinueToLocal")}
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      onClick={onOpenSettings}
-                    >
-                      {t("libraryInitOpenAdvanced")}
                     </button>
                   </div>
                 </>
@@ -2114,13 +2375,6 @@ function LibraryBindingPanel({
                 >
                   {t("libraryReload")}
                 </button>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={onOpenSettings}
-                >
-                  {t("libraryInitOpenAdvanced")}
-                </button>
               </div>
             </section>
 
@@ -2268,6 +2522,50 @@ function LibraryBindingPanel({
   );
 }
 
+function SunIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="4.5" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path
+        d="M12 2.5v2.4M12 19.1v2.4M21.5 12h-2.4M4.9 12H2.5M18.7 5.3l-1.7 1.7M7 17l-1.7 1.7M18.7 18.7L17 17M7 7 5.3 5.3"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="1.8"
+      />
+    </svg>
+  );
+}
+
+function MoonIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M15.4 3.4a8.8 8.8 0 1 0 5.2 15.8A9.5 9.5 0 0 1 15.4 3.4Z"
+        fill="none"
+        stroke="currentColor"
+        strokeLinejoin="round"
+        strokeWidth="1.8"
+      />
+    </svg>
+  );
+}
+
+function LanguageIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M4 6h9M8.5 6c0 4.5-2 8.1-4.5 10.5M6.7 12c1.5 1.8 3.2 3.3 5.3 4.5M14.5 7.5h5l-2.5 9h-4.9M13.8 13.2h6.4"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.8"
+      />
+    </svg>
+  );
+}
+
 function LibraryStage({
   library,
   platformData,
@@ -2281,7 +2579,7 @@ function LibraryStage({
   onOpenLibraryViewer,
   tagAssignmentTask,
 }: {
-  library: LibraryState;
+  library: StageLibraryState;
   platformData: WorkbenchPlatformData;
   onOpenSettings: () => void;
   onOpenContextMenu: (
@@ -2376,7 +2674,7 @@ function LibraryStageToolbar({
   onOpenSearch,
   tagAssignmentTask,
 }: {
-  library: LibraryState;
+  library: StageLibraryState;
   platformData: WorkbenchPlatformData;
   directoryStatus: {
     state: LibraryDirectoryState;
@@ -2618,7 +2916,7 @@ function LibrarySkeleton({ viewMode }: { viewMode: "grid" | "list" }) {
   );
 }
 
-function resolveInitialIndexStatus(library: LibraryState): LibraryIndexStatus | null {
+function resolveInitialIndexStatus(library: StageLibraryState): LibraryIndexStatus | null {
   const status = library.snapshot?.status ?? null;
   if (!status || status.state !== "running" || !status.progress) {
     return null;
@@ -2708,7 +3006,7 @@ function VirtualLibraryGrid({
   onOpenContextMenu,
   onOpenLibraryViewer,
 }: {
-  library: LibraryState;
+  library: StageLibraryState;
   entries: LibraryEntry[];
   onOpenContextMenu: (
     event: ReactMouseEvent<HTMLElement>,
@@ -2927,7 +3225,7 @@ function VirtualLibraryFinderList({
   onOpenContextMenu,
   onOpenLibraryViewer,
 }: {
-  library: LibraryState;
+  library: StageLibraryState;
   entries: LibraryEntry[];
   onOpenContextMenu: (
     event: ReactMouseEvent<HTMLElement>,
@@ -3858,6 +4156,7 @@ function LibraryFinderRow({
 }
 
 const MemoizedLibraryFinderRow = memo(LibraryFinderRow);
+const MemoizedLibraryStage = memo(LibraryStage);
 
 function LibraryDetail({
   library,
@@ -3866,7 +4165,7 @@ function LibraryDetail({
   onRequestDelete,
   onRequestTagAssignment: _onRequestTagAssignment,
 }: {
-  library: LibraryState;
+  library: DetailLibraryState;
   overlayMacOsTitlebar: boolean;
   onRequestRename: (path: string) => void;
   onRequestDelete: (target: LibraryContextMenuTarget) => void;
@@ -3876,12 +4175,22 @@ function LibraryDetail({
   const detailScrollRef = useRef<HTMLDivElement | null>(null);
   const [assistantHistoryModalOpen, setAssistantHistoryModalOpen] = useState(false);
   const [assistantCreateModalOpen, setAssistantCreateModalOpen] = useState(false);
-  const selected = library.selectedDocument;
+  const deferredSelected = useDeferredValue(library.selectedDocument);
+  const deferredEntries = useDeferredValue(library.entries);
+  const deferredSelectedFolderEntryPath = useDeferredValue(
+    library.viewState.selectedFolderEntryPath,
+  );
+  const deferredPreview = useDeferredValue(library.preview);
+  const deferredPreviewLoading = useDeferredValue(library.previewLoading);
+  const deferredPreviewError = useDeferredValue(library.previewError);
+  const selected = deferredSelected;
   const assistantContext = useMemo(
-    () => buildLibraryAssistantContext(library),
+    () => (activeTab === "assistant" ? buildLibraryAssistantContext(library) : null),
     [
+      activeTab,
       library.selectedDocuments,
       library.selectedFolderEntries,
+      library.viewState.browseMode,
       library.viewState.selectedFolderPath
     ]
   );
@@ -3890,17 +4199,20 @@ function LibraryDetail({
     ? resolveDocumentLocalPath(library, selected.path)
     : null;
   const selectedFolder = !selected
-    ? library.entries.find(
+    ? deferredEntries.find(
         (entry): entry is LibraryDirectoryEntry =>
           isLibraryDirectoryEntry(entry) &&
-          entry.path === library.viewState.selectedFolderEntryPath,
+          entry.path === deferredSelectedFolderEntryPath,
       ) ?? null
     : null;
-  const preview = library.preview;
+  const preview = deferredPreview;
 
   useEffect(() => {
+    if (activeTab !== "assistant") {
+      return;
+    }
     void assistant.init();
-  }, [assistant.init]);
+  }, [activeTab, assistant.init]);
 
   useEffect(() => {
     if (activeTab !== "assistant" || !assistant.ready) {
@@ -4156,10 +4468,10 @@ function LibraryDetail({
             <div className="affairs-detail-viewer-header">
               <span className="affairs-detail-viewer-title">{t("libraryPreview")}</span>
             </div>
-            <PreviewPanel
+            <MemoizedPreviewPanel
               preview={preview}
-              loading={library.previewLoading}
-              error={library.previewError}
+              loading={deferredPreviewLoading}
+              error={deferredPreviewError}
               compact
             />
           </section>
@@ -4194,6 +4506,8 @@ function LibraryDetail({
     </aside>
   );
 }
+
+const MemoizedLibraryDetail = memo(LibraryDetail);
 
 function isLibraryDirectoryEntry(entry: LibraryEntry): entry is LibraryDirectoryEntry {
 	return entry.kind === "folder" || entry.kind === "tag-directory";
@@ -5516,7 +5830,7 @@ function LibraryInlineDocumentTagEditor({
   library,
   document,
 }: {
-  library: LibraryState;
+  library: LibraryReloadBridge;
   document: Extract<LibraryEntry, { kind: "document" }>;
 }) {
   const [details, setDetails] = useState<LibraryDocumentTagDetails | null>(null);
@@ -5597,7 +5911,7 @@ function LibraryInlineFolderTagEditor({
   library,
   folder,
 }: {
-  library: LibraryState;
+  library: LibraryReloadBridge;
   folder: LibraryDirectoryEntry;
 }) {
   const [details, setDetails] = useState<LibraryFolderTagDetails | null>(null);
@@ -7431,6 +7745,8 @@ function PreviewPanel({
   );
 }
 
+const MemoizedPreviewPanel = memo(PreviewPanel);
+
 function DocumentTagEditor({
   library,
   documentId,
@@ -8242,34 +8558,9 @@ function resolveIndexStatusInlineProgressLabel(
   status: LibraryIndexStatus | null,
 ): string | null {
   if (status?.state === "running" && status.progress) {
-    if (status.runningStage === "summary_backfill") {
-      if (typeof status.progress.totalCount === "number" && status.progress.totalCount > 0) {
-        return t("libraryStatusSummaryBackfillProgressBarDetail", {
-          indexed: status.progress.indexedCount,
-          total: status.progress.totalCount,
-          unchanged: status.progress.unchangedCount,
-          skipped: status.progress.skippedCount,
-        });
-      }
-      return t("libraryStatusSummaryBackfillPendingDetail", {
-        processed: resolveIndexProcessedCount(status.progress),
-        indexed: status.progress.indexedCount,
-        unchanged: status.progress.unchangedCount,
-      });
-    }
     if (typeof status.progress.totalCount === "number" && status.progress.totalCount > 0) {
-      return t("libraryProgressSummaryWithTotal", {
-        processed: resolveIndexProcessedCount(status.progress),
-        indexed: status.progress.indexedCount,
-        total: status.progress.totalCount,
-        percent: resolveIndexProgressPercent(status.progress),
-      });
+      return `${resolveIndexProgressPercent(status.progress)}%`;
     }
-    return t("libraryProgressSummary", {
-      processed: resolveIndexProcessedCount(status.progress),
-      indexed: status.progress.indexedCount,
-      failed: status.progress.failedCount,
-    });
   }
   return null;
 }
@@ -8630,7 +8921,7 @@ export function handleFolderClick(library: LibraryState, path: string): void {
 }
 
 function buildLibraryAssistantContext(
-  library: LibraryState
+  library: AssistantContextSource
 ): DocumentAssistantContext | null {
   const selectedDocuments = library.selectedDocuments;
   const selectedFolders = library.selectedFolderEntries;
@@ -8680,7 +8971,7 @@ function resolveAssistantSelectionKind(
 }
 
 function buildAssistantSelectionLabel(
-  selectedDocuments: LibraryState["selectedDocuments"],
+  selectedDocuments: AssistantSelectionBridge["selectedDocuments"],
   folderPaths: string[]
 ): string {
   const documentTitles = selectedDocuments.map((item) => item.title || getPathName(item.path) || item.path);
@@ -8692,7 +8983,7 @@ function buildAssistantSelectionLabel(
 }
 
 function buildAssistantSelectionSummary(
-  selectedDocuments: LibraryState["selectedDocuments"],
+  selectedDocuments: AssistantSelectionBridge["selectedDocuments"],
   folderPaths: string[],
   selectionKind: DocumentAssistantContext["selectionKind"]
 ): string {
@@ -8806,7 +9097,7 @@ function resolveTargetAbsolutePath(
 }
 
 function resolveDocumentLocalPath(
-  library: LibraryState,
+  library: LibrarySnapshotBridge,
   path: string,
 ): string | null {
   const mirrorRoot = library.snapshot?.binding?.mirrorRoot?.trim();

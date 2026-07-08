@@ -69,6 +69,29 @@
   --modal-button-danger-bg-hover: var(--app-button-danger-bg-hover);
   --modal-button-danger-color: var(--app-button-danger-color);
   --desktop-modal-width-standard: min(max(60vw, 720px), calc(100% - 32px));
+  --library-init-shell-bg:
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.9), transparent 36%),
+    linear-gradient(180deg, #eef3fb, #dde6f3);
+  --library-init-panel-surface:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(245, 248, 253, 0.9)),
+    rgba(247, 250, 255, 0.82);
+  --library-init-panel-border: rgba(191, 206, 226, 0.72);
+  --library-init-panel-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 24px 48px rgba(120, 144, 178, 0.18),
+    0 8px 18px rgba(120, 144, 178, 0.12);
+  --library-init-card-surface:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 254, 0.96));
+  --library-init-card-border: rgba(201, 215, 233, 0.74);
+  --library-init-card-shadow: 0 12px 26px rgba(120, 144, 178, 0.12);
+  --library-init-logo-surface:
+    radial-gradient(circle at 50% 34%, rgba(10, 132, 255, 0.08) 0%, transparent 52%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(244, 248, 253, 0.92));
+  --library-init-logo-border: rgba(201, 215, 233, 0.72);
+  --library-init-toolbar-surface: rgba(255, 255, 255, 0.78);
+  --library-init-toolbar-surface-hover: rgba(255, 255, 255, 0.94);
+  --library-init-toolbar-border: rgba(191, 206, 226, 0.72);
+  --library-init-toolbar-icon: rgba(52, 64, 84, 0.82);
   --app-bg: #ececeb;
   --panel-bg: rgba(248, 248, 247, 0.92);
   --panel-bg-strong: rgba(255, 255, 255, 0.96);
@@ -1277,7 +1300,9 @@ p {
 
 .affairs-doc-item:active {
   transform: translateY(1px) scale(0.985);
-  background: color-mix(in srgb, var(--panel-hover) 92%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 36%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 .affairs-doc-item:focus-visible {
@@ -1579,7 +1604,8 @@ p {
 
 .affairs-finder-row:active {
   transform: translateY(1px);
-  background: color-mix(in srgb, var(--panel-hover) 96%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 .affairs-finder-row:focus-visible {
@@ -1597,9 +1623,8 @@ p {
 .affairs-finder-directory-row:hover {
   background: color-mix(in srgb, var(--panel-hover) 62%, transparent);
 }
-
 .affairs-finder-directory-row:active {
-  background: color-mix(in srgb, var(--panel-hover) 76%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .affairs-finder-cell,
@@ -2398,18 +2423,28 @@ mark {
   display: grid;
   width: 100%;
   height: 100%;
+  min-height: 0;
   place-items: center;
-  padding: 32px;
+  padding: 32px 36px;
+  overflow: hidden;
+  background: var(--library-init-shell-bg);
 }
 
 .library-init-panel,
 .affairs-binding-card {
-  width: min(1040px, 100%);
-  border: 1px solid var(--panel-border);
-  border-radius: 18px;
-  background: var(--panel-bg-strong);
-  box-shadow: var(--panel-shadow);
-  padding: 24px;
+  display: grid;
+  align-content: start;
+  width: min(936px, 100%);
+  max-height: min(680px, 100%);
+  min-height: min(620px, 100%);
+  overflow: auto;
+  border: 1px solid var(--library-init-panel-border);
+  border-radius: 28px;
+  background: var(--library-init-panel-surface);
+  box-shadow: var(--library-init-panel-shadow);
+  backdrop-filter: blur(26px) saturate(148%);
+  -webkit-backdrop-filter: blur(26px) saturate(148%);
+  padding: 28px 30px;
 }
 
 .library-init-header {
@@ -2417,6 +2452,54 @@ mark {
   gap: 10px;
   margin-bottom: 18px;
 }
+
+.library-init-header-toprow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.library-init-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.library-init-toolbar-button {
+  display: inline-flex;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--library-init-toolbar-border);
+  border-radius: 999px;
+  background: var(--library-init-toolbar-surface);
+  color: var(--library-init-toolbar-icon);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface-overlay-highlight) 82%, transparent);
+  backdrop-filter: blur(18px) saturate(136%);
+  -webkit-backdrop-filter: blur(18px) saturate(136%);
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast),
+    color var(--transition-fast),
+    transform var(--transition-fast);
+}
+
+.library-init-toolbar-button:hover {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--library-init-toolbar-border));
+  background: var(--library-init-toolbar-surface-hover);
+  color: var(--text-primary);
+  transform: translateY(-1px);
+}
+
+.library-init-toolbar-button svg {
+  width: 18px;
+  height: 18px;
+}
+
 .library-init-header h1 {
   font-size: 24px;
   letter-spacing: -0.02em;
@@ -2432,11 +2515,11 @@ mark {
   width: max-content;
   min-height: 22px;
   align-items: center;
-  border: 1px solid var(--affairs-elevated-border);
+  border: 1px solid var(--library-init-toolbar-border);
   border-radius: 999px;
   padding: 0 8px;
-  background: var(--affairs-surface-subtle);
-  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--library-init-toolbar-surface-hover) 92%, transparent);
+  color: var(--library-init-toolbar-icon);
   font-size: 11px;
   font-weight: 700;
 }
@@ -2445,6 +2528,7 @@ mark {
   grid-template-columns: minmax(0, 1fr) 280px;
   gap: 18px;
   align-items: start;
+  min-height: 0;
 }
 .library-init-form {
   display: grid;
@@ -2475,8 +2559,8 @@ mark {
   align-items: center;
   justify-content: center;
   border-radius: 999px;
-  border: 1px solid var(--panel-border);
-  background: var(--panel-bg);
+  border: 1px solid var(--library-init-card-border);
+  background: color-mix(in srgb, var(--library-init-card-surface) 94%, white 6%);
   color: var(--text-secondary);
   font-size: 12px;
 }
@@ -2493,7 +2577,7 @@ mark {
 
 .library-init-step-separator {
   height: 1px;
-  background: color-mix(in srgb, var(--panel-border) 92%, transparent);
+  background: color-mix(in srgb, var(--library-init-card-border) 88%, transparent);
 }
 
 .library-init-summary-row {
@@ -2528,9 +2612,9 @@ mark {
   display: grid;
   gap: 10px;
   min-height: 180px;
-  border: 1px solid var(--panel-border);
+  border: 1px solid var(--library-init-card-border);
   border-radius: 18px;
-  background: linear-gradient(180deg, var(--panel-bg-strong), var(--panel-bg));
+  background: var(--library-init-card-surface);
   padding: 16px;
   text-align: left;
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast);
@@ -2538,13 +2622,13 @@ mark {
 
 .library-init-mode-card:hover {
   border-color: color-mix(in srgb, var(--accent) 22%, var(--panel-border));
-  box-shadow: var(--panel-shadow);
+  box-shadow: var(--library-init-card-shadow);
   transform: translateY(-1px);
 }
 
 .library-init-mode-card[data-active="true"] {
   border-color: color-mix(in srgb, var(--accent) 38%, var(--panel-border));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 10%, transparent), var(--panel-shadow);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 10%, transparent), var(--library-init-card-shadow);
 }
 
 .library-init-mode-card-head {
@@ -2573,9 +2657,9 @@ mark {
 .library-init-ready-card {
   display: grid;
   gap: 6px;
-  border: 1px solid color-mix(in srgb, var(--success) 24%, var(--panel-border));
+  border: 1px solid color-mix(in srgb, var(--success) 24%, var(--library-init-card-border));
   border-radius: 14px;
-  background: color-mix(in srgb, var(--success) 8%, var(--panel-bg-strong));
+  background: color-mix(in srgb, var(--success) 8%, var(--library-init-card-surface));
   padding: 14px 16px;
   color: color-mix(in srgb, var(--success) 72%, var(--text-primary));
 }
@@ -2608,9 +2692,9 @@ mark {
   display: grid;
   gap: 10px;
   overflow: hidden;
-  border: 1px solid var(--panel-border);
+  border: 1px solid var(--library-init-card-border);
   border-radius: 14px;
-  background: color-mix(in srgb, var(--panel-bg) 82%, white 18%);
+  background: color-mix(in srgb, var(--library-init-card-surface) 88%, white 12%);
   padding: 12px;
 }
 .host-directory-browser-form {
@@ -2647,9 +2731,9 @@ mark {
 }
 .host-directory-browser-current {
   overflow: hidden;
-  border: 1px solid var(--panel-border);
+  border: 1px solid var(--library-init-card-border);
   border-radius: 10px;
-  background: var(--panel-bg-strong);
+  background: color-mix(in srgb, var(--library-init-card-surface) 94%, white 6%);
   padding: 8px 10px;
   color: var(--text-secondary);
   font-family: var(--font-mono);
@@ -2670,9 +2754,9 @@ mark {
   gap: 10px;
   align-items: center;
   min-height: 36px;
-  border: 1px solid var(--panel-border);
+  border: 1px solid var(--library-init-card-border);
   border-radius: 10px;
-  background: var(--panel-bg);
+  background: color-mix(in srgb, var(--library-init-card-surface) 96%, white 4%);
   padding: 8px 10px;
   text-align: left;
 }
@@ -2700,7 +2784,7 @@ mark {
   white-space: nowrap;
 }
 .host-directory-browser-status {
-  border: 1px dashed var(--panel-border);
+  border: 1px dashed var(--library-init-card-border);
   border-radius: 10px;
   padding: 10px;
   color: var(--text-secondary);
@@ -2711,15 +2795,11 @@ mark {
   display: grid;
   min-height: 220px;
   place-items: center;
-  border: 1px solid var(--panel-border);
+  align-self: start;
+  border: 1px solid var(--library-init-logo-border);
   border-radius: 18px;
-  background:
-    radial-gradient(
-      circle at 50% 34%,
-      color-mix(in srgb, var(--accent) 14%, transparent) 0%,
-      transparent 48%
-    ),
-    var(--panel-bg);
+  background: var(--library-init-logo-surface);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface-overlay-highlight) 20%, transparent);
   padding: 24px;
 }
 .library-init-logo {
@@ -2739,6 +2819,77 @@ mark {
 .button-row > .secondary-button,
 .button-row > .danger-button {
   flex: 0 0 auto;
+}
+
+@media (max-width: 1180px) {
+  .library-init-panel,
+  .affairs-binding-card {
+    width: min(900px, 100%);
+  }
+
+  .library-init-body {
+    grid-template-columns: minmax(0, 1fr) 248px;
+  }
+}
+
+@media (max-width: 980px) {
+  .library-init-page,
+  .affairs-binding-shell {
+    padding: 20px;
+  }
+
+  .library-init-panel,
+  .affairs-binding-card {
+    width: min(100%, calc(100% - 4px));
+    min-height: auto;
+    max-height: 100%;
+    padding: 22px;
+  }
+
+  .library-init-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .library-init-logo-panel {
+    min-height: 180px;
+    order: -1;
+  }
+}
+
+@media (max-width: 760px) {
+  .library-init-mode-grid,
+  .library-init-path-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .library-init-panel,
+  .affairs-binding-card {
+    border-radius: 22px;
+    padding: 18px;
+  }
+
+  .library-init-header h1 {
+    font-size: 22px;
+  }
+
+  .library-init-header-toprow,
+  .library-init-toolbar {
+    justify-content: flex-start;
+  }
+
+  .library-init-stepbar {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .library-init-step-separator {
+    display: none;
+  }
+
+  .library-init-logo-panel {
+    min-height: 148px;
+    padding: 18px;
+  }
 }
 
 .affairs-detail-meta-list {
@@ -3114,6 +3265,46 @@ mark {
   color: var(--text-secondary);
   font-size: 12px;
   line-height: 1.55;
+}
+
+.settings-reset-card {
+  gap: 10px;
+}
+
+.settings-reset-modal-stack {
+  display: grid;
+  gap: 12px;
+}
+
+.settings-reset-target-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.settings-reset-target-list strong {
+  color: var(--text-primary);
+}
+
+.settings-reset-target-path {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.settings-reset-confirm-input {
+  display: grid;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .settings-heading-row {
@@ -3565,7 +3756,17 @@ body[data-workbench-macos-vibrancy="true"] #root {
   background: transparent;
 }
 
+html[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"],
+body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"],
+body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #root {
+  background: var(--library-init-shell-bg);
+}
+
 .workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] {
+  background: transparent;
+}
+
+.workbench-shell[data-window-mode="initialization"] {
   background: transparent;
 }
 
@@ -5326,6 +5527,29 @@ body[data-workbench-macos-vibrancy="true"] #root {
   --modal-control-surface-hover: rgba(47, 50, 58, 0.96);
   --modal-control-border-focus: color-mix(in srgb, var(--accent) 42%, rgba(255, 255, 255, 0.12));
   --modal-control-focus-ring: 0 0 0 3px rgba(10, 132, 255, 0.18);
+  --library-init-shell-bg:
+    radial-gradient(circle at top left, rgba(119, 140, 193, 0.18), transparent 28%),
+    linear-gradient(180deg, rgba(10, 13, 20, 0.78), rgba(19, 24, 35, 0.88));
+  --library-init-panel-surface:
+    linear-gradient(180deg, rgba(28, 33, 44, 0.92), rgba(20, 24, 34, 0.88)),
+    rgba(14, 18, 27, 0.7);
+  --library-init-panel-border: rgba(167, 191, 255, 0.18);
+  --library-init-panel-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 32px 72px rgba(0, 0, 0, 0.42),
+    0 12px 28px rgba(0, 0, 0, 0.32);
+  --library-init-card-surface:
+    linear-gradient(180deg, rgba(35, 39, 50, 0.96), rgba(24, 28, 38, 0.96));
+  --library-init-card-border: rgba(167, 191, 255, 0.14);
+  --library-init-card-shadow: 0 18px 34px rgba(0, 0, 0, 0.28);
+  --library-init-logo-surface:
+    radial-gradient(circle at 50% 34%, rgba(10, 132, 255, 0.16) 0%, transparent 48%),
+    rgba(25, 30, 42, 0.82);
+  --library-init-logo-border: rgba(167, 191, 255, 0.16);
+  --library-init-toolbar-surface: rgba(255, 255, 255, 0.05);
+  --library-init-toolbar-surface-hover: rgba(255, 255, 255, 0.1);
+  --library-init-toolbar-border: rgba(255, 255, 255, 0.1);
+  --library-init-toolbar-icon: rgba(245, 245, 247, 0.88);
   --affairs-surface-ghost: rgba(255, 255, 255, 0.06);
   --affairs-folder-tab-bg: linear-gradient(180deg, #d99b23 0%, #b66d09 100%);
   --affairs-folder-body-bg: linear-gradient(180deg, #d5a744 0%, #b66d09 100%);
@@ -5395,6 +5619,29 @@ body[data-workbench-macos-vibrancy="true"] #root {
   --modal-control-border: rgba(255, 255, 255, 0.6);
   --modal-control-surface: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(234, 242, 236, 0.94));
   --modal-control-surface-hover: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(240, 246, 241, 0.95));
+  --library-init-shell-bg:
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.2), transparent 28%),
+    linear-gradient(180deg, rgba(21, 54, 34, 0.66), rgba(34, 73, 48, 0.76));
+  --library-init-panel-surface:
+    linear-gradient(180deg, rgba(244, 249, 245, 0.9), rgba(226, 238, 229, 0.84)),
+    rgba(236, 244, 238, 0.56);
+  --library-init-panel-border: rgba(255, 255, 255, 0.46);
+  --library-init-panel-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.56),
+    0 26px 52px rgba(17, 94, 44, 0.18),
+    0 10px 20px rgba(17, 94, 44, 0.1);
+  --library-init-card-surface:
+    linear-gradient(180deg, rgba(248, 252, 249, 0.98), rgba(235, 244, 238, 0.96));
+  --library-init-card-border: rgba(22, 163, 74, 0.14);
+  --library-init-card-shadow: 0 14px 28px rgba(17, 94, 44, 0.1);
+  --library-init-logo-surface:
+    radial-gradient(circle at 50% 34%, rgba(22, 163, 74, 0.16) 0%, transparent 48%),
+    rgba(233, 244, 236, 0.88);
+  --library-init-logo-border: rgba(22, 163, 74, 0.12);
+  --library-init-toolbar-surface: rgba(255, 255, 255, 0.68);
+  --library-init-toolbar-surface-hover: rgba(255, 255, 255, 0.86);
+  --library-init-toolbar-border: rgba(22, 163, 74, 0.12);
+  --library-init-toolbar-icon: rgba(21, 83, 45, 0.82);
   --app-button-primary-bg: linear-gradient(180deg, rgba(22, 163, 74, 0.96), rgba(21, 128, 61, 0.98));
   --app-button-primary-bg-hover: linear-gradient(180deg, rgba(34, 197, 94, 0.98), rgba(21, 128, 61, 1));
   --app-button-primary-color: #ffffff;

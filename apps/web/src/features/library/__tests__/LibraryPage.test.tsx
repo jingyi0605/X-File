@@ -46,7 +46,7 @@ describe("LibraryPage 高风险交互", () => {
     const { LibraryPage } = await import("../LibraryPage");
     render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
 
-    expect(await screen.findByText("先决定这台实例扮演什么角色")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "选择运行模式" })).toBeInTheDocument();
     expect(await screen.findByText("本地模式", { selector: ".settings-runtime-badge" })).toBeInTheDocument();
     expect(await screen.findByText("镜像模式", { selector: ".settings-runtime-badge" })).toBeInTheDocument();
 
@@ -83,6 +83,54 @@ describe("LibraryPage 高风险交互", () => {
     expect(screen.getByDisplayValue("http://127.0.0.1:17321")).toBeInTheDocument();
     expect(screen.getByDisplayValue("/Users/test/X-File-Mirror")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "保存镜像连接" })).toBeInTheDocument();
+  });
+
+  it("本地模式初始化完成后会自动开始首次快速同步", async () => {
+    const defaultRootDir = "/Users/test/X-File";
+    let initialized = false;
+    const binding = createLibraryBinding({
+      rootDir: defaultRootDir,
+      initialized: true,
+      initializedAt: "2026-06-16T00:00:00.000Z",
+    });
+
+    libraryApiMock.getLibrarySnapshot.mockImplementation(async () =>
+      createLibrarySnapshot({
+        binding: initialized ? binding : null,
+        defaultRootDir,
+        requiresInitialization: !initialized,
+        status: createIndexStatus({
+          state: initialized ? "fresh" : "fresh",
+        }),
+      }),
+    );
+    libraryApiMock.saveLibraryBinding.mockImplementation(async () => {
+      initialized = true;
+      return binding;
+    });
+    libraryApiMock.requestLibraryRefresh.mockResolvedValue({
+      taskId: "task-initial-quick-sync",
+      deduped: false,
+      status: createIndexStatus({
+        state: "running",
+        dirtyReasons: ["initial_quick_sync"],
+        runningTaskId: "task-initial-quick-sync",
+        runningStage: "index",
+      }),
+    });
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "继续配置本地模式" }));
+    await userEvent.click(screen.getByRole("button", { name: "建立文档库" }));
+
+    await waitFor(() => {
+      expect(libraryApiMock.requestLibraryRefresh).toHaveBeenCalledWith({
+        reason: "initial_quick_sync",
+        targetPath: null,
+      });
+    });
   });
 
   it("文档名称显示真实文件名，而不是摘要标题", async () => {
@@ -261,33 +309,13 @@ describe("LibraryPage 高风险交互", () => {
     expect(within(recommendations as HTMLElement).queryByText("项目/已分配")).not.toBeInTheDocument();
   });
 
-  it("调试命中面板默认收起，支持展开、收起并复制调试结果", async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText },
-    });
-
+  it("LibraryPage 不再直接渲染调试命中面板入口", async () => {
     const { LibraryPage } = await import("../LibraryPage");
     render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
 
-    const toggle = await screen.findByTestId("library-native-debug-toggle");
-    expect(toggle).toBeInTheDocument();
+    await screen.findByText("标签树");
+    expect(screen.queryByTestId("library-native-debug-toggle")).not.toBeInTheDocument();
     expect(screen.queryByTestId("library-native-debug-panel")).not.toBeInTheDocument();
-
-    await userEvent.click(toggle);
-
-    const panel = await screen.findByTestId("library-native-debug-panel");
-    expect(within(panel).getByText("Native 调试命中")).toBeInTheDocument();
-
-    await userEvent.click(within(panel).getByRole("button", { name: "复制调试结果" }));
-    expect(writeText).toHaveBeenCalledTimes(1);
-    expect(writeText.mock.calls[0]?.[0]).toContain("\"runtime\"");
-    expect(writeText.mock.calls[0]?.[0]).toContain("\"channels\"");
-
-    await userEvent.click(within(panel).getByRole("button", { name: "收起调试命中" }));
-    expect(screen.queryByTestId("library-native-debug-panel")).not.toBeInTheDocument();
-    expect(screen.getByTestId("library-native-debug-toggle")).toBeInTheDocument();
   });
 
   it("已有内容时刷新不会把主区域整块切成骨架", async () => {
