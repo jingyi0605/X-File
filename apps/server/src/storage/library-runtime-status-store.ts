@@ -28,6 +28,15 @@ interface PersistedRuntimeStatus {
   progress: LibraryIndexProgress | null;
 }
 
+interface LegacyPersistedRuntimeStatus {
+  status?: string | null;
+  stage?: string | null;
+  command?: string | null;
+  updatedAt?: string | null;
+  errorSummary?: string | null;
+  progress?: Partial<LibraryIndexProgress> | null;
+}
+
 export class LibraryRuntimeStatusStore {
   /** 读取磁盘上的运行时状态快照；文件缺失或损坏时返回 null。 */
   read(rootDir: string): LibraryIndexStatus | null {
@@ -40,7 +49,7 @@ export class LibraryRuntimeStatusStore {
         return null;
       }
       const raw = fs.readFileSync(filePath, "utf8");
-      const parsed = JSON.parse(raw) as Partial<PersistedRuntimeStatus>;
+      const parsed = normalizeRuntimeStatusPayload(JSON.parse(raw));
       return normalizePersistedStatus(parsed, this.readRuntimeIndexState(rootDir));
     } catch {
       return null;
@@ -119,6 +128,106 @@ function normalizePersistedStatus(
     progress: parsed.progress ?? null,
     runtimeIndexState,
   };
+}
+
+function normalizeRuntimeStatusPayload(
+  parsed: unknown,
+): Partial<PersistedRuntimeStatus> {
+  if (!parsed || typeof parsed !== "object") {
+    return {};
+  }
+  if ("state" in parsed && typeof (parsed as { state?: unknown }).state === "string") {
+    return parsed as Partial<PersistedRuntimeStatus>;
+  }
+  return normalizeLegacyRuntimeStatus(parsed as LegacyPersistedRuntimeStatus);
+}
+
+function normalizeLegacyRuntimeStatus(
+  parsed: LegacyPersistedRuntimeStatus,
+): Partial<PersistedRuntimeStatus> {
+  const state = mapLegacyRuntimeStatusState(parsed.status, parsed.stage, parsed.command);
+  if (!state) {
+    return {};
+  }
+  const updatedAt = normalizeNullableString(parsed.updatedAt);
+  return {
+    state,
+    lastRequestedAt: null,
+    lastStartedAt: updatedAt,
+    lastCompletedAt: state === "fresh" ? updatedAt : null,
+    lastFailedAt: state === "failed" ? updatedAt : null,
+    nextAllowedAt: null,
+    runningStage: normalizeNullableString(parsed.stage) === "finished"
+      ? null
+      : normalizeNullableString(parsed.stage),
+    errorSummary: normalizeNullableString(parsed.errorSummary),
+    progress: normalizeLegacyProgress(parsed.progress),
+  };
+}
+
+function mapLegacyRuntimeStatusState(
+  status: string | null | undefined,
+  stage: string | null | undefined,
+  command: string | null | undefined,
+): LibraryIndexStatus["state"] | null {
+  const normalizedStatus = normalizeNullableString(status);
+  switch (normalizedStatus) {
+    case "fresh":
+    case "stale":
+    case "queued":
+    case "running":
+    case "queue_timeout":
+    case "cooldown":
+    case "failed":
+      return normalizedStatus;
+    case "finished":
+    case "success":
+      return "fresh";
+    case "error":
+      return "failed";
+    case "pending":
+      return "queued";
+    default:
+      break;
+  }
+  if (normalizeNullableString(stage) === "finished") {
+    return "fresh";
+  }
+  if (normalizeNullableString(stage) === "failed" || normalizeNullableString(stage) === "error") {
+    return "failed";
+  }
+  if (["index", "export", "search"].includes(normalizeNullableString(command) ?? "")) {
+    return "running";
+  }
+  return null;
+}
+
+function normalizeLegacyProgress(
+  progress: Partial<LibraryIndexProgress> | null | undefined,
+): LibraryIndexProgress | null {
+  if (!progress || typeof progress !== "object") {
+    return null;
+  }
+  return {
+    scannedCount: normalizeCount(progress.scannedCount),
+    indexedCount: normalizeCount(progress.indexedCount),
+    skippedCount: normalizeCount(progress.skippedCount),
+    failedCount: normalizeCount(progress.failedCount),
+    unchangedCount: normalizeCount(progress.unchangedCount),
+    totalCount: typeof progress.totalCount === "number" ? progress.totalCount : null,
+    maxConcurrency: typeof progress.maxConcurrency === "number" ? progress.maxConcurrency : null,
+    activeTaskCount: normalizeCount(progress.activeTaskCount),
+    pendingTaskCount: normalizeCount(progress.pendingTaskCount),
+    completedTaskCount: normalizeCount(progress.completedTaskCount),
+  };
+}
+
+function normalizeCount(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function normalizeNullableString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function normalizeRuntimeIndexState(

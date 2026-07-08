@@ -88,3 +88,45 @@ test("runtime-status 契约：磁盘快照字段 shape 保持稳定", () => {
   assert.equal(status?.runtimeIndexState?.skippedDocuments[0]?.path, "docs/legacy.doc");
   assert.equal(status?.runtimeIndexState?.parserSkips[0]?.skipKey, "legacy/.doc");
 });
+
+test("runtime-status 兼容旧版 finished 文件结构", () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "x-file-runtime-status-legacy-"));
+  fs.mkdirSync(path.join(rootDir, ".ai-index"), { recursive: true });
+
+  fs.writeFileSync(
+    path.join(rootDir, ".ai-index", "runtime-status.json"),
+    `${JSON.stringify(
+      {
+        version: 1,
+        command: "index",
+        status: "finished",
+        stage: "finished",
+        updatedAt: "2026-07-06T09:56:22.640Z",
+        taskId: "legacy-task",
+        taskType: "affairs.library_index",
+        errorSummary: null,
+        progress: {
+          scannedCount: 17320,
+          indexedCount: 0,
+          skippedCount: 0,
+          failedCount: 0,
+          unchangedCount: 17320,
+          totalCount: 17320,
+          maxConcurrency: 1,
+        },
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+
+  const store = new LibraryRuntimeStatusStore();
+  const status = store.read(rootDir);
+
+  assert.ok(status);
+  assert.equal(status?.state, "fresh");
+  assert.equal(status?.lastCompletedAt, "2026-07-06T09:56:22.640Z");
+  assert.equal(status?.runningStage, null);
+  assert.equal(status?.progress?.totalCount, 17320);
+});

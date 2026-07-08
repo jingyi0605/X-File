@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   createLibraryBinding,
@@ -15,11 +15,34 @@ import { initializeRuntimeConfig } from "../../../runtime/runtime-config-store";
 
 installLibraryApiMock();
 
+const nativeBridgeMock = {
+  clearNativeApplicationData: vi.fn(),
+  requestNativeAppRestart: vi.fn(),
+};
+
+vi.mock("../../../runtime/native-library-bridge", async () => {
+  const actual = await vi.importActual<typeof import("../../../runtime/native-library-bridge")>(
+    "../../../runtime/native-library-bridge",
+  );
+  return {
+    ...actual,
+    clearNativeApplicationData: nativeBridgeMock.clearNativeApplicationData,
+    requestNativeAppRestart: nativeBridgeMock.requestNativeAppRestart,
+  };
+});
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn().mockResolvedValue("stable"),
+}));
+
 describe("SettingsPage 文档库索引配置迁移行为", () => {
   beforeEach(() => {
     localStorage.clear();
     initializeRuntimeConfig();
     resetLibraryApiMock();
+    nativeBridgeMock.clearNativeApplicationData.mockReset();
+    nativeBridgeMock.requestNativeAppRestart.mockReset();
+    delete (window as typeof window & { __TAURI_INTERNALS__?: object }).__TAURI_INTERNALS__;
   });
 
   it("默认支持后缀保持原样保存时，仍提交空白名单让索引器走默认范围", async () => {
@@ -229,5 +252,41 @@ describe("SettingsPage 文档库索引配置迁移行为", () => {
     await waitFor(() => {
       expect(libraryApiMock.disablePlugin).toHaveBeenCalledWith("codex");
     });
+  });
+
+  it("更新页必须经过三次确认后才会触发彻底重置", async () => {
+    (window as typeof window & { __TAURI_INTERNALS__?: object }).__TAURI_INTERNALS__ = {};
+    nativeBridgeMock.clearNativeApplicationData.mockResolvedValue({
+      dataDir: "/Users/test/.x-file",
+      appDataDir: "/Users/test/Library/Application Support/X-File",
+      clearedLibraryIndexDir: "/Users/test/Documents/.ai-index",
+    });
+    nativeBridgeMock.requestNativeAppRestart.mockResolvedValue(true);
+    localStorage.setItem("x-file.runtime.config", JSON.stringify({ mode: "mirror" }));
+
+    const { SettingsPage } = await import("../SettingsPage");
+    render(<SettingsPage />);
+
+    await userEvent.click(await screen.findByRole("tab", { name: /更新/ }));
+    await userEvent.click(screen.getByRole("button", { name: "彻底重置应用" }));
+
+    expect(screen.getByText("确认步骤 1/3")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "我知道这会清空应用数据" }));
+    expect(screen.getByText("确认步骤 2/3")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "继续，准备最终确认" }));
+    expect(screen.getByText("确认步骤 3/3")).toBeInTheDocument();
+
+    const submitButton = screen.getByRole("button", { name: "立即彻底重置" });
+    expect(submitButton).toBeDisabled();
+
+    await userEvent.type(screen.getByLabelText("确认短语"), "重置 X-File");
+    await userEvent.click(submitButton);
+
+    await waitFor(() => {
+      expect(nativeBridgeMock.clearNativeApplicationData).toHaveBeenCalledTimes(1);
+    });
+    expect(nativeBridgeMock.requestNativeAppRestart).toHaveBeenCalledTimes(1);
+    expect(localStorage.getItem("x-file.runtime.config")).toBeNull();
   });
 });

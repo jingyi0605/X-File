@@ -37,6 +37,7 @@ import { formatDateTime } from "../../shared/format";
 import { DesktopModal, ModalActions } from "../../shared/modal";
 import { UpdatePanel } from "./UpdatePanel";
 import { getRuntimeConfigSnapshot, updateRuntimeConfig } from "../../runtime/runtime-config-store";
+import { clearNativeApplicationData, requestNativeAppRestart } from "../../runtime/native-library-bridge";
 
 interface SettingsPageProps {
   onSaved?: () => void;
@@ -81,6 +82,13 @@ interface ServerFormState {
 interface OnlyOfficeModalState {
   open: boolean;
   refreshing: boolean;
+}
+
+interface ResetApplicationModalState {
+  open: boolean;
+  step: 1 | 2 | 3;
+  confirmationText: string;
+  submitting: boolean;
 }
 
 interface PublicBaseUrlOptions {
@@ -195,6 +203,12 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
     open: false,
     refreshing: false
   });
+  const [resetApplicationModal, setResetApplicationModal] = useState<ResetApplicationModalState>({
+    open: false,
+    step: 1,
+    confirmationText: "",
+    submitting: false,
+  });
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -210,6 +224,7 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
   const [directoryBrowserItems, setDirectoryBrowserItems] = useState<HostDirectoryOption[]>([]);
   const isMirrorMode = runtimeForm.mode === "mirror";
   const runtimeModeLabel = isMirrorMode ? t("runtimeModeMirror") : t("runtimeModeLocal");
+  const isDesktopContext = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
   async function loadSettings(): Promise<void> {
     setLoading(true);
@@ -534,6 +549,68 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
     setError(null);
   }
 
+  function openResetApplicationModal(): void {
+    setResetApplicationModal({
+      open: true,
+      step: 1,
+      confirmationText: "",
+      submitting: false,
+    });
+    setError(null);
+    setMessage(null);
+  }
+
+  function closeResetApplicationModal(): void {
+    setResetApplicationModal((current) => {
+      if (current.submitting) {
+        return current;
+      }
+      return {
+        open: false,
+        step: 1,
+        confirmationText: "",
+        submitting: false,
+      };
+    });
+  }
+
+  function advanceResetApplicationStep(): void {
+    setResetApplicationModal((current) => ({
+      ...current,
+      step: current.step === 1 ? 2 : 3,
+    }));
+  }
+
+  async function submitResetApplication(): Promise<void> {
+    if (!isDesktopContext) {
+      setError(t("settingsResetDesktopOnly"));
+      return;
+    }
+    const confirmationPhrase = t("settingsResetConfirmPhrase");
+    if (resetApplicationModal.confirmationText.trim() !== confirmationPhrase) {
+      setError(t("settingsResetInputMismatch"));
+      return;
+    }
+    setResetApplicationModal((current) => ({ ...current, submitting: true }));
+    setError(null);
+    setMessage(null);
+    try {
+      const cleared = await clearNativeApplicationData();
+      if (!cleared) {
+        throw new Error(t("settingsResetDesktopOnly"));
+      }
+      clearLocalStorageByPrefix("x-file.");
+      setMessage(t("settingsResetRestarting"));
+      const restarted = await requestNativeAppRestart();
+      if (!restarted && typeof window !== "undefined") {
+        window.location.reload();
+      }
+    } catch (err) {
+      setError(toApiErrorMessage(err));
+      setResetApplicationModal((current) => ({ ...current, submitting: false }));
+    }
+  }
+
   useEffect(() => {
     void loadSettings();
   }, []);
@@ -844,7 +921,16 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
         </div>
       </form>
     ),
-    updates: <UpdatePanel />
+    updates: (
+      <>
+        <UpdatePanel />
+        <ResetApplicationSection
+          binding={binding}
+          isDesktopContext={isDesktopContext}
+          onReset={openResetApplicationModal}
+        />
+      </>
+    )
   };
 
   const content = (
@@ -926,6 +1012,18 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
           onClose={closeDirectoryBrowser}
           onUseCurrent={applyDirectoryBrowserCurrentPath}
         />
+        <ResetApplicationModal
+          open={resetApplicationModal.open}
+          binding={binding}
+          isDesktopContext={isDesktopContext}
+          step={resetApplicationModal.step}
+          confirmationText={resetApplicationModal.confirmationText}
+          submitting={resetApplicationModal.submitting}
+          onConfirmationTextChange={(value) => setResetApplicationModal((current) => ({ ...current, confirmationText: value }))}
+          onAdvance={advanceResetApplicationStep}
+          onClose={closeResetApplicationModal}
+          onSubmit={() => void submitResetApplication()}
+        />
       </>
     );
   }
@@ -973,6 +1071,18 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
         onLoad={loadHostDirectory}
         onClose={closeDirectoryBrowser}
         onUseCurrent={applyDirectoryBrowserCurrentPath}
+      />
+      <ResetApplicationModal
+        open={resetApplicationModal.open}
+        binding={binding}
+        isDesktopContext={isDesktopContext}
+        step={resetApplicationModal.step}
+        confirmationText={resetApplicationModal.confirmationText}
+        submitting={resetApplicationModal.submitting}
+        onConfirmationTextChange={(value) => setResetApplicationModal((current) => ({ ...current, confirmationText: value }))}
+        onAdvance={advanceResetApplicationStep}
+        onClose={closeResetApplicationModal}
+        onSubmit={() => void submitResetApplication()}
       />
     </>
   );
@@ -1151,6 +1261,165 @@ function OnlyOfficeSettingsModal({
           </div>
         </ModalActions>
       </form>
+    </DesktopModal>
+  );
+}
+
+function ResetApplicationSection({
+  binding,
+  isDesktopContext,
+  onReset,
+}: {
+  binding: LibraryBinding | null;
+  isDesktopContext: boolean;
+  onReset: () => void;
+}) {
+  const libraryIndexDir = resolveLibraryIndexDir(binding);
+
+  return (
+    <section className="settings-section settings-reset-card">
+      <h2>{t("settingsResetTitle")}</h2>
+      <p>{t("settingsResetDescription")}</p>
+      <div className="settings-remote-owner-note" data-tone="danger">
+        <strong>{t("settingsResetModalTitle")}</strong>
+        <span>{t("settingsResetWarning")}</span>
+      </div>
+      <ul className="settings-reset-target-list">
+        <li>
+          <strong>{t("settingsResetTargetAppData")}</strong>
+        </li>
+        <li>
+          <strong>{t("settingsResetTargetBrowser")}</strong>
+        </li>
+        <li>
+          <strong>{t("settingsResetTargetIndex")}</strong>
+          <span className="settings-reset-target-path">
+            {libraryIndexDir ?? t("settingsResetTargetIndexEmpty")}
+          </span>
+        </li>
+      </ul>
+      {!isDesktopContext ? (
+        <div className="inline-note">{t("settingsResetDesktopOnly")}</div>
+      ) : null}
+      <div className="button-row">
+        <button type="button" className="danger-button" disabled={!isDesktopContext} onClick={onReset}>
+          {t("settingsResetAction")}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function ResetApplicationModal({
+  open,
+  binding,
+  isDesktopContext,
+  step,
+  confirmationText,
+  submitting,
+  onConfirmationTextChange,
+  onAdvance,
+  onClose,
+  onSubmit,
+}: {
+  open: boolean;
+  binding: LibraryBinding | null;
+  isDesktopContext: boolean;
+  step: 1 | 2 | 3;
+  confirmationText: string;
+  submitting: boolean;
+  onConfirmationTextChange: (value: string) => void;
+  onAdvance: () => void;
+  onClose: () => void;
+  onSubmit: () => void;
+}) {
+  const confirmationPhrase = t("settingsResetConfirmPhrase");
+  const libraryIndexDir = resolveLibraryIndexDir(binding);
+  const canSubmit = confirmationText.trim() === confirmationPhrase && !submitting;
+
+  return (
+    <DesktopModal
+      open={open}
+      title={t("settingsResetModalTitle")}
+      description={t("settingsResetModalDescription")}
+      size="compact"
+      layout="confirm"
+      dismissible={!submitting}
+      closeOnBackdrop={!submitting}
+      closeOnEscape={!submitting}
+      onClose={onClose}
+      footer={(
+        <ModalActions align="between">
+          <button type="button" className="secondary-button" disabled={submitting} onClick={onClose}>
+            {t("actionCancel")}
+          </button>
+          {step < 3 ? (
+            <button type="button" className="primary-button" disabled={submitting || !isDesktopContext} onClick={onAdvance}>
+              {step === 1 ? t("settingsResetFirstContinue") : t("settingsResetSecondContinue")}
+            </button>
+          ) : (
+            <button type="button" className="danger-button" disabled={!canSubmit} onClick={onSubmit}>
+              {submitting ? t("settingsResetRestarting") : t("settingsResetSubmit")}
+            </button>
+          )}
+        </ModalActions>
+      )}
+    >
+      <div className="settings-reset-modal-stack">
+        <span className="settings-runtime-badge">{t("settingsResetStepLabel", { step })}</span>
+        <div className="settings-remote-owner-note" data-tone="danger">
+          <strong>{t("settingsResetModalTitle")}</strong>
+          <span>{t("settingsResetWarning")}</span>
+        </div>
+        {step === 1 ? (
+          <section className="modal-section">
+            <div className="modal-section-copy">
+              <h3 className="modal-section-title">{t("settingsResetFirstTitle")}</h3>
+              <p className="modal-section-description">{t("settingsResetFirstDescription")}</p>
+            </div>
+          </section>
+        ) : null}
+        {step === 2 ? (
+          <section className="modal-section">
+            <div className="modal-section-copy">
+              <h3 className="modal-section-title">{t("settingsResetSecondTitle")}</h3>
+              <p className="modal-section-description">{t("settingsResetSecondDescription")}</p>
+            </div>
+            <ul className="settings-reset-target-list">
+              <li>
+                <strong>{t("settingsResetTargetAppData")}</strong>
+              </li>
+              <li>
+                <strong>{t("settingsResetTargetBrowser")}</strong>
+              </li>
+              <li>
+                <strong>{t("settingsResetTargetIndex")}</strong>
+                <span className="settings-reset-target-path">
+                  {libraryIndexDir ?? t("settingsResetTargetIndexEmpty")}
+                </span>
+              </li>
+            </ul>
+          </section>
+        ) : null}
+        {step === 3 ? (
+          <section className="modal-section">
+            <div className="modal-section-copy">
+              <h3 className="modal-section-title">{t("settingsResetThirdTitle")}</h3>
+              <p className="modal-section-description">
+                {t("settingsResetThirdDescription", { phrase: confirmationPhrase })}
+              </p>
+            </div>
+            <label className="settings-reset-confirm-input">
+              <span>{t("settingsResetInputLabel")}</span>
+              <input
+                value={confirmationText}
+                placeholder={t("settingsResetInputPlaceholder", { phrase: confirmationPhrase })}
+                onChange={(event) => onConfirmationTextChange(event.target.value)}
+              />
+            </label>
+          </section>
+        ) : null}
+      </div>
     </DesktopModal>
   );
 }
@@ -1605,6 +1874,29 @@ function parseIncludedHiddenPaths(input: string): string[] {
 
 function formatNullableNumber(value: number | null | undefined): string {
   return typeof value === "number" ? String(value) : "—";
+}
+
+function clearLocalStorageByPrefix(prefix: string): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const keys: string[] = [];
+  for (let index = 0; index < window.localStorage.length; index += 1) {
+    const key = window.localStorage.key(index);
+    if (key) {
+      keys.push(key);
+    }
+  }
+  for (const key of keys) {
+    if (key.startsWith(prefix)) {
+      window.localStorage.removeItem(key);
+    }
+  }
+}
+
+function resolveLibraryIndexDir(binding: LibraryBinding | null): string | null {
+  const rootDir = binding?.rootDir?.trim();
+  return rootDir ? `${rootDir.replace(/\/+$/g, "")}/.ai-index` : null;
 }
 
 function resolveIndexStatusLabel(state: LibraryIndexStatus["state"] | undefined, binding: LibraryBinding | null): string {
