@@ -124,6 +124,7 @@
   --workbench-sidebar-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.36),
     12px 0 26px rgba(15, 23, 42, 0.08);
+  --workbench-native-sidebar-tint: rgba(241, 244, 250, 0.24);
   --workbench-inspector-surface:
     linear-gradient(180deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.07)),
     rgba(244, 246, 250, 0.74);
@@ -131,6 +132,7 @@
   --workbench-inspector-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.34),
     -12px 0 26px rgba(15, 23, 42, 0.08);
+  --workbench-native-inspector-tint: rgba(244, 246, 250, 0.26);
   --text-primary: rgba(28, 28, 30, 0.96);
   --text-secondary: rgba(60, 60, 67, 0.68);
   --text-tertiary: rgba(60, 60, 67, 0.42);
@@ -3800,9 +3802,17 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
   background: transparent;
 }
 
-.workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] .workbench-sidebar,
+.workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] .workbench-sidebar {
+  background: var(--workbench-native-sidebar-tint);
+  /* macOS 已由底层 NSVisualEffectView 提供 Sidebar 材质。
+     WebKit 再做 backdrop-filter 会在拖拽和实时缩放时反复重建合成层。 */
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
 .workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] .affairs-detail-panel {
-  background: transparent;
+  background: var(--workbench-native-inspector-tint);
   /* macOS 已由底层 NSVisualEffectView 提供 Sidebar 材质。
      WebKit 再做 backdrop-filter 会在拖拽和实时缩放时反复重建合成层。 */
   box-shadow: none;
@@ -5519,6 +5529,7 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
   --workbench-sidebar-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.08),
     14px 0 28px rgba(0, 0, 0, 0.32);
+  --workbench-native-sidebar-tint: rgba(21, 24, 31, 0.3);
   --workbench-inspector-surface:
     linear-gradient(180deg, rgba(108, 126, 170, 0.1), rgba(255, 255, 255, 0.02)),
     rgba(24, 27, 35, 0.72);
@@ -5526,6 +5537,7 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
   --workbench-inspector-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.08),
     -14px 0 28px rgba(0, 0, 0, 0.32);
+  --workbench-native-inspector-tint: rgba(24, 27, 35, 0.32);
   --text-primary: rgba(245, 245, 247, 0.96);
   --text-secondary: rgba(235, 235, 245, 0.68);
   --text-tertiary: rgba(235, 235, 245, 0.42);
@@ -5621,6 +5633,7 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
   --workbench-sidebar-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.42),
     12px 0 24px rgba(17, 94, 44, 0.08);
+  --workbench-native-sidebar-tint: rgba(231, 244, 236, 0.24);
   --workbench-inspector-surface:
     linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0.08)),
     rgba(237, 248, 241, 0.76);
@@ -5628,6 +5641,7 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
   --workbench-inspector-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.4),
     -12px 0 24px rgba(17, 94, 44, 0.08);
+  --workbench-native-inspector-tint: rgba(237, 248, 241, 0.26);
   --text-primary: #14532d;
   --text-secondary: #2f6b4a;
   --text-tertiary: #5a9a6a;
