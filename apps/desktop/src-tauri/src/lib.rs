@@ -2295,14 +2295,18 @@ fn native_list_library_files(path: Option<String>, limit: Option<usize>) -> Resu
 }
 
 #[tauri::command]
-fn native_get_library_preview(request: NativePreviewRequest) -> Result<Value, String> {
+async fn native_get_library_preview(request: NativePreviewRequest) -> Result<Value, String> {
     println!(
         "[x-file native] preview.request transport=native path={} displayMode={}",
         request.path,
         request.display_mode.as_deref().unwrap_or("default")
     );
-    serde_json::to_value(read_local_library_preview(request)?)
-        .map_err(|error| format!("序列化本地 preview 失败：{error}"))
+    tauri::async_runtime::spawn_blocking(move || {
+        serde_json::to_value(read_local_library_preview(request)?)
+            .map_err(|error| format!("序列化本地 preview 失败：{error}"))
+    })
+    .await
+    .map_err(|error| format!("等待本地 preview 读取失败：{error}"))?
 }
 
 #[tauri::command]
