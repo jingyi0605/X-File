@@ -7364,6 +7364,15 @@ mod tests {
 
         assert!(!macos_native_frame_matches(current, requested));
     }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_原生侧栏必须采样窗口后方() {
+        assert_eq!(
+            macos_native_sidebar_blending_mode(),
+            NSVisualEffectBlendingMode::BehindWindow
+        );
+    }
 }
 
 fn epoch_millis_to_iso(value: u64) -> String {
@@ -7686,7 +7695,7 @@ unsafe fn ensure_macos_native_sidebar_view(
 ) -> Option<usize> {
     if let Some(ptr) = existing_ptr {
         let view = &*(ptr as *const NSVisualEffectView);
-        view.setAppearance(appearance);
+        apply_macos_native_sidebar_appearance(view, appearance);
 
         if let Some(superview) = view.superview() {
             if std::ptr::eq(&*superview, content_view) {
@@ -7703,14 +7712,37 @@ unsafe fn ensure_macos_native_sidebar_view(
         NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)),
     );
     effect_view.setMaterial(NSVisualEffectMaterial::Sidebar);
-    effect_view.setBlendingMode(NSVisualEffectBlendingMode::WithinWindow);
+    // 透明 WKWebView 与 WithinWindow 材质由两条渲染管线提交，主内容剧变时无法保证原子更新。
+    // 采样窗口后方可以切断边栏与 WebView 内容之间的循环合成，避免半透明背景闪烁。
+    effect_view.setBlendingMode(macos_native_sidebar_blending_mode());
     effect_view.setState(NSVisualEffectState::FollowsWindowActiveState);
-    effect_view.setAppearance(appearance);
+    apply_macos_native_sidebar_appearance(&effect_view, appearance);
     effect_view.setAutoresizingMask(MACOS_NATIVE_LEFT_SIDEBAR_AUTOREZING_MASK);
     effect_view.setLayerContentsRedrawPolicy(NSViewLayerContentsRedrawPolicy::DuringViewResize);
     effect_view.setHidden(true);
     content_view.addSubview_positioned_relativeTo(&effect_view, NSWindowOrderingMode::Below, None);
     Some((&*effect_view) as *const NSVisualEffectView as usize)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_native_sidebar_blending_mode() -> NSVisualEffectBlendingMode {
+    NSVisualEffectBlendingMode::BehindWindow
+}
+
+#[cfg(target_os = "macos")]
+fn apply_macos_native_sidebar_appearance(
+    view: &NSVisualEffectView,
+    appearance: Option<&NSAppearance>,
+) {
+    let appearance_changed = match (view.appearance(), appearance) {
+        (Some(current), Some(requested)) => current.name() != requested.name(),
+        (None, None) => false,
+        _ => true,
+    };
+
+    if appearance_changed {
+        view.setAppearance(appearance);
+    }
 }
 
 #[cfg(target_os = "macos")]
