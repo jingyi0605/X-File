@@ -54,6 +54,7 @@ const RUNNING_INDEX_POLL_INTERVAL_MS = 4000;
 const DIRECTORY_PRIORITY_POLL_INTERVAL_MS = 800;
 const DIRECTORY_PRIORITY_POLL_COUNT = 12;
 const SUMMARY_BACKFILL_DIRECTORY_POLL_INTERVAL_MS = 3000;
+const VIEW_STATE_PERSIST_DELAY_MS = 300;
 let activeNativeWatcherRootDir: string | null = null;
 
 function normalizeLibraryIndexStatus(
@@ -142,6 +143,7 @@ export interface LibraryState {
   selectFavorite: (favorite: LibraryFavoriteRecord) => void;
   selectDocument: (documentId: string) => void;
   toggleDocumentSelection: (documentId: string, additive?: boolean) => void;
+  cancelPreview: () => void;
   openPreview: (path: string) => Promise<void>;
   downloadSelected: (path: string) => Promise<void>;
   toggleFavorite: (favorite: LibraryFavoriteRecord) => Promise<void>;
@@ -230,11 +232,16 @@ export function useLibraryState(): LibraryState {
 
   const setViewState = useCallback((updater: LibraryViewState | ((current: LibraryViewState) => LibraryViewState)): void => {
     setViewStateState((current) => {
-      const next = typeof updater === "function" ? updater(current) : updater;
-      writeLibraryViewState(next);
-      return next;
+      return typeof updater === "function" ? updater(current) : updater;
     });
   }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      writeLibraryViewState(viewState);
+    }, VIEW_STATE_PERSIST_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [viewState]);
 
   const runtimeConfig = getRuntimeConfigSnapshot().config;
   const nativeBridgeEligible = runtimeConfig.mode === "local";
@@ -676,6 +683,10 @@ export function useLibraryState(): LibraryState {
     });
   }, [setViewState]);
 
+  const cancelPreview = useCallback((): void => {
+    previewRequestTokenRef.current += 1;
+  }, []);
+
   async function openPreview(path: string): Promise<void> {
     const requestToken = previewRequestTokenRef.current + 1;
     previewRequestTokenRef.current = requestToken;
@@ -799,12 +810,6 @@ export function useLibraryState(): LibraryState {
     snapshot?.binding?.enabled,
     snapshot?.binding?.libraryId,
   ]);
-
-  useEffect(() => {
-    if (selectedDocument) {
-      void openPreview(selectedDocument.path);
-    }
-  }, [selectedDocument?.documentId]);
 
   useEffect(() => {
     const state = snapshot?.status.state;
@@ -938,6 +943,7 @@ export function useLibraryState(): LibraryState {
     selectFavorite,
     selectDocument,
     toggleDocumentSelection,
+    cancelPreview,
     openPreview,
     downloadSelected,
     toggleFavorite,

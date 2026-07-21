@@ -150,6 +150,59 @@ describe("LibraryPage 高风险交互", () => {
     expect(screen.queryByText("AI 生成的摘要标题")).not.toBeInTheDocument();
   });
 
+  it("按下新文档时立即切换蓝色选择，不等待业务选择和预览", async () => {
+    libraryApiMock.listLibraryDocuments.mockResolvedValue(
+      createDocumentList([
+        createDocumentRecord({ documentId: "doc-first", path: "docs/第一个.md" }),
+        createDocumentRecord({ documentId: "doc-second", path: "docs/第二个.md" }),
+      ]),
+    );
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
+
+    const first = await screen.findByRole("button", { name: /第一个\.md/ });
+    const second = screen.getByRole("button", { name: /第二个\.md/ });
+
+    fireEvent.pointerDown(first, { button: 0 });
+    expect(first).toHaveClass("active");
+    expect(second).not.toHaveClass("active");
+
+    fireEvent.pointerDown(second, { button: 0 });
+    expect(first).not.toHaveClass("active");
+    expect(second).toHaveClass("active");
+    expect(libraryApiMock.getLibraryPreview).not.toHaveBeenCalled();
+  });
+
+  it("500ms 稳定期内从 B 切到 C 时只为最终的 C 加载详情", async () => {
+    libraryApiMock.listLibraryDocuments.mockResolvedValue(
+      createDocumentList([
+        createDocumentRecord({ documentId: "doc-b", path: "docs/B.md" }),
+        createDocumentRecord({ documentId: "doc-c", path: "docs/C.md" }),
+      ]),
+    );
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
+
+    const documentB = await screen.findByRole("button", { name: /B\.md/ });
+    const documentC = screen.getByRole("button", { name: /C\.md/ });
+
+    fireEvent.pointerDown(documentB, { button: 0 });
+    expect(document.querySelector(".affairs-detail-skeleton")).toHaveAttribute("aria-busy", "true");
+
+    await new Promise((resolve) => window.setTimeout(resolve, 80));
+    fireEvent.pointerDown(documentC, { button: 0 });
+    expect(document.querySelector(".affairs-detail-skeleton")).toHaveAttribute("aria-busy", "true");
+
+    await waitFor(() => {
+      expect(libraryApiMock.getLibraryPreview).toHaveBeenCalledWith("docs/C.md", "reading");
+    });
+    expect(libraryApiMock.getLibraryPreview).not.toHaveBeenCalledWith("docs/B.md", "reading");
+    expect(libraryApiMock.getDocumentTagDetails).not.toHaveBeenCalledWith("doc-b");
+    expect(libraryApiMock.getDocumentTagDetails).toHaveBeenCalledWith("doc-c");
+  });
+
   it("标签筛选后 snapshot.status.lastCompletedAt 变化不触发当前列表重拉", async () => {
     const firstSnapshot = createLibrarySnapshot({
       status: createIndexStatus({ lastCompletedAt: "2026-06-09T00:00:00.000Z" }),
@@ -455,6 +508,22 @@ describe("LibraryPage 高风险交互", () => {
   });
 });
 
+describe("详情轻量预览", () => {
+  it("限制大文本的字符数和行数，避免详情栏阻塞主线程", async () => {
+    const { buildCompactPreviewContent } = await import("../LibraryPage");
+    const content = Array.from(
+      { length: 400 },
+      (_, index) => `${index + 1} ${"x".repeat(120)}`,
+    ).join("\n");
+
+    const compact = buildCompactPreviewContent(content);
+
+    expect(compact.endsWith("\n\n...")).toBe(true);
+    expect(compact.split("\n").length).toBeLessThanOrEqual(242);
+    expect(compact.length).toBeLessThan(content.length);
+  });
+});
+
 function createLibraryStateMock(
   folderOpenBehavior: "single_click" | "double_click",
 ): LibraryState & {
@@ -531,6 +600,7 @@ function createLibraryStateMock(
     selectFavorite: vi.fn(),
     toggleDocumentSelection: vi.fn(),
     selectDocument: vi.fn(),
+    cancelPreview: vi.fn(),
     openPreview: vi.fn(),
     downloadSelected: vi.fn(),
     toggleFavorite: vi.fn(),

@@ -249,7 +249,7 @@ describe("第 1 批：文档预览、编辑写回、Office 阅读视图与目录
     expect(modalCard?.getAttribute("data-size")).toBe("regular");
   });
 
-  it("右侧对象详情栏会把 Markdown 按富文本渲染，而不是退回纯文本 pre", async () => {
+  it("右侧对象详情栏使用轻量 Markdown 文本，完整富文本留给双击查看器", async () => {
     libraryApiMock.listLibraryDocuments.mockResolvedValue(
       createDocumentList([createDocumentRecord({ documentId: "doc-markdown", path: "docs/说明.md" })]),
     );
@@ -265,9 +265,14 @@ describe("第 1 批：文档预览、编辑写回、Office 阅读视图与目录
 
     await userEvent.click(await screen.findByRole("button", { name: /说明\.md/ }));
 
+    await waitFor(() => {
+      expect(document.querySelector(".affairs-preview-block pre.preview-box.text.compact")).toHaveTextContent("# 一级标题");
+    });
+    expect(screen.queryByRole("heading", { name: "一级标题" })).not.toBeInTheDocument();
+
+    fireEvent.doubleClick(screen.getByRole("button", { name: /说明\.md/ }));
     expect(await screen.findByRole("heading", { name: "一级标题" })).toBeInTheDocument();
     expect(screen.getByText("TypeScript")).toBeInTheDocument();
-    expect(document.querySelector(".affairs-preview-block pre.preview-box.text.compact")).toBeNull();
   });
 });
 

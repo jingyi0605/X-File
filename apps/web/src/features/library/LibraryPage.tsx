@@ -351,6 +351,7 @@ type StageLibraryState = Pick<
   LibraryState,
   | "documentPage"
   | "documentsLoading"
+  | "cancelPreview"
   | "entries"
   | "hasMore"
   | "loading"
@@ -369,8 +370,24 @@ type StageLibraryState = Pick<
   | "visibleEntryTotal"
 >;
 
+type SidebarLibraryState = Pick<
+  LibraryState,
+  | "documentPage"
+  | "selectFavorite"
+  | "selectTag"
+  | "snapshot"
+  | "tags"
+  | "toggleFavorite"
+> & {
+  viewState: Pick<
+    LibraryState["viewState"],
+    "selectedFavoriteId" | "selectedTagPath" | "selectedTagPaths"
+  >;
+};
+
 type DetailLibraryState = Pick<
   LibraryState,
+  | "cancelPreview"
   | "documentPage"
   | "downloadSelected"
   | "entries"
@@ -669,6 +686,14 @@ export function LibraryPage({
     libraryRef.current.selectTag(path);
   }, []);
 
+  const callLibrarySelectFavorite = useCallback<LibraryState["selectFavorite"]>((favorite) => {
+    libraryRef.current.selectFavorite(favorite);
+  }, []);
+
+  const callLibraryToggleFavorite = useCallback<LibraryState["toggleFavorite"]>(async (favorite) => {
+    await libraryRef.current.toggleFavorite(favorite);
+  }, []);
+
   const callLibrarySelectDocument = useCallback<LibraryState["selectDocument"]>((documentId) => {
     libraryRef.current.selectDocument(documentId);
   }, []);
@@ -679,6 +704,10 @@ export function LibraryPage({
 
   const callLibraryOpenPreview = useCallback<LibraryState["openPreview"]>(async (path) => {
     await libraryRef.current.openPreview(path);
+  }, []);
+
+  const callLibraryCancelPreview = useCallback<LibraryState["cancelPreview"]>(() => {
+    libraryRef.current.cancelPreview();
   }, []);
 
   const callLibraryDownloadSelected = useCallback<LibraryState["downloadSelected"]>(async (path) => {
@@ -920,6 +949,7 @@ export function LibraryPage({
   }, [openDesktopLibraryContextMenu]);
 
   const stageLibrary = useMemo<StageLibraryState>(() => ({
+    cancelPreview: callLibraryCancelPreview,
     documentPage: library.documentPage,
     documentsLoading: library.documentsLoading,
     entries: library.entries,
@@ -939,6 +969,7 @@ export function LibraryPage({
     viewState: library.viewState,
     visibleEntryTotal: library.visibleEntryTotal,
   }), [
+    callLibraryCancelPreview,
     callLibraryLoadMore,
     callLibraryRefresh,
     callLibrarySelectDocument,
@@ -959,7 +990,32 @@ export function LibraryPage({
     library.visibleEntryTotal,
   ]);
 
+  const sidebarLibrary = useMemo<SidebarLibraryState>(() => ({
+    documentPage: library.documentPage,
+    selectFavorite: callLibrarySelectFavorite,
+    selectTag: callLibrarySelectTag,
+    snapshot: library.snapshot,
+    tags: library.tags,
+    toggleFavorite: callLibraryToggleFavorite,
+    viewState: {
+      selectedFavoriteId: library.viewState.selectedFavoriteId,
+      selectedTagPath: library.viewState.selectedTagPath,
+      selectedTagPaths: library.viewState.selectedTagPaths,
+    },
+  }), [
+    callLibrarySelectFavorite,
+    callLibrarySelectTag,
+    callLibraryToggleFavorite,
+    library.documentPage,
+    library.snapshot,
+    library.tags,
+    library.viewState.selectedFavoriteId,
+    library.viewState.selectedTagPath,
+    library.viewState.selectedTagPaths,
+  ]);
+
   const detailLibrary = useMemo<DetailLibraryState>(() => ({
+    cancelPreview: callLibraryCancelPreview,
     documentPage: library.documentPage,
     downloadSelected: callLibraryDownloadSelected,
     entries: library.entries,
@@ -976,6 +1032,7 @@ export function LibraryPage({
     snapshot: library.snapshot,
     viewState: library.viewState,
   }), [
+    callLibraryCancelPreview,
     callLibraryDownloadSelected,
     callLibraryOpenPreview,
     callLibraryReload,
@@ -1034,8 +1091,8 @@ export function LibraryPage({
             : undefined
         }
       >
-        <LibraryDesktopSidebar
-          library={library}
+        <MemoizedLibraryDesktopSidebar
+          library={sidebarLibrary}
           onOpenSettings={onOpenSettings}
           onOpenTagManager={handleOpenTagManager}
           overlayMacOsTitlebar={overlayMacOsTitlebar}
@@ -1324,7 +1381,7 @@ function LibraryDesktopSidebar({
   onOpenTagManager,
   overlayMacOsTitlebar,
 }: {
-  library: LibraryState;
+  library: SidebarLibraryState;
   onOpenSettings: () => void;
   onOpenTagManager: () => void;
   overlayMacOsTitlebar: boolean;
@@ -1631,6 +1688,8 @@ function LibraryDesktopSidebar({
     </aside>
   );
 }
+
+const MemoizedLibraryDesktopSidebar = memo(LibraryDesktopSidebar);
 
 function isRunningSummaryBackfill(stage: string | null | undefined): boolean {
   return stage === "summary_backfill" || stage === "summary_backfill_search";
@@ -2994,10 +3053,27 @@ const VIRTUAL_LIST_ROW_HEIGHT = 40;
 const VIRTUAL_OVERSCAN = 2;
 const VIRTUAL_LIST_OVERSCAN = 8;
 const VIRTUAL_LOAD_MORE_DISTANCE = 320;
+const LIBRARY_SELECTION_PRESS_ANIMATION_MS = 140;
+const LIBRARY_DETAIL_SETTLE_DELAY_MS = 500;
 
 type VirtualLibraryEntrySlot = {
   index: number;
   entry: LibraryEntry | null;
+};
+
+type VisualLibrarySelection = {
+  documentIds: string[];
+  folderPaths: string[];
+};
+
+type SettledLibraryDetailSelection = VisualLibrarySelection & {
+  key: string;
+};
+
+const EMPTY_SETTLED_LIBRARY_DETAIL_SELECTION: SettledLibraryDetailSelection = {
+  key: "none",
+  documentIds: [],
+  folderPaths: [],
 };
 
 function VirtualLibraryGrid({
@@ -3024,13 +3100,17 @@ function VirtualLibraryGrid({
     VIRTUAL_GRID_ITEM_HEIGHT,
   );
   const [measuredRowGap, setMeasuredRowGap] = useState(VIRTUAL_GRID_ROW_GAP);
+  const [visualSelection, setVisualSelection] = useState<VisualLibrarySelection>(() => ({
+    documentIds: library.viewState.selectedDocumentIds,
+    folderPaths: library.viewState.selectedFolderEntryPaths,
+  }));
   const selectedFolderEntryPathSet = useMemo(
-    () => new Set(library.viewState.selectedFolderEntryPaths),
-    [library.viewState.selectedFolderEntryPaths],
+    () => new Set(visualSelection.folderPaths),
+    [visualSelection.folderPaths],
   );
   const selectedDocumentIdSet = useMemo(
-    () => new Set(library.viewState.selectedDocumentIds),
-    [library.viewState.selectedDocumentIds],
+    () => new Set(visualSelection.documentIds),
+    [visualSelection.documentIds],
   );
   const folderOpenBehavior =
     library.snapshot?.binding?.folderOpenBehavior === "single_click"
@@ -3061,6 +3141,41 @@ function VirtualLibraryGrid({
     }
     return installAutoHideScrollbarBehavior(element);
   }, []);
+
+  useEffect(() => {
+    setVisualSelection({
+      documentIds: library.viewState.selectedDocumentIds,
+      folderPaths: library.viewState.selectedFolderEntryPaths,
+    });
+  }, [
+    library.viewState.selectedDocumentIds,
+    library.viewState.selectedFolderEntryPaths,
+  ]);
+
+  const selectVisualEntry = useCallback((entry: LibraryEntry): void => {
+    setVisualSelection(
+      entry.kind === "document"
+        ? { documentIds: [entry.documentId], folderPaths: [] }
+        : { documentIds: [], folderPaths: [entry.path] },
+    );
+  }, []);
+  const handleVisualSelect = useCallback((entry: LibraryEntry): void => {
+    library.cancelPreview();
+    selectVisualEntry(entry);
+    if (entry.kind === "document") {
+      library.selectDocument(entry.documentId);
+      return;
+    }
+    if (entry.kind === "folder" && folderOpenBehavior !== "single_click") {
+      library.selectFolderEntry(entry.path);
+    }
+  }, [
+    folderOpenBehavior,
+    library.cancelPreview,
+    library.selectDocument,
+    library.selectFolderEntry,
+    selectVisualEntry,
+  ]);
 
   useLayoutEffect(() => {
     const element = viewportRef.current;
@@ -3186,6 +3301,7 @@ function VirtualLibraryGrid({
             onToggleFolderEntrySelection={library.toggleFolderEntrySelection}
             onSelectDocument={library.selectDocument}
             onToggleDocumentSelection={library.toggleDocumentSelection}
+            onVisualSelect={handleVisualSelect}
             onOpenContextMenu={onOpenContextMenu}
             onOpenLibraryViewer={onOpenLibraryViewer}
           />
@@ -3241,17 +3357,21 @@ function VirtualLibraryFinderList({
   const finderResizeStateRef = useRef<FinderResizeState | null>(null);
   const scrollFrameRef = useRef<number | null>(null);
   const pendingScrollElementRef = useRef<HTMLDivElement | null>(null);
+  const [visualSelection, setVisualSelection] = useState<VisualLibrarySelection>(() => ({
+    documentIds: library.viewState.selectedDocumentIds,
+    folderPaths: library.viewState.selectedFolderEntryPaths,
+  }));
   const finderGridTemplateColumns = useMemo(
     () => buildFinderGridTemplateColumns(library.viewState.finderColumnWidths),
     [library.viewState.finderColumnWidths],
   );
   const selectedFolderEntryPathSet = useMemo(
-    () => new Set(library.viewState.selectedFolderEntryPaths),
-    [library.viewState.selectedFolderEntryPaths],
+    () => new Set(visualSelection.folderPaths),
+    [visualSelection.folderPaths],
   );
   const selectedDocumentIdSet = useMemo(
-    () => new Set(library.viewState.selectedDocumentIds),
-    [library.viewState.selectedDocumentIds],
+    () => new Set(visualSelection.documentIds),
+    [visualSelection.documentIds],
   );
   const folderOpenBehavior =
     library.snapshot?.binding?.folderOpenBehavior === "single_click"
@@ -3266,6 +3386,41 @@ function VirtualLibraryFinderList({
     },
     [],
   );
+
+  useEffect(() => {
+    setVisualSelection({
+      documentIds: library.viewState.selectedDocumentIds,
+      folderPaths: library.viewState.selectedFolderEntryPaths,
+    });
+  }, [
+    library.viewState.selectedDocumentIds,
+    library.viewState.selectedFolderEntryPaths,
+  ]);
+
+  const selectVisualEntry = useCallback((entry: LibraryEntry): void => {
+    setVisualSelection(
+      entry.kind === "document"
+        ? { documentIds: [entry.documentId], folderPaths: [] }
+        : { documentIds: [], folderPaths: [entry.path] },
+    );
+  }, []);
+  const handleVisualSelect = useCallback((entry: LibraryEntry): void => {
+    library.cancelPreview();
+    selectVisualEntry(entry);
+    if (entry.kind === "document") {
+      library.selectDocument(entry.documentId);
+      return;
+    }
+    if (entry.kind === "folder" && folderOpenBehavior !== "single_click") {
+      library.selectFolderEntry(entry.path);
+    }
+  }, [
+    folderOpenBehavior,
+    library.cancelPreview,
+    library.selectDocument,
+    library.selectFolderEntry,
+    selectVisualEntry,
+  ]);
 
   useLayoutEffect(() => {
     const element = viewportRef.current;
@@ -3559,6 +3714,7 @@ function VirtualLibraryFinderList({
                   onToggleFolderEntrySelection={library.toggleFolderEntrySelection}
                   onSelectDocument={library.selectDocument}
                   onToggleDocumentSelection={library.toggleDocumentSelection}
+                  onVisualSelect={handleVisualSelect}
                   gridTemplateColumns={finderGridTemplateColumns}
                   onOpenContextMenu={onOpenContextMenu}
                   onOpenLibraryViewer={onOpenLibraryViewer}
@@ -3915,6 +4071,7 @@ function LibraryEntryCard({
   onToggleFolderEntrySelection,
   onSelectDocument,
   onToggleDocumentSelection,
+  onVisualSelect,
   onOpenContextMenu,
   onOpenLibraryViewer,
 }: {
@@ -3926,12 +4083,21 @@ function LibraryEntryCard({
   onToggleFolderEntrySelection: (path: string, additive?: boolean) => void;
   onSelectDocument: (documentId: string) => void;
   onToggleDocumentSelection: (documentId: string, additive?: boolean) => void;
+  onVisualSelect: (entry: LibraryEntry) => void;
   onOpenContextMenu: (
     event: ReactMouseEvent<HTMLElement>,
     target: LibraryContextMenuTarget,
   ) => void;
   onOpenLibraryViewer: (entry: LibraryDocumentEntry) => void;
 }) {
+  function handlePointerSelection(event: ReactPointerEvent<HTMLButtonElement>): void {
+    if (event.button !== 0 || event.ctrlKey || event.metaKey) {
+      return;
+    }
+    playLibrarySelectionPressAnimation(event.currentTarget);
+    onVisualSelect(entry);
+  }
+
   if (entry.kind !== "document") {
     return (
       <button
@@ -3939,12 +4105,20 @@ function LibraryEntryCard({
         className={
           active ? "affairs-doc-item grid active" : "affairs-doc-item grid"
         }
+        onPointerDown={handlePointerSelection}
         onClick={(event) => {
           if (entry.kind !== "folder") {
             return;
           }
           if (folderOpenBehavior === "single_click") {
             onSelectFolder(entry.path);
+            return;
+          }
+          if (!event.detail) {
+            onToggleFolderEntrySelection(entry.path);
+            return;
+          }
+          if (!event.metaKey && !event.ctrlKey) {
             return;
           }
           onToggleFolderEntrySelection(entry.path, event.metaKey || event.ctrlKey);
@@ -3980,9 +4154,12 @@ function LibraryEntryCard({
       className={
         active ? "affairs-doc-item grid active" : "affairs-doc-item grid"
       }
-      onClick={(event) =>
-        onToggleDocumentSelection(entry.documentId, event.metaKey || event.ctrlKey)
-      }
+      onPointerDown={handlePointerSelection}
+      onClick={(event) => {
+        if (!event.detail || event.metaKey || event.ctrlKey) {
+          onToggleDocumentSelection(entry.documentId, event.metaKey || event.ctrlKey);
+        }
+      }}
       onContextMenu={(event) => {
         onSelectDocument(entry.documentId);
         onOpenContextMenu(event, { kind: "document", entry });
@@ -4026,6 +4203,7 @@ function LibraryFinderRow({
   onToggleFolderEntrySelection,
   onSelectDocument,
   onToggleDocumentSelection,
+  onVisualSelect,
   gridTemplateColumns,
   onOpenContextMenu,
   onOpenLibraryViewer,
@@ -4038,6 +4216,7 @@ function LibraryFinderRow({
   onToggleFolderEntrySelection: (path: string, additive?: boolean) => void;
   onSelectDocument: (documentId: string) => void;
   onToggleDocumentSelection: (documentId: string, additive?: boolean) => void;
+  onVisualSelect: (entry: LibraryEntry) => void;
   gridTemplateColumns: string;
   onOpenContextMenu: (
     event: ReactMouseEvent<HTMLElement>,
@@ -4045,6 +4224,14 @@ function LibraryFinderRow({
   ) => void;
   onOpenLibraryViewer: (entry: LibraryDocumentEntry) => void;
 }) {
+  function handlePointerSelection(event: ReactPointerEvent<HTMLButtonElement>): void {
+    if (event.button !== 0 || event.ctrlKey || event.metaKey) {
+      return;
+    }
+    playLibrarySelectionPressAnimation(event.currentTarget);
+    onVisualSelect(entry);
+  }
+
   if (entry.kind !== "document") {
     return (
       <button
@@ -4055,12 +4242,20 @@ function LibraryFinderRow({
             : "affairs-finder-row affairs-finder-directory-row"
         }
         style={{ gridTemplateColumns }}
+        onPointerDown={handlePointerSelection}
         onClick={(event) => {
           if (entry.kind !== "folder") {
             return;
           }
           if (folderOpenBehavior === "single_click") {
             onSelectFolder(entry.path);
+            return;
+          }
+          if (!event.detail) {
+            onToggleFolderEntrySelection(entry.path);
+            return;
+          }
+          if (!event.metaKey && !event.ctrlKey) {
             return;
           }
           onToggleFolderEntrySelection(entry.path, event.metaKey || event.ctrlKey);
@@ -4109,9 +4304,12 @@ function LibraryFinderRow({
       type="button"
       className={active ? "affairs-finder-row active" : "affairs-finder-row"}
       style={{ gridTemplateColumns }}
-      onClick={(event) =>
-        onToggleDocumentSelection(entry.documentId, event.metaKey || event.ctrlKey)
-      }
+      onPointerDown={handlePointerSelection}
+      onClick={(event) => {
+        if (!event.detail || event.metaKey || event.ctrlKey) {
+          onToggleDocumentSelection(entry.documentId, event.metaKey || event.ctrlKey);
+        }
+      }}
       onContextMenu={(event) => {
         onSelectDocument(entry.documentId);
         onOpenContextMenu(event, { kind: "document", entry });
@@ -4158,6 +4356,43 @@ function LibraryFinderRow({
 const MemoizedLibraryFinderRow = memo(LibraryFinderRow);
 const MemoizedLibraryStage = memo(LibraryStage);
 
+const libraryPressAnimations = new WeakMap<HTMLElement, Animation>();
+
+function playLibrarySelectionPressAnimation(target: HTMLElement): void {
+  if (
+    typeof target.animate !== "function" ||
+    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+  ) {
+    return;
+  }
+  libraryPressAnimations.get(target)?.cancel();
+  const isGridItem = target.classList.contains("affairs-doc-item");
+  const animation = target.animate(
+    [
+      { transform: "translateY(0) scale(1)", offset: 0 },
+      {
+        transform: isGridItem
+          ? "translateY(1px) scale(0.985)"
+          : "translateY(1px) scale(1)",
+        offset: 0.36,
+      },
+      { transform: "translateY(0) scale(1)", offset: 1 },
+    ],
+    {
+      duration: LIBRARY_SELECTION_PRESS_ANIMATION_MS,
+      easing: "cubic-bezier(0.2, 0.8, 0.2, 1)",
+    },
+  );
+  libraryPressAnimations.set(target, animation);
+  const cleanup = () => {
+    if (libraryPressAnimations.get(target) === animation) {
+      libraryPressAnimations.delete(target);
+    }
+  };
+  animation.addEventListener("finish", cleanup, { once: true });
+  animation.addEventListener("cancel", cleanup, { once: true });
+}
+
 function LibraryDetail({
   library,
   overlayMacOsTitlebar,
@@ -4175,37 +4410,95 @@ function LibraryDetail({
   const detailScrollRef = useRef<HTMLDivElement | null>(null);
   const [assistantHistoryModalOpen, setAssistantHistoryModalOpen] = useState(false);
   const [assistantCreateModalOpen, setAssistantCreateModalOpen] = useState(false);
-  const deferredSelected = useDeferredValue(library.selectedDocument);
-  const deferredEntries = useDeferredValue(library.entries);
-  const deferredSelectedFolderEntryPath = useDeferredValue(
-    library.viewState.selectedFolderEntryPath,
-  );
+  const incomingDetailSelection = useMemo<SettledLibraryDetailSelection>(() => ({
+    key: buildLibraryDetailSelectionKey(
+      library.viewState.selectedDocumentIds,
+      library.viewState.selectedFolderEntryPaths,
+    ),
+    documentIds: library.viewState.selectedDocumentIds,
+    folderPaths: library.viewState.selectedFolderEntryPaths,
+  }), [
+    library.viewState.selectedDocumentIds,
+    library.viewState.selectedFolderEntryPaths,
+  ]);
+  const [settledDetailSelection, setSettledDetailSelection] =
+    useState<SettledLibraryDetailSelection>(() => incomingDetailSelection);
+  const detailPending = incomingDetailSelection.key !== settledDetailSelection.key;
   const deferredPreview = useDeferredValue(library.preview);
   const deferredPreviewLoading = useDeferredValue(library.previewLoading);
   const deferredPreviewError = useDeferredValue(library.previewError);
-  const selected = deferredSelected;
+  const settledDocumentId = settledDetailSelection.documentIds[0] ?? null;
+  const settledFolderPath = settledDetailSelection.folderPaths[0] ?? null;
+  const selected = settledDocumentId
+    ? library.entries.find(
+        (entry): entry is LibraryDocumentEntry =>
+          entry.kind === "document" && entry.documentId === settledDocumentId,
+      ) ?? null
+    : null;
+  const selectedFolder = !selected && settledFolderPath
+    ? library.entries.find(
+        (entry): entry is LibraryDirectoryEntry =>
+          isLibraryDirectoryEntry(entry) && entry.path === settledFolderPath,
+      ) ?? null
+    : null;
+  const settledSelectedDocuments = useMemo(
+    () => library.entries.filter(
+      (entry): entry is LibraryDocumentEntry =>
+        entry.kind === "document" && settledDetailSelection.documentIds.includes(entry.documentId),
+    ),
+    [library.entries, settledDetailSelection.documentIds],
+  );
+  const settledSelectedFolders = useMemo(
+    () => library.entries.filter(
+      (entry): entry is LibraryDirectoryEntry =>
+        isLibraryDirectoryEntry(entry) && settledDetailSelection.folderPaths.includes(entry.path),
+    ),
+    [library.entries, settledDetailSelection.folderPaths],
+  );
+  const settledLibrary = useMemo<AssistantContextSource>(() => ({
+    selectedDocuments: settledSelectedDocuments,
+    selectedFolderEntries: settledSelectedFolders,
+    viewState: library.viewState,
+  }), [
+    library.viewState,
+    settledSelectedDocuments,
+    settledSelectedFolders,
+  ]);
   const assistantContext = useMemo(
-    () => (activeTab === "assistant" ? buildLibraryAssistantContext(library) : null),
+    () => (activeTab === "assistant" && !detailPending
+      ? buildLibraryAssistantContext(settledLibrary)
+      : null),
     [
       activeTab,
-      library.selectedDocuments,
-      library.selectedFolderEntries,
-      library.viewState.browseMode,
-      library.viewState.selectedFolderPath
+      detailPending,
+      settledLibrary,
     ]
   );
   const assistant = useDocumentAssistant(assistantContext);
   const selectedLocalPath = selected
     ? resolveDocumentLocalPath(library, selected.path)
     : null;
-  const selectedFolder = !selected
-    ? deferredEntries.find(
-        (entry): entry is LibraryDirectoryEntry =>
-          isLibraryDirectoryEntry(entry) &&
-          entry.path === deferredSelectedFolderEntryPath,
-      ) ?? null
+  const preview = selected && deferredPreview?.path === selected.path
+    ? deferredPreview
     : null;
-  const preview = deferredPreview;
+
+  useEffect(() => {
+    library.cancelPreview();
+    if (incomingDetailSelection.key === "none") {
+      setSettledDetailSelection(EMPTY_SETTLED_LIBRARY_DETAIL_SELECTION);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setSettledDetailSelection(incomingDetailSelection);
+    }, LIBRARY_DETAIL_SETTLE_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [incomingDetailSelection, library.cancelPreview]);
+
+  useEffect(() => {
+    if (!detailPending && selected) {
+      void library.openPreview(selected.path);
+    }
+  }, [detailPending, library.openPreview, selected?.documentId]);
 
   useEffect(() => {
     if (activeTab !== "assistant") {
@@ -4301,7 +4594,15 @@ function LibraryDetail({
         </div>
       </header>
       {activeTab === "assistant" ? (
-        <DocumentAssistantPanel library={library} assistant={assistant} />
+        <DocumentAssistantPanel
+          library={{
+            selectedDocuments: settledSelectedDocuments,
+            selectedFolderEntries: settledSelectedFolders,
+          }}
+          assistant={assistant}
+        />
+      ) : detailPending ? (
+        <LibraryDetailSkeleton />
       ) : !selected && !selectedFolder ? (
         <div
           ref={detailScrollRef}
@@ -4470,7 +4771,7 @@ function LibraryDetail({
             </div>
             <MemoizedPreviewPanel
               preview={preview}
-              loading={deferredPreviewLoading}
+              loading={!deferredPreviewError && (deferredPreviewLoading || !preview)}
               error={deferredPreviewError}
               compact
             />
@@ -4508,6 +4809,35 @@ function LibraryDetail({
 }
 
 const MemoizedLibraryDetail = memo(LibraryDetail);
+
+function buildLibraryDetailSelectionKey(
+  documentIds: string[],
+  folderPaths: string[],
+): string {
+  if (documentIds.length > 0) {
+    return `documents:${documentIds.join("\u001f")}`;
+  }
+  if (folderPaths.length > 0) {
+    return `folders:${folderPaths.join("\u001f")}`;
+  }
+  return "none";
+}
+
+function LibraryDetailSkeleton() {
+  return (
+    <div
+      className="affairs-detail-scroll affairs-detail-skeleton"
+      aria-busy="true"
+      aria-label={t("libraryDocumentsLoading")}
+    >
+      <div className="affairs-detail-skeleton-title" />
+      <div className="affairs-detail-skeleton-line wide" />
+      <div className="affairs-detail-skeleton-line medium" />
+      <div className="affairs-detail-skeleton-line" />
+      <div className="affairs-detail-skeleton-block" />
+    </div>
+  );
+}
 
 function isLibraryDirectoryEntry(entry: LibraryEntry): entry is LibraryDirectoryEntry {
 	return entry.kind === "folder" || entry.kind === "tag-directory";
@@ -7692,6 +8022,14 @@ function PreviewPanel({
     );
   }
 
+  if (compact && (preview.kind === "markdown" || preview.kind === "text")) {
+    return (
+      <pre className="preview-box text compact">
+        {buildCompactPreviewContent(preview.content || t("libraryPreviewEmpty"))}
+      </pre>
+    );
+  }
+
   if (preview.kind === "image" && preview.previewUrl) {
     return (
       <div className="file-viewer-media-shell library-detail-preview-shell">
@@ -7746,6 +8084,19 @@ function PreviewPanel({
 }
 
 const MemoizedPreviewPanel = memo(PreviewPanel);
+
+const COMPACT_PREVIEW_MAX_CHARACTERS = 24_000;
+const COMPACT_PREVIEW_MAX_LINES = 240;
+
+export function buildCompactPreviewContent(content: string): string {
+  const characterLimited = content.slice(0, COMPACT_PREVIEW_MAX_CHARACTERS);
+  const lines = characterLimited.split(/\r?\n/, COMPACT_PREVIEW_MAX_LINES + 1);
+  const truncated = content.length > characterLimited.length || lines.length > COMPACT_PREVIEW_MAX_LINES;
+  if (!truncated) {
+    return characterLimited;
+  }
+  return `${lines.slice(0, COMPACT_PREVIEW_MAX_LINES).join("\n")}\n\n...`;
+}
 
 function DocumentTagEditor({
   library,
