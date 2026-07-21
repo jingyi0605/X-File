@@ -7342,6 +7342,24 @@ mod tests {
             Some("running")
         );
     }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_原生视图相同_frame_不应触发重绘() {
+        let current = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(272.0, 900.0));
+        let requested = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(272.0, 900.0));
+
+        assert!(macos_native_frame_matches(current, requested));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_原生视图_frame_变化时必须触发重绘() {
+        let current = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(272.0, 900.0));
+        let requested = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(280.0, 900.0));
+
+        assert!(!macos_native_frame_matches(current, requested));
+    }
 }
 
 fn epoch_millis_to_iso(value: u64) -> String {
@@ -7581,6 +7599,16 @@ unsafe fn apply_macos_native_sidebar_layout(
 }
 
 #[cfg(target_os = "macos")]
+fn macos_native_frame_matches(current: NSRect, requested: NSRect) -> bool {
+    const FRAME_EPSILON: f64 = 0.01;
+
+    (current.origin.x - requested.origin.x).abs() <= FRAME_EPSILON
+        && (current.origin.y - requested.origin.y).abs() <= FRAME_EPSILON
+        && (current.size.width - requested.size.width).abs() <= FRAME_EPSILON
+        && (current.size.height - requested.size.height).abs() <= FRAME_EPSILON
+}
+
+#[cfg(target_os = "macos")]
 fn sync_macos_webview_frame(window: &WebviewWindow) -> Result<(), String> {
     let window_for_resize = window.clone();
 
@@ -7594,9 +7622,14 @@ fn sync_macos_webview_frame(window: &WebviewWindow) -> Result<(), String> {
 
             let _ = window_for_resize.with_webview(move |webview| {
                 let webview_view: &NSView = &*webview.inner().cast();
-                webview_view.setFrame(content_bounds);
-                webview_view.setNeedsDisplay(true);
-                webview_view.displayIfNeeded();
+                let frame_changed =
+                    !macos_native_frame_matches(webview_view.frame(), content_bounds);
+
+                if frame_changed {
+                    webview_view.setFrame(content_bounds);
+                    webview_view.setNeedsDisplay(true);
+                    webview_view.displayIfNeeded();
+                }
             });
         })
         .map_err(|error| error.to_string())
@@ -7703,9 +7736,20 @@ unsafe fn apply_macos_native_sidebar_frame(
     };
     let view = &*(view_ptr as *const NSVisualEffectView);
     view.setAutoresizingMask(autoresizing_mask);
-    view.setFrame(frame);
-    view.setNeedsDisplay(true);
-    view.setHidden(!visible);
+    let frame_changed = !macos_native_frame_matches(view.frame(), frame);
+    let hidden_changed = view.isHidden() == visible;
+
+    // React 拖拽与 macOS 窗口缩放可能在同一帧重复提交相同布局。
+    // 仅在原生视图状态真正变化时重绘，避免 NSVisualEffectView 反复失效合成缓存。
+    if frame_changed {
+        view.setFrame(frame);
+    }
+    if hidden_changed {
+        view.setHidden(!visible);
+    }
+    if frame_changed || hidden_changed {
+        view.setNeedsDisplay(true);
+    }
 }
 
 #[cfg(target_os = "macos")]
