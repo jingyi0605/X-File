@@ -24,6 +24,8 @@ interface RunLibraryIndexOnceOptions {
   targetPath?: string;
   allowedExtensions?: string[];
   includedHiddenPaths?: string[];
+  hideDotFiles?: boolean;
+  hideSystemFolders?: boolean;
   reason?: string;
   signal?: AbortSignal;
   onStageChange?: (stage: string) => void;
@@ -161,6 +163,8 @@ export class LibraryIndexService {
             targetPath: input.targetPath ?? undefined,
             allowedExtensions: input.binding.allowedExtensions,
             includedHiddenPaths: input.binding.includedHiddenPaths,
+            hideDotFiles: input.binding.hideDotFiles,
+            hideSystemFolders: input.binding.hideSystemFolders,
             reason: input.reason,
             signal: context.signal,
             onStageChange: context.setStage,

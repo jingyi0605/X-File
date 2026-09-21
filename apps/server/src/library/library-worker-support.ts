@@ -15,6 +15,8 @@ export interface LibraryWorkerPayload {
   targetPath?: string | null;
   allowedExtensions?: string[];
   includedHiddenPaths?: string[];
+  hideDotFiles?: boolean;
+  hideSystemFolders?: boolean;
   reason?: string;
   queuedAt?: string;
   taskId?: string | null;

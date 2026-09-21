@@ -11,6 +11,8 @@ export interface RuntimeConfig {
   disabledParserExtensions: string[];
   allowedExtensions: string[];
   includedHiddenPaths: string[];
+  hideDotFiles: boolean;
+  hideSystemFolders: boolean;
   writeBatchSize: number;
   maxIndexConcurrency: number;
   maxFileSizeBytes: number;

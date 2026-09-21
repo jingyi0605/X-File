@@ -189,6 +189,8 @@ export class TextIndexer {
     const scanner = new FileScanner(this.config.rootDir, {
       allowedExtensions: options.allowedExtensionsOverride ?? this.config.allowedExtensions,
       includedHiddenPaths: this.config.includedHiddenPaths,
+      hideDotFiles: this.config.hideDotFiles,
+      hideSystemFolders: this.config.hideSystemFolders,
     });
     const parser = this.dependencies.parser ?? createDefaultDocumentParseExecutor({
       config: this.config,

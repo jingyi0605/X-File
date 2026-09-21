@@ -37,6 +37,8 @@ test("第 11 批基础合约：索引器运行时配置兼容旧配置文件并�
   assert.equal(config.configFilePath, path.join(indexDir, "doc-semantic-index.config.json"));
   assert.deepEqual(config.allowedExtensions, [".md", ".pdf"]);
   assert.deepEqual(config.includedHiddenPaths, [".obsidian", "docs/.secret"]);
+  assert.equal(config.hideDotFiles, true);
+  assert.equal(config.hideSystemFolders, true);
   assert.equal(config.maxFileSizeBytes, 1024);
   assert.equal(config.parserTimeoutMs, 777);
   assert.equal(config.watchDebounceMs, 333);
@@ -64,10 +66,12 @@ test("第 11 批基础合约：文件扫描器跳过隐藏目录并只放行显�
   fs.mkdirSync(path.join(rootDir, "docs", ".secret"), { recursive: true });
   fs.mkdirSync(path.join(rootDir, ".obsidian"), { recursive: true });
   fs.mkdirSync(path.join(rootDir, ".ai-index"), { recursive: true });
+  fs.mkdirSync(path.join(rootDir, "node_modules"), { recursive: true });
   fs.writeFileSync(path.join(rootDir, "visible.md"), "visible", "utf8");
   fs.writeFileSync(path.join(rootDir, "docs", ".secret", "kept.md"), "secret", "utf8");
   fs.writeFileSync(path.join(rootDir, ".obsidian", "vault.md"), "vault", "utf8");
   fs.writeFileSync(path.join(rootDir, ".ai-index", "leak.md"), "index", "utf8");
+  fs.writeFileSync(path.join(rootDir, "node_modules", "package.md"), "dependency", "utf8");
   fs.writeFileSync(path.join(rootDir, "ignored.exe"), "exe", "utf8");
 
   assert.deepEqual(
@@ -79,6 +83,12 @@ test("第 11 批基础合约：文件扫描器跳过隐藏目录并只放行显�
     .scan()
     .map((item) => item.relativePath);
   assert.deepEqual(defaultPaths, ["visible.md"]);
+  assert.deepEqual(
+    new FileScanner(rootDir, { allowedExtensions: [".md"] })
+      .scan("node_modules/package.md")
+      .map((item) => item.relativePath),
+    [],
+  );
 
   const includedPaths = new FileScanner(rootDir, {
     allowedExtensions: [".md"],
@@ -89,6 +99,32 @@ test("第 11 批基础合约：文件扫描器跳过隐藏目录并只放行显�
     .sort((left, right) => left.localeCompare(right, "zh-Hans-CN"));
 
   assert.deepEqual(includedPaths, [".obsidian/vault.md", "docs/.secret/kept.md", "visible.md"]);
+
+  const visibleHiddenPaths = new FileScanner(rootDir, {
+    allowedExtensions: [".md"],
+    hideDotFiles: false,
+    hideSystemFolders: false,
+  })
+    .scan()
+    .map((item) => item.relativePath)
+    .sort((left, right) => left.localeCompare(right, "zh-Hans-CN"));
+
+  assert.deepEqual(visibleHiddenPaths, [
+    ".obsidian/vault.md",
+    "docs/.secret/kept.md",
+    "node_modules/package.md",
+    "visible.md",
+  ]);
+  assert.deepEqual(
+    new FileScanner(rootDir, {
+      allowedExtensions: [".md"],
+      hideDotFiles: false,
+      hideSystemFolders: false,
+    })
+      .scan(".ai-index/leak.md")
+      .map((item) => item.relativePath),
+    [],
+  );
 });
 
 /**
@@ -99,7 +135,10 @@ test("第 11 批基础合约：资料库配置路由持久化 enabled 并同步�
   const previousHome = process.env.HOME;
   process.env.HOME = tempHome;
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "x-file-foundation-library-"));
-  const app = createServer({ httpServerRuntimeState: { running: false } });
+  const app = createServer({
+    httpServerRuntimeState: { running: false },
+    sidecarProfile: "full",
+  });
 
   try {
     const bindResponse = await app.inject({
@@ -117,6 +156,8 @@ test("第 11 批基础合约：资料库配置路由持久化 enabled 并同步�
         enabled: false,
         allowedExtensions: ["md", ".PDF", ".md"],
         includedHiddenPaths: [".obsidian", ".obsidian", "docs/.secret"],
+        hideDotFiles: false,
+        hideSystemFolders: false,
         folderOpenBehavior: "single_click",
       },
     });
@@ -126,6 +167,8 @@ test("第 11 批基础合约：资料库配置路由持久化 enabled 并同步�
     assert.equal(config.binding.enabled, false);
     assert.deepEqual(config.allowedExtensions, [".md", ".pdf"]);
     assert.deepEqual(config.includedHiddenPaths, [".obsidian", "docs/.secret"]);
+    assert.equal(config.hideDotFiles, false);
+    assert.equal(config.hideSystemFolders, false);
     assert.equal(config.folderOpenBehavior, "single_click");
 
     const snapshotResponse = await app.inject({ method: "GET", url: "/api/library/snapshot" });

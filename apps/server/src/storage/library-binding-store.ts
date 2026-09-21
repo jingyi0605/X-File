@@ -55,6 +55,8 @@ function normalizeBinding(binding: Partial<LibraryBinding>): LibraryBinding {
   const initialized = rootDir.trim().length > 0;
   return {
     ...(binding as LibraryBinding),
+    hideDotFiles: binding.hideDotFiles !== false,
+    hideSystemFolders: binding.hideSystemFolders !== false,
     initialized,
     initializedAt: typeof binding.initializedAt === "string" && binding.initializedAt.trim()
       ? binding.initializedAt

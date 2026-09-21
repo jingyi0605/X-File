@@ -96,6 +96,30 @@ describe("SettingsPage 文档库索引配置迁移行为", () => {
     });
   });
 
+  it("资料库设置默认隐藏点号路径和常见系统文件夹，并可关闭后保存", async () => {
+    const { SettingsPage } = await import("../SettingsPage");
+    render(<SettingsPage />);
+
+    await userEvent.click(await screen.findByRole("tab", { name: /资料库/ }));
+    const dotFilesSwitch = await screen.findByRole("switch", { name: "隐藏以 . 开头的文件和文件夹" });
+    const systemFoldersSwitch = screen.getByRole("switch", { name: "隐藏常见的系统和构建文件夹" });
+    expect(dotFilesSwitch).toHaveAttribute("aria-checked", "true");
+    expect(systemFoldersSwitch).toHaveAttribute("aria-checked", "true");
+
+    await userEvent.click(dotFilesSwitch);
+    await userEvent.click(systemFoldersSwitch);
+    await userEvent.click(screen.getByRole("button", { name: "保存索引设置" }));
+
+    await waitFor(() => {
+      expect(libraryApiMock.saveLibraryConfig).toHaveBeenCalledWith(
+        expect.objectContaining({
+          hideDotFiles: false,
+          hideSystemFolders: false,
+        }),
+      );
+    });
+  });
+
   it("资料库页会展示运行模式字段，镜像模式可填写源端地址与本地镜像目录", async () => {
     const { SettingsPage } = await import("../SettingsPage");
     render(<SettingsPage />);

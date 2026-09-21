@@ -25,6 +25,8 @@ test("配置保存同步更新 binding 和资料库内配置文件", () => {
     mirrorRoot: " /tmp/mirror ",
     allowedExtensions: ["md", ".PDF", ".md"],
     includedHiddenPaths: [".obsidian", ".obsidian", " .secret/docs "],
+    hideDotFiles: false,
+    hideSystemFolders: false,
     folderOpenBehavior: "single_click"
   });
 
@@ -32,6 +34,8 @@ test("配置保存同步更新 binding 和资料库内配置文件", () => {
   assert.equal(config.mirrorRoot, "/tmp/mirror");
   assert.deepEqual(config.allowedExtensions, [".md", ".pdf"]);
   assert.deepEqual(config.includedHiddenPaths, [".obsidian", ".secret/docs"]);
+  assert.equal(config.hideDotFiles, false);
+  assert.equal(config.hideSystemFolders, false);
   assert.equal(config.folderOpenBehavior, "single_click");
 
   const binding = bindingStore.read();
@@ -41,8 +45,16 @@ test("配置保存同步更新 binding 和资料库内配置文件", () => {
 
   const configFile = JSON.parse(
     fs.readFileSync(path.join(rootDir, ".ai-index", "doc-semantic-index.config.json"), "utf8")
-  ) as { enabled: boolean; allowedExtensions: string[]; folderOpenBehavior: string };
+  ) as {
+    enabled: boolean;
+    allowedExtensions: string[];
+    hideDotFiles: boolean;
+    hideSystemFolders: boolean;
+    folderOpenBehavior: string;
+  };
   assert.equal(configFile.enabled, false);
   assert.deepEqual(configFile.allowedExtensions, [".md", ".pdf"]);
+  assert.equal(configFile.hideDotFiles, false);
+  assert.equal(configFile.hideSystemFolders, false);
   assert.equal(configFile.folderOpenBehavior, "single_click");
 });

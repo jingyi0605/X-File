@@ -15,6 +15,7 @@ import type {
   LibraryRefreshResult,
   LibrarySnapshot
 } from "@x-file/shared";
+import { isLibraryPathVisible } from "@x-file/indexer";
 
 import {
   buildPreviewCapabilities,
@@ -138,6 +139,8 @@ export class LibraryService {
         ? existing.allowedExtensions
         : DEFAULT_ALLOWED_EXTENSIONS,
       includedHiddenPaths: existing?.includedHiddenPaths ?? [],
+      hideDotFiles: existing?.hideDotFiles ?? true,
+      hideSystemFolders: existing?.hideSystemFolders ?? true,
       folderOpenBehavior: existing?.folderOpenBehavior ?? "double_click",
       configRelativePath: existing?.configRelativePath ?? DEFAULT_CONFIG_RELATIVE_PATH,
       exportMode: "v2",
@@ -193,6 +196,15 @@ export class LibraryService {
     const relativePath = normalizeRelativePath(input.path ?? "");
     const absolutePath = resolveInsideRoot(binding.rootDir, relativePath);
     const limit = normalizeLimit(input.limit, 200);
+    const visibilityOptions = {
+      includedHiddenPaths: binding.includedHiddenPaths,
+      hideDotFiles: binding.hideDotFiles,
+      hideSystemFolders: binding.hideSystemFolders,
+    };
+
+    if (relativePath && !isLibraryPathVisible(relativePath, { ...visibilityOptions, isDirectory: true })) {
+      return { items: [], path: relativePath, total: 0, limit };
+    }
 
     if (!fs.existsSync(absolutePath)) {
       return { items: [], path: relativePath, total: 0, limit };
@@ -203,7 +215,14 @@ export class LibraryService {
       throw new LibraryError(400, "LIBRARY_PATH_INVALID", "路径不是目录", "path");
     }
 
-    const items = fs.readdirSync(absolutePath, { withFileTypes: true }).slice(0, limit).map((entry) => {
+    const visibleEntries = fs.readdirSync(absolutePath, { withFileTypes: true }).filter((entry) => {
+      const entryRelativePath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
+      return isLibraryPathVisible(entryRelativePath, {
+        ...visibilityOptions,
+        isDirectory: entry.isDirectory(),
+      });
+    });
+    const items = visibleEntries.slice(0, limit).map((entry) => {
       const entryRelativePath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
       const entryStats = fs.statSync(path.join(absolutePath, entry.name));
       return {
@@ -218,7 +237,7 @@ export class LibraryService {
     return {
       items,
       path: relativePath,
-      total: items.length,
+      total: visibleEntries.length,
       limit
     };
   }

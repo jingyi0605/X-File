@@ -297,6 +297,8 @@ function createBinding(rootDir: string): LibraryBinding {
     mirrorRoot: null,
     allowedExtensions: [".md"],
     includedHiddenPaths: [],
+    hideDotFiles: true,
+    hideSystemFolders: true,
     folderOpenBehavior: "double_click",
     configRelativePath: ".ai-index/doc-semantic-index.config.json",
     exportMode: "v2",

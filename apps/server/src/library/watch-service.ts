@@ -92,6 +92,8 @@ export class LibraryWatchService {
         mirrorRoot: null,
         allowedExtensions: [],
         includedHiddenPaths: [],
+        hideDotFiles: true,
+        hideSystemFolders: true,
         folderOpenBehavior: "double_click",
         configRelativePath: ".ai-index/doc-semantic-index.config.json",
         exportMode: "v2",

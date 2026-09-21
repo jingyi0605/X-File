@@ -43,6 +43,8 @@ export interface RunLibraryIndexOnceOptions {
   targetPath?: string;
   allowedExtensions?: string[];
   includedHiddenPaths?: string[];
+  hideDotFiles?: boolean;
+  hideSystemFolders?: boolean;
   reason?: string;
   signal?: AbortSignal;
   onStageChange?: (stage: RunLibraryIndexStage) => void;
@@ -56,6 +58,8 @@ export interface PrepareLibraryIndexRuntimeOptions {
   rootDir: string;
   allowedExtensions?: string[];
   includedHiddenPaths?: string[];
+  hideDotFiles?: boolean;
+  hideSystemFolders?: boolean;
   dbDriver?: LibraryIndexerDatabaseDriver;
   dbDriverKind?: LibraryIndexerDatabaseDriverKind;
 }
@@ -121,6 +125,8 @@ export async function runLibraryIndexOnce(
     rootDir: options.rootDir,
     allowedExtensions: options.allowedExtensions,
     includedHiddenPaths: options.includedHiddenPaths,
+    hideDotFiles: options.hideDotFiles,
+    hideSystemFolders: options.hideSystemFolders,
     dbDriverKind: options.dbDriverKind,
   });
   try {
@@ -129,6 +135,8 @@ export async function runLibraryIndexOnce(
       rootDir: options.rootDir,
       allowedExtensions: options.allowedExtensions,
       includedHiddenPaths: options.includedHiddenPaths,
+      hideDotFiles: options.hideDotFiles,
+      hideSystemFolders: options.hideSystemFolders,
       dbDriverKind: options.dbDriverKind,
     });
 
@@ -190,6 +198,8 @@ export function createLibraryRuntimeConfig(
       rootDir: options.rootDir,
       allowedExtensions: options.allowedExtensions,
       includedHiddenPaths: options.includedHiddenPaths,
+      hideDotFiles: options.hideDotFiles,
+      hideSystemFolders: options.hideSystemFolders,
     },
   });
 }

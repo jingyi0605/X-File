@@ -48,6 +48,8 @@ async function main(): Promise<void> {
       rootDir,
       allowedExtensions: payload.allowedExtensions,
       includedHiddenPaths: payload.includedHiddenPaths,
+      hideDotFiles: payload.hideDotFiles,
+      hideSystemFolders: payload.hideSystemFolders,
     });
     const exportStage = await runLibraryExportOnce({
       config,

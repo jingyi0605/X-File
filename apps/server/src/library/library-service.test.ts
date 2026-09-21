@@ -125,6 +125,46 @@ test("文件操作支持创建、复制、移动和删除", () => {
   assert.equal(fs.existsSync(path.join(rootDir, "docs/c.txt")), false);
 });
 
+test("文件树遵守隐藏规则并始终排除索引目录", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "x-file-library-hidden-tree-"));
+  const dataDir = path.join(tempDir, "data");
+  const rootDir = path.join(tempDir, "library");
+  fs.mkdirSync(path.join(rootDir, ".obsidian"), { recursive: true });
+  fs.mkdirSync(path.join(rootDir, ".secret"), { recursive: true });
+  fs.mkdirSync(path.join(rootDir, "node_modules"), { recursive: true });
+  fs.mkdirSync(path.join(rootDir, ".ai-index"), { recursive: true });
+  fs.mkdirSync(path.join(rootDir, "docs"), { recursive: true });
+
+  const bindingStore = new LibraryBindingStore({ dataDir });
+  const configStore = new LibraryConfigStore();
+  const service = new LibraryService(bindingStore, new LibraryExportReader(), null, configStore);
+  service.saveBinding({ rootDir, completeInitialization: true });
+
+  assert.deepEqual(service.listFiles({}).items.map((item) => item.name), ["docs"]);
+
+  const binding = bindingStore.read();
+  assert.ok(binding);
+  bindingStore.write({
+    ...binding,
+    includedHiddenPaths: [".obsidian"],
+  });
+  assert.deepEqual(
+    service.listFiles({}).items.map((item) => item.name).sort(),
+    [".obsidian", "docs"],
+  );
+
+  bindingStore.write({
+    ...binding,
+    hideDotFiles: false,
+    hideSystemFolders: false,
+  });
+  assert.deepEqual(
+    service.listFiles({}).items.map((item) => item.name).sort(),
+    [".obsidian", ".secret", "docs", "node_modules"],
+  );
+  assert.deepEqual(service.listFiles({ path: ".ai-index" }).items, []);
+});
+
 test("读快照和列表只读取 export，不触发索引刷新", () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "x-file-library-readonly-"));
   const dataDir = path.join(tempDir, "data");

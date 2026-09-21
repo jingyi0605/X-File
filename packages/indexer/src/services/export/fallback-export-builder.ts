@@ -94,6 +94,8 @@ export async function buildFallbackExport(
   const scanner = new FileScanner(config.rootDir, {
     allowedExtensions: config.allowedExtensions,
     includedHiddenPaths: config.includedHiddenPaths,
+    hideDotFiles: config.hideDotFiles,
+    hideSystemFolders: config.hideSystemFolders,
   });
 
   // fallback 不再尝试“局部导出”特殊语义。

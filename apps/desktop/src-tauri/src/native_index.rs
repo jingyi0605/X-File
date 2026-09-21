@@ -64,6 +64,8 @@ pub struct NativeIndexRequest {
     pub root_dir: String,
     pub allowed_extensions: Vec<String>,
     pub included_hidden_paths: Vec<String>,
+    pub hide_dot_files: bool,
+    pub hide_system_folders: bool,
     pub config_relative_path: String,
     pub reason: String,
     pub target_path: Option<String>,
@@ -807,6 +809,8 @@ pub fn is_native_skip_only_extension(extension: &str) -> bool {
 struct NativeIndexOptions {
     allowed_extensions: Option<HashSet<String>>,
     included_hidden_paths: Vec<String>,
+    hide_dot_files: bool,
+    hide_system_folders: bool,
     max_file_size_bytes: Option<u64>,
 }
 
@@ -819,6 +823,8 @@ impl NativeIndexOptions {
         Self {
             allowed_extensions,
             included_hidden_paths,
+            hide_dot_files: request.hide_dot_files,
+            hide_system_folders: request.hide_system_folders,
             max_file_size_bytes,
         }
     }
@@ -1809,7 +1815,18 @@ fn scan_file(
         Ok(value) => normalize_relative_path(value),
         Err(_) => return ScanFileOutcome::Ignored,
     };
-    if has_hidden_segment(&relative_path)
+    if has_directory_segment(&relative_path, ".ai-index") {
+        return ScanFileOutcome::Ignored;
+    }
+    if options.hide_system_folders
+        && ignored_directory_names()
+            .iter()
+            .any(|name| has_directory_segment(&relative_path, name))
+    {
+        return ScanFileOutcome::Ignored;
+    }
+    if options.hide_dot_files
+        && has_hidden_segment(&relative_path)
         && !is_included_hidden_path(&relative_path, &options.included_hidden_paths)
     {
         return ScanFileOutcome::Ignored;
@@ -3305,10 +3322,13 @@ fn read_max_file_size_bytes(root_dir: &str, config_relative_path: &str) -> Optio
 }
 
 fn should_skip_directory(name: &str, relative_path: &str, options: &NativeIndexOptions) -> bool {
-    if ignored_directory_names().contains(name) {
+    if name == ".ai-index" {
         return true;
     }
-    if !name.starts_with('.') {
+    if options.hide_system_folders && ignored_directory_names().contains(name) {
+        return true;
+    }
+    if !options.hide_dot_files || !name.starts_with('.') {
         return false;
     }
     !is_included_hidden_path(relative_path, &options.included_hidden_paths)
@@ -3363,6 +3383,49 @@ fn has_hidden_segment(relative_path: &str) -> bool {
     relative_path
         .split('/')
         .any(|segment| !segment.is_empty() && segment.starts_with('.'))
+}
+
+fn has_directory_segment(relative_path: &str, expected: &str) -> bool {
+    let mut segments = relative_path.split('/').peekable();
+    while let Some(segment) = segments.next() {
+        if segments.peek().is_some() && segment == expected {
+            return true;
+        }
+    }
+    false
+}
+
+pub fn is_native_library_path_visible(
+    relative_path: &str,
+    is_directory: bool,
+    included_hidden_paths: &[String],
+    hide_dot_files: bool,
+    hide_system_folders: bool,
+) -> bool {
+    let normalized = relative_path.replace('\\', "/");
+    let segments = normalized
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    let directory_segments = if is_directory {
+        segments.as_slice()
+    } else {
+        &segments[..segments.len().saturating_sub(1)]
+    };
+    if directory_segments.contains(&".ai-index") {
+        return false;
+    }
+    if hide_system_folders
+        && directory_segments
+            .iter()
+            .any(|segment| ignored_directory_names().contains(*segment))
+    {
+        return false;
+    }
+    if !hide_dot_files || !has_hidden_segment(&normalized) {
+        return true;
+    }
+    is_included_hidden_path(&normalized, &normalize_included_hidden_paths(included_hidden_paths))
 }
 
 fn normalize_relative_path(path: &Path) -> String {
@@ -4079,7 +4142,6 @@ fn ignored_directory_names() -> &'static HashSet<&'static str> {
             "dist",
             "build",
             "coverage",
-            ".ai-index",
             ".git",
             ".svn",
             ".hg",
@@ -4240,6 +4302,8 @@ mod tests {
             root_dir: root_dir.to_string_lossy().to_string(),
             allowed_extensions: vec![".md".to_string(), ".doc".to_string()],
             included_hidden_paths: vec![],
+            hide_dot_files: true,
+            hide_system_folders: true,
             config_relative_path: ".ai-index/doc-semantic-index.config.json".to_string(),
             reason: "native_test".to_string(),
             target_path: None,
@@ -4293,6 +4357,67 @@ mod tests {
     }
 
     #[test]
+    fn hidden_filters_can_be_disabled_but_ai_index_is_always_excluded() {
+        let root_dir = make_temp_dir("x-file-native-hidden-filters");
+        fs::create_dir_all(root_dir.join(".secret")).unwrap();
+        fs::create_dir_all(root_dir.join("node_modules")).unwrap();
+        fs::create_dir_all(root_dir.join(".ai-index")).unwrap();
+        fs::write(root_dir.join(".secret/hidden.md"), "# hidden").unwrap();
+        fs::write(root_dir.join("node_modules/package.md"), "# package").unwrap();
+        fs::write(root_dir.join(".ai-index/leak.md"), "# leak").unwrap();
+
+        let result = run_native_index_worker(NativeIndexRequest {
+            root_dir: root_dir.to_string_lossy().to_string(),
+            allowed_extensions: vec![".md".to_string()],
+            included_hidden_paths: vec![],
+            hide_dot_files: false,
+            hide_system_folders: false,
+            config_relative_path: ".ai-index/doc-semantic-index.config.json".to_string(),
+            reason: "native_test".to_string(),
+            target_path: None,
+        })
+        .unwrap();
+
+        let index = result.get("index").and_then(Value::as_object).unwrap();
+        assert_eq!(index.get("indexedCount").and_then(Value::as_u64), Some(2));
+
+        let snapshot_path = root_dir.join(".ai-index/runtime/export-catalog-snapshot.json");
+        let snapshot: Value =
+            serde_json::from_str(&fs::read_to_string(snapshot_path).unwrap()).unwrap();
+        let paths = snapshot
+            .get("documents")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .filter_map(|document| document.get("path").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert!(paths.contains(&".secret/hidden.md"));
+        assert!(paths.contains(&"node_modules/package.md"));
+        assert!(!paths.contains(&".ai-index/leak.md"));
+        assert!(super::is_native_library_path_visible(
+            ".secret",
+            true,
+            &[],
+            false,
+            false,
+        ));
+        assert!(super::is_native_library_path_visible(
+            "node_modules",
+            true,
+            &[],
+            false,
+            false,
+        ));
+        assert!(!super::is_native_library_path_visible(
+            ".ai-index",
+            true,
+            &[],
+            false,
+            false,
+        ));
+    }
+
+    #[test]
     fn runtime_status_progress_contains_total_count_during_native_index() {
         let root_dir = make_temp_dir("x-file-native-index-progress-total");
         fs::create_dir_all(root_dir.join(".ai-index")).unwrap();
@@ -4304,6 +4429,8 @@ mod tests {
             root_dir: root_dir.to_string_lossy().to_string(),
             allowed_extensions: vec![".md".to_string(), ".doc".to_string()],
             included_hidden_paths: vec![],
+            hide_dot_files: true,
+            hide_system_folders: true,
             config_relative_path: ".ai-index/doc-semantic-index.config.json".to_string(),
             reason: "native_test".to_string(),
             target_path: None,
@@ -4351,6 +4478,8 @@ mod tests {
             root_dir: root_dir.to_string_lossy().to_string(),
             allowed_extensions: vec![".md".to_string()],
             included_hidden_paths: vec![],
+            hide_dot_files: true,
+            hide_system_folders: true,
             config_relative_path: ".ai-index/doc-semantic-index.config.json".to_string(),
             reason: "native_test".to_string(),
             target_path: None,
@@ -4381,6 +4510,8 @@ mod tests {
             root_dir: root_dir.to_string_lossy().to_string(),
             allowed_extensions: vec![".md".to_string()],
             included_hidden_paths: vec![],
+            hide_dot_files: true,
+            hide_system_folders: true,
             config_relative_path: ".ai-index/doc-semantic-index.config.json".to_string(),
             reason: "native_test".to_string(),
             target_path: None,
@@ -4390,6 +4521,8 @@ mod tests {
             root_dir: root_dir.to_string_lossy().to_string(),
             allowed_extensions: vec![".md".to_string()],
             included_hidden_paths: vec![],
+            hide_dot_files: true,
+            hide_system_folders: true,
             config_relative_path: ".ai-index/doc-semantic-index.config.json".to_string(),
             reason: "native_test".to_string(),
             target_path: None,
@@ -4437,6 +4570,8 @@ mod tests {
             root_dir: root_dir.to_string_lossy().to_string(),
             allowed_extensions: vec![".md".to_string()],
             included_hidden_paths: vec![],
+            hide_dot_files: true,
+            hide_system_folders: true,
             config_relative_path: ".ai-index/doc-semantic-index.config.json".to_string(),
             reason: "native_test".to_string(),
             target_path: None,
@@ -4457,6 +4592,8 @@ mod tests {
             root_dir: root_dir.to_string_lossy().to_string(),
             allowed_extensions: vec![".md".to_string()],
             included_hidden_paths: vec![],
+            hide_dot_files: true,
+            hide_system_folders: true,
             config_relative_path: ".ai-index/doc-semantic-index.config.json".to_string(),
             reason: "native_test".to_string(),
             target_path: None,

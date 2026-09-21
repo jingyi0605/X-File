@@ -16,6 +16,8 @@ export interface LibraryBinding {
   mirrorRoot: string | null;
   allowedExtensions: string[];
   includedHiddenPaths: string[];
+  hideDotFiles: boolean;
+  hideSystemFolders: boolean;
   folderOpenBehavior: LibraryFolderOpenBehavior;
   configRelativePath: string;
   exportMode: LibraryExportMode;
@@ -52,6 +54,8 @@ export interface LibraryConfig {
   mirrorRoot: string | null;
   allowedExtensions: string[];
   includedHiddenPaths: string[];
+  hideDotFiles: boolean;
+  hideSystemFolders: boolean;
   folderOpenBehavior: LibraryFolderOpenBehavior;
   configRelativePath: string;
   canWrite: boolean;
@@ -69,6 +73,8 @@ export interface SaveLibraryConfigInput {
   mirrorRoot?: string | null;
   allowedExtensions?: string[];
   includedHiddenPaths?: string[];
+  hideDotFiles?: boolean;
+  hideSystemFolders?: boolean;
   folderOpenBehavior?: LibraryFolderOpenBehavior;
 }
 

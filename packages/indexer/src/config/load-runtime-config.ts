@@ -22,6 +22,8 @@ interface RuntimeConfigFilePayload {
   disabledParserExtensions?: string[];
   allowedExtensions?: string[];
   includedHiddenPaths?: string[];
+  hideDotFiles?: boolean;
+  hideSystemFolders?: boolean;
   writeBatchSize?: number;
   maxIndexConcurrency?: number;
   maxFileSizeBytes?: number;
@@ -51,6 +53,22 @@ function readPositiveNumber(value: unknown): number | undefined {
     const parsed = Number(value);
     if (Number.isFinite(parsed) && parsed >= 0) {
       return parsed;
+    }
+  }
+  return undefined;
+}
+
+function readBoolean(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true" || normalized === "1") {
+      return true;
+    }
+    if (normalized === "false" || normalized === "0") {
+      return false;
     }
   }
   return undefined;
@@ -263,6 +281,22 @@ export function loadRuntimeConfig(cwd: string, options: LoadRuntimeConfigOptions
       ?? [],
   ) ?? []);
 
+  const hideDotFiles = readBoolean(
+    args.hideDotFiles
+      ?? args["hide-dot-files"]
+      ?? env.DOC_SEMANTIC_INDEX_HIDE_DOT_FILES
+      ?? configFile.hideDotFiles
+      ?? true,
+  );
+
+  const hideSystemFolders = readBoolean(
+    args.hideSystemFolders
+      ?? args["hide-system-folders"]
+      ?? env.DOC_SEMANTIC_INDEX_HIDE_SYSTEM_FOLDERS
+      ?? configFile.hideSystemFolders
+      ?? true,
+  );
+
   const writeBatchSize = readPositiveNumber(
     args.writeBatchSize
       ?? args["write-batch-size"]
@@ -294,6 +328,8 @@ export function loadRuntimeConfig(cwd: string, options: LoadRuntimeConfigOptions
     || writeBatchSize === undefined
     || maxIndexConcurrency === undefined
     || maxFileSizeBytes === undefined
+    || hideDotFiles === undefined
+    || hideSystemFolders === undefined
   ) {
     throw new AppError(
       "运行时配置中存在非法值，请检查 logLevel / watchDebounceMs / parserTimeoutMs / writeBatchSize / maxIndexConcurrency / maxFileSizeBytes。",
@@ -323,6 +359,8 @@ export function loadRuntimeConfig(cwd: string, options: LoadRuntimeConfigOptions
     disabledParserExtensions,
     allowedExtensions,
     includedHiddenPaths,
+    hideDotFiles,
+    hideSystemFolders,
     writeBatchSize,
     maxIndexConcurrency,
     maxFileSizeBytes,

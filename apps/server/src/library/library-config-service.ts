@@ -32,6 +32,8 @@ export class LibraryConfigService {
       mirrorRoot: binding?.mirrorRoot ?? null,
       allowedExtensions: binding?.allowedExtensions?.length ? binding.allowedExtensions : DEFAULT_ALLOWED_EXTENSIONS,
       includedHiddenPaths: binding?.includedHiddenPaths ?? [],
+      hideDotFiles: binding?.hideDotFiles ?? true,
+      hideSystemFolders: binding?.hideSystemFolders ?? true,
       folderOpenBehavior: binding?.folderOpenBehavior ?? "double_click",
       configRelativePath: binding?.configRelativePath ?? ".ai-index/doc-semantic-index.config.json",
       canWrite: binding !== null
@@ -50,6 +52,8 @@ export class LibraryConfigService {
       mirrorRoot: normalizeNullablePath(input.mirrorRoot, binding.mirrorRoot),
       allowedExtensions: normalizeExtensions(input.allowedExtensions, binding.allowedExtensions),
       includedHiddenPaths: normalizeStringList(input.includedHiddenPaths, binding.includedHiddenPaths),
+      hideDotFiles: input.hideDotFiles ?? binding.hideDotFiles,
+      hideSystemFolders: input.hideSystemFolders ?? binding.hideSystemFolders,
       folderOpenBehavior: input.folderOpenBehavior === "single_click" ? "single_click" : "double_click",
       updatedAt: new Date().toISOString()
     });

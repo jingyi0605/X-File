@@ -15,6 +15,8 @@ export class LibraryConfigStore {
       mirrorRoot: binding.mirrorRoot,
       allowedExtensions: binding.allowedExtensions,
       includedHiddenPaths: binding.includedHiddenPaths,
+      hideDotFiles: binding.hideDotFiles,
+      hideSystemFolders: binding.hideSystemFolders,
       folderOpenBehavior: binding.folderOpenBehavior,
       updatedAt: binding.updatedAt
     };

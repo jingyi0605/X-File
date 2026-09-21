@@ -27,8 +27,8 @@ use native_export::{
     run_native_export_worker, run_native_search_worker, NativeExportRequest, NativeSearchRequest,
 };
 use native_index::{
-    run_native_index_worker, run_native_parser, run_native_summary_backfill_worker,
-    NativeIndexRequest, NativeParserRequest,
+    is_native_library_path_visible, run_native_index_worker, run_native_parser,
+    run_native_summary_backfill_worker, NativeIndexRequest, NativeParserRequest,
 };
 use notify::{Config as NotifyConfig, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
@@ -739,6 +739,8 @@ struct NativeLibraryWorkerCliPayload {
     target_path: Option<String>,
     allowed_extensions: Option<Vec<String>>,
     included_hidden_paths: Option<Vec<String>>,
+    hide_dot_files: Option<bool>,
+    hide_system_folders: Option<bool>,
     reason: Option<String>,
     dirty_scope: Option<Value>,
     file_path: Option<String>,
@@ -786,6 +788,8 @@ struct NativeSaveLibraryConfigRequest {
     mirror_root: Option<String>,
     allowed_extensions: Option<Vec<String>>,
     included_hidden_paths: Option<Vec<String>>,
+    hide_dot_files: Option<bool>,
+    hide_system_folders: Option<bool>,
     folder_open_behavior: Option<String>,
 }
 
@@ -935,6 +939,8 @@ struct StoredLibraryBinding {
     mirror_root: Option<String>,
     allowed_extensions: Option<Vec<String>>,
     included_hidden_paths: Option<Vec<String>>,
+    hide_dot_files: Option<bool>,
+    hide_system_folders: Option<bool>,
     folder_open_behavior: Option<String>,
     config_relative_path: Option<String>,
     export_mode: Option<String>,
@@ -952,6 +958,8 @@ struct LocalLibraryBinding {
     mirror_root: Option<String>,
     allowed_extensions: Vec<String>,
     included_hidden_paths: Vec<String>,
+    hide_dot_files: bool,
+    hide_system_folders: bool,
     folder_open_behavior: String,
     config_relative_path: String,
     export_mode: String,
@@ -1366,6 +1374,8 @@ struct LocalLibraryConfig {
     mirror_root: Option<String>,
     allowed_extensions: Vec<String>,
     included_hidden_paths: Vec<String>,
+    hide_dot_files: bool,
+    hide_system_folders: bool,
     folder_open_behavior: String,
     config_relative_path: String,
     can_write: bool,
@@ -1564,6 +1574,8 @@ fn build_native_library_worker_payload(
         target_path,
         allowed_extensions: Some(binding.allowed_extensions.clone()),
         included_hidden_paths: Some(binding.included_hidden_paths.clone()),
+        hide_dot_files: Some(binding.hide_dot_files),
+        hide_system_folders: Some(binding.hide_system_folders),
         reason: Some(reason),
         dirty_scope,
         file_path: None,
@@ -1676,10 +1688,14 @@ fn run_native_library_worker_mode(
         "index-only" => {
             let allowed_extensions = payload.allowed_extensions.unwrap_or_default();
             let included_hidden_paths = payload.included_hidden_paths.unwrap_or_default();
+            let hide_dot_files = payload.hide_dot_files.unwrap_or(true);
+            let hide_system_folders = payload.hide_system_folders.unwrap_or(true);
             run_native_index_worker(NativeIndexRequest {
                 root_dir: payload.root_dir,
                 allowed_extensions,
                 included_hidden_paths,
+                hide_dot_files,
+                hide_system_folders,
                 config_relative_path: ".ai-index/doc-semantic-index.config.json".to_string(),
                 reason,
                 target_path,
@@ -1705,10 +1721,14 @@ fn run_native_library_worker_mode(
         "summary-backfill" => {
             let allowed_extensions = payload.allowed_extensions.unwrap_or_default();
             let included_hidden_paths = payload.included_hidden_paths.unwrap_or_default();
+            let hide_dot_files = payload.hide_dot_files.unwrap_or(true);
+            let hide_system_folders = payload.hide_system_folders.unwrap_or(true);
             run_native_summary_backfill_followed_by_search(NativeIndexRequest {
                 root_dir: payload.root_dir,
                 allowed_extensions,
                 included_hidden_paths,
+                hide_dot_files,
+                hide_system_folders,
                 config_relative_path: ".ai-index/doc-semantic-index.config.json".to_string(),
                 reason,
                 target_path,
@@ -1717,10 +1737,14 @@ fn run_native_library_worker_mode(
         "full" => {
             let allowed_extensions = payload.allowed_extensions.unwrap_or_default();
             let included_hidden_paths = payload.included_hidden_paths.unwrap_or_default();
+            let hide_dot_files = payload.hide_dot_files.unwrap_or(true);
+            let hide_system_folders = payload.hide_system_folders.unwrap_or(true);
             let index_request = NativeIndexRequest {
                 root_dir: payload.root_dir.clone(),
                 allowed_extensions,
                 included_hidden_paths,
+                hide_dot_files,
+                hide_system_folders,
                 config_relative_path: ".ai-index/doc-semantic-index.config.json".to_string(),
                 reason: reason.clone(),
                 target_path: target_path.clone(),
@@ -3423,6 +3447,8 @@ fn run_native_library_index_once(
         root_dir: binding.root_dir.clone(),
         allowed_extensions: binding.allowed_extensions.clone(),
         included_hidden_paths: binding.included_hidden_paths.clone(),
+        hide_dot_files: binding.hide_dot_files,
+        hide_system_folders: binding.hide_system_folders,
         config_relative_path: binding.config_relative_path.clone(),
         reason: reason.to_string(),
         target_path,
@@ -4142,6 +4168,23 @@ fn read_local_library_files(
     };
     let limit = limit.unwrap_or(200);
 
+    if normalized_path != "."
+        && !is_native_library_path_visible(
+            &normalized_path,
+            true,
+            &binding.included_hidden_paths,
+            binding.hide_dot_files,
+            binding.hide_system_folders,
+        )
+    {
+        return Ok(LocalLibraryFileList {
+            items: vec![],
+            path: normalized_path,
+            total: 0,
+            limit,
+        });
+    }
+
     if !absolute_path.exists() {
         return Ok(LocalLibraryFileList {
             items: vec![],
@@ -4169,6 +4212,15 @@ fn read_local_library_files(
         };
         let entry_metadata = entry.metadata().ok();
         let is_dir = entry_metadata.as_ref().is_some_and(|meta| meta.is_dir());
+        if !is_native_library_path_visible(
+            &entry_path,
+            is_dir,
+            &binding.included_hidden_paths,
+            binding.hide_dot_files,
+            binding.hide_system_folders,
+        ) {
+            continue;
+        }
         items.push(LocalLibraryFileNode {
             path: entry_path,
             name,
@@ -4368,6 +4420,8 @@ fn save_local_library_binding(
         mirror_root: existing.mirror_root,
         allowed_extensions: existing.allowed_extensions,
         included_hidden_paths: existing.included_hidden_paths,
+        hide_dot_files: existing.hide_dot_files,
+        hide_system_folders: existing.hide_system_folders,
         folder_open_behavior: existing.folder_open_behavior,
         config_relative_path: existing.config_relative_path,
         export_mode: existing.export_mode,
@@ -4402,6 +4456,8 @@ fn read_local_library_binding() -> Result<Option<LocalLibraryBinding>, String> {
         mirror_root: stored.mirror_root,
         allowed_extensions: stored.allowed_extensions.unwrap_or_default(),
         included_hidden_paths: stored.included_hidden_paths.unwrap_or_default(),
+        hide_dot_files: stored.hide_dot_files.unwrap_or(true),
+        hide_system_folders: stored.hide_system_folders.unwrap_or(true),
         folder_open_behavior: stored
             .folder_open_behavior
             .unwrap_or_else(|| "double_click".to_string()),
@@ -4452,6 +4508,11 @@ fn read_local_library_config() -> Result<LocalLibraryConfig, String> {
             .as_ref()
             .map(|item| item.included_hidden_paths.clone())
             .unwrap_or_default(),
+        hide_dot_files: binding.as_ref().map(|item| item.hide_dot_files).unwrap_or(true),
+        hide_system_folders: binding
+            .as_ref()
+            .map(|item| item.hide_system_folders)
+            .unwrap_or(true),
         folder_open_behavior: binding
             .as_ref()
             .map(|item| item.folder_open_behavior.clone())
@@ -4481,6 +4542,10 @@ fn save_local_library_config(
         binding.included_hidden_paths =
             normalize_string_list(included_hidden_paths, binding.included_hidden_paths);
     }
+    binding.hide_dot_files = request.hide_dot_files.unwrap_or(binding.hide_dot_files);
+    binding.hide_system_folders = request
+        .hide_system_folders
+        .unwrap_or(binding.hide_system_folders);
     binding.folder_open_behavior =
         if request.folder_open_behavior.as_deref() == Some("single_click") {
             "single_click".to_string()
@@ -6099,6 +6164,8 @@ fn default_local_library_binding() -> LocalLibraryBinding {
         mirror_root: None,
         allowed_extensions: vec![],
         included_hidden_paths: vec![],
+        hide_dot_files: true,
+        hide_system_folders: true,
         folder_open_behavior: "double_click".to_string(),
         config_relative_path: ".ai-index/doc-semantic-index.config.json".to_string(),
         export_mode: "v2".to_string(),
@@ -6116,6 +6183,8 @@ fn binding_to_stored(binding: &LocalLibraryBinding) -> StoredLibraryBinding {
         mirror_root: binding.mirror_root.clone(),
         allowed_extensions: Some(binding.allowed_extensions.clone()),
         included_hidden_paths: Some(binding.included_hidden_paths.clone()),
+        hide_dot_files: Some(binding.hide_dot_files),
+        hide_system_folders: Some(binding.hide_system_folders),
         folder_open_behavior: Some(binding.folder_open_behavior.clone()),
         config_relative_path: Some(binding.config_relative_path.clone()),
         export_mode: Some(binding.export_mode.clone()),
@@ -6148,6 +6217,8 @@ fn write_library_config_sidecar(binding: &LocalLibraryBinding) -> Result<(), Str
             "mirrorRoot": binding.mirror_root,
             "allowedExtensions": binding.allowed_extensions,
             "includedHiddenPaths": binding.included_hidden_paths,
+            "hideDotFiles": binding.hide_dot_files,
+            "hideSystemFolders": binding.hide_system_folders,
             "folderOpenBehavior": binding.folder_open_behavior,
             "updatedAt": binding.updated_at,
         }),

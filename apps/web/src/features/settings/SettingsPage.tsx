@@ -58,6 +58,8 @@ interface ConfigFormState {
   enabled: boolean;
   allowedExtensions: string[];
   includedHiddenPaths: string;
+  hideDotFiles: boolean;
+  hideSystemFolders: boolean;
   folderOpenBehavior: "single_click" | "double_click";
   manualExtension: string;
 }
@@ -181,6 +183,8 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
     enabled: true,
     allowedExtensions: [...LIBRARY_PRESET_EXTENSIONS],
     includedHiddenPaths: "",
+    hideDotFiles: true,
+    hideSystemFolders: true,
     folderOpenBehavior: "double_click",
     manualExtension: "",
   });
@@ -341,6 +345,8 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
           ? []
           : sortAllowedExtensions(configForm.allowedExtensions),
         includedHiddenPaths: parseIncludedHiddenPaths(configForm.includedHiddenPaths),
+        hideDotFiles: configForm.hideDotFiles,
+        hideSystemFolders: configForm.hideSystemFolders,
         folderOpenBehavior: configForm.folderOpenBehavior
       });
       applyConfig(saved);
@@ -424,6 +430,8 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
       enabled: config.enabled,
       allowedExtensions: resolveEditableAllowedExtensions(config.allowedExtensions),
       includedHiddenPaths: sortIncludedHiddenPaths(config.includedHiddenPaths).join("\n"),
+      hideDotFiles: config.hideDotFiles,
+      hideSystemFolders: config.hideSystemFolders,
       folderOpenBehavior: config.folderOpenBehavior,
       manualExtension: "",
     });
@@ -714,6 +722,30 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
                     {t("settingsDoubleClick")}
                   </button>
                 </div>
+              </div>
+            </section>
+            <section className="affairs-library-config-section affairs-library-filter-switches">
+              <div className="affairs-library-filter-switch-row">
+                <div className="affairs-library-filter-switch-copy">
+                  <span>{t("settingsHideDotFiles")}</span>
+                  <small>{t("settingsHideDotFilesHint")}</small>
+                </div>
+                <MacSwitch
+                  checked={configForm.hideDotFiles}
+                  label={t("settingsHideDotFiles")}
+                  onChange={(checked) => setConfigForm((current) => ({ ...current, hideDotFiles: checked }))}
+                />
+              </div>
+              <div className="affairs-library-filter-switch-row">
+                <div className="affairs-library-filter-switch-copy">
+                  <span>{t("settingsHideSystemFolders")}</span>
+                  <small>{t("settingsHideSystemFoldersHint")}</small>
+                </div>
+                <MacSwitch
+                  checked={configForm.hideSystemFolders}
+                  label={t("settingsHideSystemFolders")}
+                  onChange={(checked) => setConfigForm((current) => ({ ...current, hideSystemFolders: checked }))}
+                />
               </div>
             </section>
             <label>

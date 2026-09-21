@@ -45,12 +45,11 @@ const SUPPORTED_INDEX_EXTENSIONS = new Set([
 
 export const SUPPORTED_INDEX_EXTENSION_LIST = [...SUPPORTED_INDEX_EXTENSIONS].sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
 
-const IGNORED_DIRECTORY_NAMES = new Set([
+const SYSTEM_DIRECTORY_NAMES = new Set([
   "node_modules",
   "dist",
   "build",
   "coverage",
-  ".ai-index",
   ".git",
   ".svn",
   ".hg",
@@ -65,6 +64,30 @@ const IGNORED_DIRECTORY_NAMES = new Set([
 
 function normalizeRelativePath(relativePath: string): string {
   return relativePath.split(path.sep).join("/");
+}
+
+export function isLibraryPathVisible(
+  relativePath: string,
+  options: {
+    isDirectory: boolean;
+    includedHiddenPaths?: readonly string[];
+    hideDotFiles?: boolean;
+    hideSystemFolders?: boolean;
+  },
+): boolean {
+  const normalizedPath = normalizeRelativePath(relativePath);
+  const segments = normalizedPath.split("/").filter(Boolean);
+  const directorySegments = options.isDirectory ? segments : segments.slice(0, -1);
+  if (directorySegments.includes(".ai-index")) {
+    return false;
+  }
+  if (options.hideSystemFolders !== false && directorySegments.some((segment) => SYSTEM_DIRECTORY_NAMES.has(segment))) {
+    return false;
+  }
+  if (options.hideDotFiles === false || !hasHiddenPathSegment(normalizedPath)) {
+    return true;
+  }
+  return isIncludedHiddenPath(normalizedPath, options.includedHiddenPaths ?? []);
 }
 
 function normalizeHiddenPathCandidate(input: string): string | null {
@@ -133,12 +156,16 @@ export function isIncludedHiddenPath(relativePath: string, includedHiddenPaths: 
 export class FileScanner {
   private readonly allowedExtensions: Set<string> | null;
   private readonly includedHiddenPaths: string[];
+  private readonly hideDotFiles: boolean;
+  private readonly hideSystemFolders: boolean;
 
   constructor(
     private readonly rootDir: string,
     options: {
       allowedExtensions?: string[];
       includedHiddenPaths?: string[];
+      hideDotFiles?: boolean;
+      hideSystemFolders?: boolean;
     } = {},
   ) {
     const normalizedExtensions = (options.allowedExtensions ?? [])
@@ -146,6 +173,8 @@ export class FileScanner {
       .filter(Boolean);
     this.allowedExtensions = normalizedExtensions.length > 0 ? new Set(normalizedExtensions) : null;
     this.includedHiddenPaths = normalizeIncludedHiddenPaths(options.includedHiddenPaths ?? []);
+    this.hideDotFiles = options.hideDotFiles !== false;
+    this.hideSystemFolders = options.hideSystemFolders !== false;
   }
 
   private isIndexableExtension(extension: string): boolean {
@@ -193,14 +222,13 @@ export class FileScanner {
       throwIfAborted(signal, "事务文档库扫描已取消");
       const entries = fs.readdirSync(currentPath, { withFileTypes: true })
         .filter(entry => {
-          if (IGNORED_DIRECTORY_NAMES.has(entry.name)) {
-            return false;
-          }
           const relativeEntryPath = normalizeRelativePath(path.relative(this.rootDir, path.join(currentPath, entry.name)));
-          if (!entry.name.startsWith(".")) {
-            return true;
-          }
-          return isIncludedHiddenPath(relativeEntryPath, this.includedHiddenPaths);
+          return isLibraryPathVisible(relativeEntryPath, {
+            isDirectory: entry.isDirectory(),
+            includedHiddenPaths: this.includedHiddenPaths,
+            hideDotFiles: this.hideDotFiles,
+            hideSystemFolders: this.hideSystemFolders,
+          });
         })
         .sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
 
@@ -226,7 +254,12 @@ export class FileScanner {
     }
 
     const relativePath = normalizeRelativePath(path.relative(this.rootDir, filePath));
-    if (hasHiddenPathSegment(relativePath) && !isIncludedHiddenPath(relativePath, this.includedHiddenPaths)) {
+    if (!isLibraryPathVisible(relativePath, {
+      isDirectory: false,
+      includedHiddenPaths: this.includedHiddenPaths,
+      hideDotFiles: this.hideDotFiles,
+      hideSystemFolders: this.hideSystemFolders,
+    })) {
       return null;
     }
     return {

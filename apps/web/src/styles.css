@@ -3644,6 +3644,45 @@ mark {
   font-weight: 800;
 }
 
+.affairs-library-filter-switches {
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--modal-panel-border);
+  border-radius: var(--radius-panel);
+  background: var(--modal-panel-surface);
+}
+
+.affairs-library-filter-switch-row {
+  display: flex;
+  min-height: var(--control-height-lg);
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px;
+}
+
+.affairs-library-filter-switch-row + .affairs-library-filter-switch-row {
+  border-top: 1px solid var(--modal-panel-border);
+}
+
+.affairs-library-filter-switch-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.affairs-library-filter-switch-copy span {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.affairs-library-filter-switch-copy small {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .affairs-library-behavior-segmented {
   display: inline-flex;
   align-items: center;
