@@ -162,6 +162,46 @@ describe("第 6 批：索引状态、刷新策略和缓存替换", () => {
     });
   });
 
+  it("进入子文件夹后刷新仍请求全量索引", async () => {
+    libraryApiMock.getLibrarySnapshot.mockResolvedValue(
+      createLibrarySnapshot({
+        folders: [
+          {
+            path: "售前文档",
+            name: "售前文档",
+            parentPath: null,
+            directDocumentCount: 56,
+            documentCount: 7929,
+          },
+        ],
+      }),
+    );
+    libraryApiMock.listLibraryFiles.mockResolvedValue(
+      createFileList([
+        createFileNode({ path: "售前文档", name: "售前文档", kind: "directory" }),
+      ]),
+    );
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
+
+    await userEvent.dblClick(await screen.findByRole("button", { name: /售前文档/ }));
+    await waitFor(() => {
+      expect(libraryApiMock.listLibraryDocuments).toHaveBeenLastCalledWith(
+        expect.objectContaining({ selectedFolderPath: "售前文档" }),
+      );
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "刷新文档库" }));
+
+    await waitFor(() => {
+      expect(libraryApiMock.requestLibraryRefresh).toHaveBeenCalledWith({
+        reason: "manual_refresh",
+        targetPath: null,
+      });
+    });
+  });
+
   it("接口返回新列表后替换旧缓存，已删除文件不会继续显示", async () => {
     libraryApiMock.listLibraryDocuments
       .mockResolvedValueOnce(

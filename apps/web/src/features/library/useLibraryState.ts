@@ -502,7 +502,7 @@ export function useLibraryState(): LibraryState {
         ? await requestNativeLibraryRefresh({
             mode: "full",
             reason,
-            targetPath: viewState.browseMode === "folder" ? viewState.selectedFolderPath : null
+            targetPath: null
           }).catch(() => null)
         : null;
       updateDebugChannel(
@@ -516,7 +516,7 @@ export function useLibraryState(): LibraryState {
       );
       const result = nativeResult?.backendResponse ?? await requestLibraryRefresh({
         reason,
-        targetPath: viewState.browseMode === "folder" ? viewState.selectedFolderPath : null
+        targetPath: null
       });
       setSnapshot((current) =>
         current
