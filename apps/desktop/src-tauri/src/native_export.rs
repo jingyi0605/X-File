@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 const INDEX_COOLDOWN_MS: i64 = 1500;
@@ -211,6 +212,7 @@ pub fn run_native_export_worker(request: NativeExportRequest) -> Result<Value, S
         ));
     }
 
+    let inherited_progress = read_existing_runtime_progress(&root_dir)?;
     let last_requested_at = iso_now();
     let last_started_at = iso_now();
     write_runtime_status(
@@ -225,7 +227,7 @@ pub fn run_native_export_worker(request: NativeExportRequest) -> Result<Value, S
             progress_updated_at: Some(last_started_at.clone()),
             running_stage: Some("export_snapshot".to_string()),
             error_summary: None,
-            progress: None,
+            progress: inherited_progress.clone(),
         },
     )?;
 
@@ -251,7 +253,7 @@ pub fn run_native_export_worker(request: NativeExportRequest) -> Result<Value, S
                     progress_updated_at: Some(iso_now()),
                     running_stage: None,
                     error_summary: None,
-                    progress: None,
+                    progress: inherited_progress.clone(),
                 },
             )?;
             Ok(json!({
@@ -269,7 +271,7 @@ pub fn run_native_export_worker(request: NativeExportRequest) -> Result<Value, S
                     "nextAllowedAt": iso_after_ms(INDEX_COOLDOWN_MS),
                     "runningStage": Value::Null,
                     "errorSummary": Value::Null,
-                    "progress": Value::Null
+                    "progress": inherited_progress
                 },
                 "dirtyScope": dirty_scope,
                 "dirtyScopeSummary": {
@@ -300,7 +302,7 @@ pub fn run_native_export_worker(request: NativeExportRequest) -> Result<Value, S
                     progress_updated_at: Some(iso_now()),
                     running_stage: Some("export_snapshot".to_string()),
                     error_summary: Some(error.clone()),
-                    progress: None,
+                    progress: inherited_progress.clone(),
                 },
             )?;
             Err(error)
@@ -334,11 +336,7 @@ pub fn run_native_search_worker(request: NativeSearchRequest) -> Result<Value, S
     } else {
         "search_index"
     };
-    let inherited_progress = if request.reason == "summary_backfill" {
-        read_existing_runtime_progress(&root_dir)?
-    } else {
-        None
-    };
+    let inherited_progress = read_existing_runtime_progress(&root_dir)?;
     let last_requested_at = iso_now();
     let last_started_at = iso_now();
     write_runtime_status(
@@ -353,18 +351,44 @@ pub fn run_native_search_worker(request: NativeSearchRequest) -> Result<Value, S
             progress_updated_at: Some(last_started_at.clone()),
             running_stage: Some(running_stage.to_string()),
             error_summary: None,
-            progress: None,
+            progress: inherited_progress.clone(),
         },
     )?;
+
+    let mut last_heartbeat_at = std::time::Instant::now();
+    let mut heartbeat = || {
+        if last_heartbeat_at.elapsed() < std::time::Duration::from_secs(1) {
+            return Ok(());
+        }
+        last_heartbeat_at = std::time::Instant::now();
+        write_runtime_status(
+            &root_dir,
+            PersistedRuntimeStatus {
+                state: "running".to_string(),
+                last_requested_at: Some(last_requested_at.clone()),
+                last_started_at: Some(last_started_at.clone()),
+                last_completed_at: None,
+                last_failed_at: None,
+                next_allowed_at: None,
+                progress_updated_at: Some(iso_now()),
+                running_stage: Some(running_stage.to_string()),
+                error_summary: None,
+                progress: inherited_progress.clone(),
+            },
+        )
+    };
+    let mut heartbeat_callback: Option<&mut dyn FnMut() -> Result<(), String>> =
+        Some(&mut heartbeat);
 
     let result = (|| -> Result<ExportBuildResult, String> {
         let snapshot = read_snapshot(&snapshot_path)?;
         let export_dir = PathBuf::from(&root_dir).join(".ai-index").join("exports");
-        let (search_buckets, files_written) = build_search_index(
+        let (search_buckets, files_written) = build_search_index_with_progress(
             &export_dir,
             &iso_now(),
             &snapshot.documents,
             dirty_scope.as_ref(),
+            &mut heartbeat_callback,
         )?;
         Ok(ExportBuildResult {
             manifest_path: export_dir
@@ -447,7 +471,7 @@ pub fn run_native_search_worker(request: NativeSearchRequest) -> Result<Value, S
                     progress_updated_at: Some(iso_now()),
                     running_stage: Some(running_stage.to_string()),
                     error_summary: Some(error.clone()),
-                    progress: None,
+                    progress: inherited_progress.clone(),
                 },
             )?;
             Err(error)
@@ -915,6 +939,23 @@ fn build_search_index(
     documents: &[SnapshotDocument],
     dirty_scope: Option<&DirtyScope>,
 ) -> Result<(Vec<SearchBucketManifestEntry>, Vec<String>), String> {
+    let mut heartbeat: Option<&mut dyn FnMut() -> Result<(), String>> = None;
+    build_search_index_with_progress(
+        export_dir,
+        exported_at,
+        documents,
+        dirty_scope,
+        &mut heartbeat,
+    )
+}
+
+fn build_search_index_with_progress(
+    export_dir: &Path,
+    exported_at: &str,
+    documents: &[SnapshotDocument],
+    dirty_scope: Option<&DirtyScope>,
+    heartbeat: &mut Option<&mut dyn FnMut() -> Result<(), String>>,
+) -> Result<(Vec<SearchBucketManifestEntry>, Vec<String>), String> {
     let search_dir = export_dir.join("search");
     fs::create_dir_all(&search_dir)
         .map_err(|error| format!("创建搜索导出目录失败 {}: {error}", search_dir.display()))?;
@@ -922,7 +963,7 @@ fn build_search_index(
     let mut bucket_documents = BTreeMap::<String, BTreeMap<String, SearchDocumentEntry>>::new();
     let mut bucket_terms = BTreeMap::<String, BTreeMap<String, Vec<String>>>::new();
 
-    for document in documents {
+    for (document_index, document) in documents.iter().enumerate() {
         let entry = SearchDocumentEntry {
             document_id: document.document_id.clone(),
             path: document.path.clone(),
@@ -961,6 +1002,11 @@ fn build_search_index(
                 }
             }
         }
+        if document_index % 128 == 0 {
+            if let Some(callback) = heartbeat.as_deref_mut() {
+                callback()?;
+            }
+        }
     }
 
     let mut manifest = Vec::new();
@@ -979,17 +1025,17 @@ fn build_search_index(
             })
             .collect::<Vec<_>>();
         term_entries.sort_by(|left, right| left.term.cmp(&right.term));
-        write_json_file(
+        write_search_bucket_file(
             &file_path,
-            &json!({
-                "version": 1,
-                "format": "search-bucket-v1",
-                "generated_at": exported_at,
-                "bucket": bucket,
-                "documents": docs,
-                "terms": term_entries,
-            }),
+            exported_at,
+            &bucket,
+            &docs,
+            &term_entries,
+            heartbeat,
         )?;
+        if let Some(callback) = heartbeat.as_deref_mut() {
+            callback()?;
+        }
         manifest.push(SearchBucketManifestEntry {
             bucket: bucket.clone(),
             path: format!("search/{bucket}.json"),
@@ -1042,6 +1088,84 @@ fn build_search_index(
     files_written.push(manifest_path.to_string_lossy().to_string());
 
     Ok((manifest, files_written))
+}
+
+fn write_search_bucket_file(
+    path: &Path,
+    exported_at: &str,
+    bucket: &str,
+    documents: &[SearchDocumentEntry],
+    terms: &[SearchTermEntry],
+    heartbeat: &mut Option<&mut dyn FnMut() -> Result<(), String>>,
+) -> Result<(), String> {
+    // 中文分桶可能包含数十万词项，逐项写入可避免构造巨大的 serde_json::Value。
+    let Some(parent) = path.parent() else {
+        return Err(format!("搜索分桶路径没有父目录：{}", path.display()));
+    };
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("创建搜索分桶目录失败 {}: {error}", parent.display()))?;
+    let temp_path = path.with_extension("json.tmp");
+    let result = (|| -> Result<(), String> {
+        let file = fs::File::create(&temp_path)
+            .map_err(|error| format!("创建搜索分桶临时文件失败 {}: {error}", temp_path.display()))?;
+        let mut writer = BufWriter::new(file);
+        writer
+            .write_all(b"{\n  \"version\": 1,\n  \"format\": \"search-bucket-v1\",\n  \"generated_at\": ")
+            .map_err(|error| format!("写入搜索分桶头失败 {}: {error}", temp_path.display()))?;
+        serde_json::to_writer(&mut writer, exported_at)
+            .map_err(|error| format!("序列化搜索分桶时间失败 {}: {error}", temp_path.display()))?;
+        writer
+            .write_all(b",\n  \"bucket\": ")
+            .map_err(|error| format!("写入搜索分桶名称失败 {}: {error}", temp_path.display()))?;
+        serde_json::to_writer(&mut writer, bucket)
+            .map_err(|error| format!("序列化搜索分桶名称失败 {}: {error}", temp_path.display()))?;
+        writer
+            .write_all(b",\n  \"documents\": [")
+            .map_err(|error| format!("写入搜索分桶文档头失败 {}: {error}", temp_path.display()))?;
+        for (index, document) in documents.iter().enumerate() {
+            writer
+                .write_all(if index == 0 { b"\n    " } else { b",\n    " })
+                .map_err(|error| format!("写入搜索分桶文档失败 {}: {error}", temp_path.display()))?;
+            serde_json::to_writer(&mut writer, document)
+                .map_err(|error| format!("序列化搜索分桶文档失败 {}: {error}", temp_path.display()))?;
+            if index % 128 == 0 {
+                if let Some(callback) = heartbeat.as_deref_mut() {
+                    callback()?;
+                }
+            }
+        }
+        writer
+            .write_all(b"\n  ],\n  \"terms\": [")
+            .map_err(|error| format!("写入搜索分桶词项头失败 {}: {error}", temp_path.display()))?;
+        for (index, term) in terms.iter().enumerate() {
+            writer
+                .write_all(if index == 0 { b"\n    " } else { b",\n    " })
+                .map_err(|error| format!("写入搜索分桶词项失败 {}: {error}", temp_path.display()))?;
+            serde_json::to_writer(&mut writer, term)
+                .map_err(|error| format!("序列化搜索分桶词项失败 {}: {error}", temp_path.display()))?;
+            if index % 128 == 0 {
+                if let Some(callback) = heartbeat.as_deref_mut() {
+                    callback()?;
+                }
+            }
+        }
+        writer
+            .write_all(b"\n  ]\n}\n")
+            .map_err(|error| format!("写入搜索分桶尾失败 {}: {error}", temp_path.display()))?;
+        writer
+            .flush()
+            .map_err(|error| format!("刷新搜索分桶失败 {}: {error}", temp_path.display()))?;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        fs::remove_file(&temp_path).ok();
+        return Err(error);
+    }
+    if let Err(error) = fs::rename(&temp_path, path) {
+        fs::remove_file(&temp_path).ok();
+        return Err(format!("替换搜索分桶失败 {}: {error}", path.display()));
+    }
+    Ok(())
 }
 
 fn build_incremental_search_plan(
@@ -1473,9 +1597,9 @@ fn json_summary_optional_len(value: Option<&Value>, key: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_native_export, build_search_index, read_json_file, write_runtime_status, DirtyScope,
-        ExportCatalogSnapshot, PersistedRuntimeStatus, SearchManifestFile, SnapshotDocument,
-        SnapshotTag,
+        build_native_export, build_search_index, build_search_index_with_progress, read_json_file,
+        write_runtime_status, DirtyScope, ExportCatalogSnapshot, PersistedRuntimeStatus,
+        SearchManifestFile, SnapshotDocument, SnapshotTag,
     };
     use crate::native_core::state_store::{
         export_manifest_path, runtime_status_path, search_manifest_path,
@@ -1485,6 +1609,68 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn streaming_search_bucket_keeps_contract_and_reports_heartbeat() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos();
+        let temp_root =
+            std::env::temp_dir().join(format!("x-file-native-search-streaming-{nonce}"));
+        let export_dir = temp_root.join(".ai-index").join("exports");
+        fs::create_dir_all(&export_dir).expect("create export dir");
+        let documents = (0..260)
+            .map(|index| SnapshotDocument {
+                document_id: format!("doc_{index}"),
+                path: format!("docs/{index}.md"),
+                title: format!("中文标题{index}"),
+                summary: "中文搜索内容".to_string(),
+                tags: Vec::new(),
+                derived_tags: Vec::new(),
+                mtime: "2026-07-22T00:00:00Z".to_string(),
+            })
+            .collect::<Vec<_>>();
+        let mut heartbeat_count = 0usize;
+        {
+            let mut heartbeat = || {
+                heartbeat_count += 1;
+                Ok(())
+            };
+            let mut heartbeat_callback: Option<&mut dyn FnMut() -> Result<(), String>> =
+                Some(&mut heartbeat);
+            build_search_index_with_progress(
+                &export_dir,
+                "2026-07-22T00:00:00Z",
+                &documents,
+                None,
+                &mut heartbeat_callback,
+            )
+            .expect("build streaming search index");
+        }
+
+        let bucket_path = export_dir.join("search").join("han.json");
+        let bucket = read_json_file::<Value>(&bucket_path).expect("read han search bucket");
+        assert_eq!(
+            bucket.get("format").and_then(Value::as_str),
+            Some("search-bucket-v1")
+        );
+        assert_eq!(
+            bucket
+                .get("documents")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(260)
+        );
+        assert!(bucket
+            .get("terms")
+            .and_then(Value::as_array)
+            .is_some_and(|terms| !terms.is_empty()));
+        assert!(heartbeat_count >= 6);
+        assert!(!export_dir.join("search").join("han.json.tmp").exists());
+
+        fs::remove_dir_all(&temp_root).ok();
+    }
 
     #[test]
     fn incremental_search_only_reuses_unchanged_buckets_and_rebuilds_dirty_bucket() {
