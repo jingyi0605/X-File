@@ -166,11 +166,12 @@ describe("第 8 批：标签筛选树、多选过滤、徽标计数、排序、�
     expect(libraryApiMock.listLibraryDocuments).toHaveBeenCalledTimes(requestCount);
   });
 
-  it("时间标签按最新优先，其他标签按访问数量优先，并显示最近7天标签", async () => {
+  it("最近3天和7天置顶并保留真实计数，其他标签按访问数量优先", async () => {
     mockTags([
       tag("时间", 10, { rootType: "time" }),
       tag("时间/更早", 9, { rootType: "time", parentPath: "时间", depth: 1 }),
       tag("时间/最近7天", 4, { rootType: "time", parentPath: "时间", depth: 1 }),
+      tag("时间/最近3天", 2, { rootType: "time", parentPath: "时间", depth: 1 }),
       tag("项目", 10),
       tag("项目/低频", 1, { parentPath: "项目", depth: 1 }),
       tag("项目/高频", 8, { parentPath: "项目", depth: 1 }),
@@ -183,7 +184,7 @@ describe("第 8 批：标签筛选树、多选过滤、徽标计数、排序、�
     await expandTag("项目");
 
     const timeChildren = childTitlesOf("时间");
-    expect(timeChildren[0]).toContain("最近7天");
+    expect(timeChildren).toEqual(["最近3天2", "最近7天4", "更早9"]);
     const projectChildren = childTitlesOf("项目");
     expect(projectChildren[0]).toContain("高频");
   });
@@ -210,6 +211,72 @@ describe("第 8 批：标签筛选树、多选过滤、徽标计数、排序、�
 
     await expandTag("2026");
     expect(childTitlesOf("2026")).toEqual(["122", "91", "023"]);
+  });
+
+  it("旧快照没有最近分类时不虚构标签，零计数标签在筛选后隐藏", async () => {
+    mockTags([
+      tag("时间", 1, { rootType: "time" }),
+      tag("时间/2024", 1, { rootType: "time", parentPath: "时间", depth: 1 }),
+    ]);
+    libraryApiMock.listLibraryDocuments.mockResolvedValue(createDocumentList([], {
+      total: 0,
+      tagFacetCounts: {},
+    }));
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={() => undefined} platformData={platformData} />);
+
+    await expandTag("时间");
+    expect(childTitlesOf("时间")).toEqual(["20241"]);
+
+    await userEvent.click(screen.getByRole("button", { name: "2024 1" }));
+    await waitFor(() => {
+      expect(libraryApiMock.listLibraryDocuments).toHaveBeenLastCalledWith(expect.objectContaining({
+        selectedTagPaths: ["时间/2024"],
+      }));
+    });
+    expect(childTitlesOf("时间")).toEqual(["20240"]);
+  });
+
+  it("最近分类筛选后隐藏零计数的其他标签，同时保留当前选中项", async () => {
+    mockTags([
+      tag("时间", 3, { rootType: "time" }),
+      tag("时间/最近3天", 2, { rootType: "time", parentPath: "时间", depth: 1 }),
+      tag("时间/最近7天", 3, { rootType: "time", parentPath: "时间", depth: 1 }),
+    ]);
+    libraryApiMock.listLibraryDocuments.mockResolvedValue(createDocumentList([], {
+      total: 0,
+      tagFacetCounts: {},
+    }));
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={() => undefined} platformData={platformData} />);
+
+    await expandTag("时间");
+    expect(childTitlesOf("时间")).toEqual(["最近3天2", "最近7天3"]);
+    await userEvent.click(screen.getByRole("button", { name: "最近3天 2" }));
+
+    await waitFor(() => {
+      expect(libraryApiMock.listLibraryDocuments).toHaveBeenLastCalledWith(expect.objectContaining({
+        selectedTagPaths: ["时间/最近3天"],
+      }));
+    });
+    expect(childTitlesOf("时间")).toEqual(["最近3天0"]);
+  });
+
+  it("英文时间标签同样固定最近分类并按年月降序排列", async () => {
+    mockTags([
+      tag("time", 2, { rootType: "time" }),
+      tag("time/2025", 1, { rootType: "time", parentPath: "time", depth: 1 }),
+      tag("time/2026", 1, { rootType: "time", parentPath: "time", depth: 1 }),
+      tag("time/recent-7-days", 1, { rootType: "time", parentPath: "time", depth: 1 }),
+    ]);
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={() => undefined} platformData={platformData} />);
+
+    await expandTag("time");
+    expect(childTitlesOf("time")).toEqual(["recent-7-days1", "20261", "20251"]);
   });
 
   it("每层标签默认最多显示 5 个，并记住展开更多状态", async () => {

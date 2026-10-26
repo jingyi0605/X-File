@@ -9061,9 +9061,10 @@ function isTimeLibraryTagPath(path: string): boolean {
 }
 
 function getTimeTagOrder(label: string): number {
-  if (label.includes("最近7天") || label.toLowerCase().includes("last 7")) return 0;
-  if (label.includes("今天")) return 1;
-  if (label.includes("昨天")) return 2;
+  if (/最近\s*3\s*天|last\s+3\b|^recent-3-days$/i.test(label)) return 0;
+  if (/最近\s*7\s*天|last\s+7\b|^recent-7-days$/i.test(label)) return 1;
+  if (label.includes("今天")) return 2;
+  if (label.includes("昨天")) return 3;
   if (label.includes("更早")) return 99;
   return 10;
 }
@@ -9104,7 +9105,6 @@ function buildTagTreeVisibility(
       node.path.startsWith(`${selectedPath}/`)
     ));
     // node.count 已由 applyTagFacetCountsToTree 统一收敛：有选中时取 facet 计数，无选中时取 documentCount。
-    // 规则：任何数量为 0 的标签（父标签或子标签）一律不显示，仅当选中相关或子树存在可见节点时才保留。
     const directVisible = selectedRelated || node.count > 0;
     let childVisible = false;
     node.children.forEach((child) => {
