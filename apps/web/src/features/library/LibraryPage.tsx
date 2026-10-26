@@ -1809,13 +1809,16 @@ function LibraryTagTreeNode({
               depth={depth + 1}
             />
           ))}
-          {hiddenChildCount > 0 ? (
+          {!forceExpanded && node.children.length > LIBRARY_TAG_TREE_VISIBLE_LIMIT ? (
             <button
               type="button"
               className="affairs-tag-tree-more"
+              aria-expanded={showAllChildren}
               onClick={() => onToggleMore(node.path)}
             >
-              {t("libraryTagTreeShowMore", { count: hiddenChildCount })}
+              {showAllChildren
+                ? t("libraryTagTreeShowLess")
+                : t("libraryTagTreeShowMore", { count: hiddenChildCount })}
             </button>
           ) : null}
         </div>

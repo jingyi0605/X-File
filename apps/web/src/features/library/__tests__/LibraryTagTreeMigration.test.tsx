@@ -440,7 +440,7 @@ describe("第 8 批：标签筛选树、多选过滤、徽标计数、排序、�
     expect(childTitlesOf("time")).toEqual(["recent-7-days1", "20261", "20251"]);
   });
 
-  it("每层标签默认最多显示 5 个，并记住展开更多状态", async () => {
+  it("每层标签默认最多显示 5 个，支持展开和收起并记住状态", async () => {
     mockTags([
       tag("项目", 21),
       ...Array.from({ length: 7 }, (_, index) =>
@@ -455,13 +455,36 @@ describe("第 8 批：标签筛选树、多选过滤、徽标计数、排序、�
     expect(screen.getByRole("button", { name: /子标签5/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /子标签6/ })).not.toBeInTheDocument();
 
-    await userEvent.click(await screen.findByRole("button", { name: /展开更多/ }));
+    const showMoreButton = await screen.findByRole("button", { name: "展开更多（2）" });
+    expect(showMoreButton).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(showMoreButton);
     expect(await screen.findByRole("button", { name: /子标签7/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "收起" })).toHaveAttribute("aria-expanded", "true");
 
     firstRender.unmount();
-    render(<LibraryPage onOpenSettings={() => undefined} platformData={platformData} />);
+    const secondRender = render(<LibraryPage onOpenSettings={() => undefined} platformData={platformData} />);
     await expandTag("项目");
     expect(await screen.findByRole("button", { name: /子标签7/ })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "收起" }));
+    expect(screen.getByRole("button", { name: /子标签5/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /子标签6/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /子标签7/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "展开更多（2）" })).toHaveAttribute("aria-expanded", "false");
+
+    secondRender.unmount();
+    render(<LibraryPage onOpenSettings={() => undefined} platformData={platformData} />);
+    await expandTag("项目");
+    expect(screen.queryByRole("button", { name: /子标签6/ })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "展开更多（2）" }));
+    expect(await screen.findByRole("button", { name: /子标签7/ })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText("搜索标签"));
+    await userEvent.type(screen.getByRole("textbox", { name: "搜索标签" }), "子标签");
+    expect(screen.getByRole("button", { name: /子标签7/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "收起" })).not.toBeInTheDocument();
+    await userEvent.clear(screen.getByRole("textbox", { name: "搜索标签" }));
+    expect(screen.getByRole("button", { name: "收起" })).toBeInTheDocument();
   });
 
   it("标签树可以用拼音快速查找并定位标签", async () => {
