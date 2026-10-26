@@ -109,6 +109,12 @@ interface SearchManifestFile {
 
 const searchTermViews = new WeakMap<SearchBucketFile, Map<string, SearchBucketPosting>>();
 
+const RECENT_TIME_TAGS = [
+  { path: "时间/最近3天", days: 3 },
+  { path: "时间/最近7天", days: 7 },
+  { path: "时间/最近30天", days: 30 },
+] as const;
+
 export class LibraryExportReader {
   private readonly documentViews = new WeakMap<ManifestFile, LibraryDocumentRecord[]>();
   readSnapshot(
@@ -142,7 +148,7 @@ export class LibraryExportReader {
     const statusFile = readJson<StatusFile>(
       path.join(exportDir, manifest.entries?.status ?? "status.json"),
     );
-    const documents = this.readDocumentsFromManifest(exportDir, manifest);
+    const documents = refreshRecentTimeTags(this.readDocumentsFromManifest(exportDir, manifest));
     const tagCounts = countTags(documents);
     const documentCount = statusFile?.document_count ?? documents.length;
     return {
@@ -187,7 +193,7 @@ export class LibraryExportReader {
       return emptyDocumentList(input);
     }
 
-    const allDocuments = this.readDocumentsFromManifest(exportDir, manifest);
+    const allDocuments = refreshRecentTimeTags(this.readDocumentsFromManifest(exportDir, manifest));
     const searchMatch = readOfflineSearchMatchState(exportDir, input.keyword);
     const filtered = filterDocuments(
       markFavoriteDocuments(allDocuments, input.favorites ?? []),
@@ -263,6 +269,27 @@ function resolveExportDir(rootDir: string): string {
   return path.join(rootDir, ".ai-index", "exports");
 }
 
+function refreshRecentTimeTags(documents: LibraryDocumentRecord[]): LibraryDocumentRecord[] {
+  const today = localCalendarDay(new Date());
+  const isRecentTag = (tag: string) => RECENT_TIME_TAGS.some((item) => item.path === tag);
+  return documents.map((document) => {
+    const age = (today - localCalendarDay(new Date(document.updatedAt))) / 86_400_000;
+    // 相对日期在读取时计算，不能复用索引时写入的“最近”标签；按自然日处理以避开夏令时偏差。
+    return {
+      ...document,
+      tags: document.tags.filter((tag) => !isRecentTag(tag)),
+      derivedTags: [
+        ...document.derivedTags.filter((tag) => !isRecentTag(tag)),
+        ...RECENT_TIME_TAGS.filter((tag) => age >= 0 && age < tag.days).map((tag) => tag.path),
+      ],
+    };
+  });
+}
+
+function localCalendarDay(date: Date): number {
+  return Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
 /**
  * 稳态进度合成：导出产物存在即代表这批文档已全部扫描并可读。
  * 面板文案已经改为“已扫描数量 / 已索引数量”，所以稳态下两者都应等于 documentCount，
@@ -325,7 +352,7 @@ function readTags(
   const taxonomy = readJson<TaxonomyFile>(
     path.join(exportDir, manifest.entries?.taxonomy ?? "taxonomy.json"),
   );
-  return (taxonomy?.nodes ?? []).map((node) => ({
+  const tags: LibraryTagNode[] = (taxonomy?.nodes ?? []).map((node) => ({
     path: node.path,
     name: node.name,
     rootType: node.root_type,
@@ -333,6 +360,20 @@ function readTags(
     depth: node.depth,
     documentCount: tagCounts[node.path] ?? 0,
   }));
+  // 旧索引可能没有近期标签节点，新进入日期范围的文件仍需有对应入口。
+  for (const tagPath of ["时间", ...RECENT_TIME_TAGS.map((tag) => tag.path)]) {
+    if ((tagCounts[tagPath] ?? 0) > 0 && !tags.some((tag) => tag.path === tagPath)) {
+      tags.push({
+        path: tagPath,
+        name: tagPath.split("/").at(-1)!,
+        rootType: "时间",
+        parentPath: tagPath === "时间" ? null : "时间",
+        depth: tagPath === "时间" ? 0 : 1,
+        documentCount: tagCounts[tagPath] ?? 0,
+      });
+    }
+  }
+  return tags;
 }
 
 function readFolders(

@@ -3486,10 +3486,17 @@ struct LocalLibraryExportPayload {
 }
 
 type ExportReadCache =
-    HashMap<PathBuf, ((Option<SystemTime>, u64), Arc<LocalLibraryExportPayload>)>;
+    HashMap<PathBuf, ((Option<SystemTime>, u64, chrono::NaiveDate), Arc<LocalLibraryExportPayload>)>;
 
 fn read_local_library_export_payload(
     root_dir: &str,
+) -> Result<Option<Arc<LocalLibraryExportPayload>>, String> {
+    read_local_library_export_payload_on_date(root_dir, chrono::Local::now().date_naive())
+}
+
+fn read_local_library_export_payload_on_date(
+    root_dir: &str,
+    today: chrono::NaiveDate,
 ) -> Result<Option<Arc<LocalLibraryExportPayload>>, String> {
     static CACHE: OnceLock<Mutex<ExportReadCache>> = OnceLock::new();
     let snapshot = resolve_runtime_export_catalog_snapshot_path(root_dir);
@@ -3503,7 +3510,7 @@ fn read_local_library_export_payload(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.to_string()),
     };
-    let stamp = (metadata.modified().ok(), metadata.len());
+    let stamp = (metadata.modified().ok(), metadata.len(), today);
     let mut cache = CACHE
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
@@ -3516,6 +3523,7 @@ fn read_local_library_export_payload(
     let Some(mut payload) = load_local_library_export_payload(root_dir)? else {
         return Ok(None);
     };
+    refresh_local_recent_time_tags(&mut payload, today);
     for (index, document) in payload.documents.iter().enumerate() {
         let directory = Path::new(&document.path)
             .parent()
@@ -3531,6 +3539,53 @@ fn read_local_library_export_payload(
     let payload = Arc::new(payload);
     cache.insert(path, (stamp, Arc::clone(&payload)));
     Ok(Some(payload))
+}
+
+const RECENT_TIME_TAGS: [(&str, i64); 3] = [
+    ("时间/最近3天", 3),
+    ("时间/最近7天", 7),
+    ("时间/最近30天", 30),
+];
+
+fn refresh_local_recent_time_tags(
+    payload: &mut LocalLibraryExportPayload,
+    today: chrono::NaiveDate,
+) {
+    let is_recent = |tag: &String| RECENT_TIME_TAGS.iter().any(|(path, _)| tag == path);
+    for document in &mut payload.documents {
+        if let Some(tags) = document.direct_tags.as_mut() {
+            tags.retain(|tag| !is_recent(tag));
+        }
+        let tags = document.derived_tags.get_or_insert_with(Vec::new);
+        tags.retain(|tag| !is_recent(tag));
+        let modified_date = document.mtime.as_deref()
+            .and_then(|time| chrono::DateTime::parse_from_rfc3339(time).ok())
+            .map(|time| time.with_timezone(&chrono::Local).date_naive());
+        if let Some(modified_date) = modified_date {
+            let age = (today - modified_date).num_days();
+            tags.extend(RECENT_TIME_TAGS.iter()
+                .filter(|(_, days)| age >= 0 && age < *days)
+                .map(|(path, _)| path.to_string()));
+        }
+    }
+    let counts = count_local_tags(&payload.documents);
+    for tag in &mut payload.tags {
+        tag.document_count = *counts.get(&tag.path).unwrap_or(&0);
+    }
+    for path in std::iter::once("时间").chain(RECENT_TIME_TAGS.iter().map(|(path, _)| *path)) {
+        if counts.get(path).copied().unwrap_or(0) > 0
+            && !payload.tags.iter().any(|tag| tag.path == path)
+        {
+            payload.tags.push(LocalLibraryTagNode {
+                path: path.to_string(),
+                name: path.rsplit('/').next().unwrap().to_string(),
+                root_type: "时间".to_string(),
+                parent_path: (path != "时间").then(|| "时间".to_string()),
+                depth: usize::from(path != "时间"),
+                document_count: *counts.get(path).unwrap_or(&0),
+            });
+        }
+    }
 }
 
 fn load_local_library_export_payload(
@@ -6497,6 +6552,81 @@ mod tests {
                 .and_then(|status| status.generated_at.clone()),
             Some("2026-06-30T10:01:00Z".to_string())
         );
+    }
+
+    #[test]
+    fn native_近期标签读取时纠正旧索引并在跨天后更新缓存() {
+        let temp_root = env::temp_dir().join(format!("x-file-recent-tags-{}", epoch_millis()));
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 26).unwrap();
+        let stale_tags = RECENT_TIME_TAGS.iter().map(|(path, _)| *path).collect::<Vec<_>>();
+        let mut documents = vec![];
+        for days in [0, 2, 3, 6, 7, 29, 30, -1] {
+            let local_time = (today - chrono::Duration::days(days)).and_hms_opt(0, 30, 0).unwrap();
+            let time = chrono::TimeZone::from_local_datetime(&chrono::Local, &local_time)
+                .single().unwrap().to_rfc3339();
+            documents.push(json!({
+                "documentId": format!("day-{days}"), "path": format!("day-{days}.md"),
+                "title": "测试", "summary": "", "mtime": time,
+                "tags": ["主题/保留", "时间/最近3天"],
+                "derivedTags": ["类型/文本/Markdown", "时间/2026/10", "时间/最近7天", "时间/最近30天"]
+            }));
+        }
+        documents[0]["tags"] = json!(["主题/保留"]);
+        documents[0]["derivedTags"] = json!(["类型/文本/Markdown", "时间/2026/10"]);
+        for (id, time) in [("july", "2026-07-21T14:30:00Z"), ("invalid", "invalid")] {
+            documents.push(json!({
+                "documentId": id, "path": format!("{id}.md"), "title": "测试", "summary": "",
+                "mtime": time, "tags": stale_tags, "derivedTags": stale_tags
+            }));
+        }
+        for use_runtime in [true, false] {
+            let root = temp_root.join(if use_runtime { "runtime-source" } else { "export-source" });
+            let source = if use_runtime {
+                let source = root.join(".ai-index/runtime/export-catalog-snapshot.json");
+                write_json_file(&source, &json!({
+                    "version": 1, "generatedAt": "2026-07-21T00:00:00Z",
+                    "tags": [], "documents": documents
+                })).unwrap();
+                source
+            } else {
+                let export_dir = root.join(".ai-index/exports");
+                let legacy = documents.iter().map(|item| json!({
+                    "document_id": item["documentId"], "path": item["path"],
+                    "mtime": item["mtime"], "direct_tags": item["tags"],
+                    "derived_tags": item["derivedTags"]
+                })).collect::<Vec<_>>();
+                write_json_file(&export_dir.join("meta.json"), &json!({ "documents": legacy })).unwrap();
+                let source = export_dir.join("manifest.json");
+                write_json_file(&source, &json!({
+                    "generated_at": "2026-07-21T00:00:00Z", "meta_shards": [{ "path": "meta.json" }]
+                })).unwrap();
+                source
+            };
+            let before = fs::read(&source).unwrap();
+            let payload = read_local_library_export_payload_on_date(root.to_str().unwrap(), today)
+                .unwrap().unwrap();
+            let recent_paths = |payload: &LocalLibraryExportPayload, tag: &str| {
+                payload.documents.iter().filter(|document| {
+                    document.derived_tags.as_ref().is_some_and(|tags| tags.iter().any(|path| path == tag))
+                }).map(|document| document.path.as_str().to_string()).collect::<Vec<_>>()
+            };
+            for ((tag, _), expected) in RECENT_TIME_TAGS.iter().zip([2, 4, 6]) {
+                assert_eq!(recent_paths(&payload, tag).len(), expected);
+                assert_eq!(payload.tags.iter().find(|node| node.path == *tag).unwrap().document_count, expected);
+            }
+            assert_eq!(recent_paths(&payload, "时间/最近3天"), vec!["day-0.md", "day-2.md"]);
+            assert!(payload.documents[0].direct_tags.as_ref().unwrap().contains(&"主题/保留".to_string()));
+            assert!(payload.documents[0].derived_tags.as_ref().unwrap().contains(&"时间/2026/10".to_string()));
+            let cached = read_local_library_export_payload_on_date(root.to_str().unwrap(), today).unwrap().unwrap();
+            assert!(Arc::ptr_eq(&payload, &cached));
+            let tomorrow = read_local_library_export_payload_on_date(
+                root.to_str().unwrap(), today.succ_opt().unwrap(),
+            ).unwrap().unwrap();
+            assert!(!Arc::ptr_eq(&payload, &tomorrow));
+            assert_eq!(recent_paths(&tomorrow, "时间/最近3天"), vec!["day-0.md", "day--1.md"]);
+            assert_eq!(fs::read(&source).unwrap(), before);
+        }
+        fs::remove_dir_all(temp_root).ok();
     }
 
     #[test]

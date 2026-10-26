@@ -366,6 +366,62 @@ test("修改时间先全局排序再分页，支持双向排序、时区和相�
   }
 });
 
+test("最近时间标签按当前本地日期计算，旧标签、分页和跨天缓存不会混入过期文件", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date(2026, 9, 26, 12) });
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "x-file-recent-tags-"));
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+  const rootDir = path.join(tempDir, "library");
+  writeExportFixture(rootDir);
+  const recentTags = ["时间/最近3天", "时间/最近7天", "时间/最近30天"];
+  const documents = [0, 2, 3, 6, 7, 29, 30, -1].map((days) => ({
+    document_id: `day-${days}`,
+    path: `day-${days}.md`,
+    mtime: new Date(2026, 9, 26 - days, 0, 30).toISOString(),
+    direct_tags: ["主题/保留", ...recentTags],
+    derived_tags: ["类型/文本/Markdown", "时间/2026/10", ...recentTags],
+  }));
+  documents.push(
+    { document_id: "july", path: "july.md", mtime: "2026-07-21T14:30:00Z", direct_tags: recentTags, derived_tags: recentTags },
+    { document_id: "invalid", path: "invalid.md", mtime: "invalid", direct_tags: recentTags, derived_tags: recentTags },
+  );
+  // 新文件即使没有保存相对时间标签，也应进入今天的结果。
+  documents[0]!.direct_tags = ["主题/保留"];
+  documents[0]!.derived_tags = ["类型/文本/Markdown", "时间/2026/10"];
+  const exportDir = path.join(rootDir, ".ai-index/exports");
+  fs.writeFileSync(path.join(exportDir, "meta/meta_docs.json"), JSON.stringify({ documents }));
+  fs.writeFileSync(path.join(exportDir, "taxonomy.json"), JSON.stringify({
+    nodes: ["时间", ...recentTags].map((tag) => ({
+      path: tag, name: tag.split("/").at(-1), root_type: "时间",
+      parent_path: tag === "时间" ? null : "时间", depth: tag === "时间" ? 0 : 1,
+    })),
+  }));
+  const service = new LibraryService(
+    new LibraryBindingStore({ dataDir: path.join(tempDir, "data") }),
+    new LibraryExportReader(),
+    null,
+  );
+  service.saveBinding({ rootDir, completeInitialization: true });
+
+  const query = (tag: string, offset = 0, limit = 50) => service.listDocuments({
+    browseMode: "tag", selectedTagPaths: [tag], updatedAtOrder: "desc", offset, limit,
+  });
+  for (const [index, expected] of [[0, 2], [1, 4], [2, 6]] as const) {
+    const tag = recentTags[index]!;
+    const page = query(tag, 0, 1);
+    assert.equal(page.total, expected);
+    assert.equal(page.tagFacetCounts?.[tag], expected);
+    assert.equal(service.getSnapshot().tags.find((item) => item.path === tag)?.documentCount, expected);
+  }
+  assert.deepEqual(
+    [query(recentTags[0]!, 0, 1), query(recentTags[0]!, 1, 1)].flatMap((page) => page.items.map((item) => item.path)),
+    ["day-0.md", "day-2.md"],
+  );
+  assert.ok(query(recentTags[0]!).items[0]!.tags.includes("主题/保留"));
+  assert.ok(query(recentTags[0]!).items[0]!.derivedTags.includes("时间/2026/10"));
+  t.mock.timers.setTime(new Date(2026, 9, 27, 0, 1).getTime());
+  assert.deepEqual(query(recentTags[0]!).items.map((item) => item.path), ["day--1.md", "day-0.md"]);
+});
+
 test("listDocuments 对当前页文档补全大小与创建时间（对齐父仓库 stat 补全）", () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "x-file-library-stats-"));
   const rootDir = path.join(tempDir, "library");
