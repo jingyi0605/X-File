@@ -23,13 +23,12 @@ use zip::ZipArchive;
 const INDEX_COOLDOWN_MS: i64 = 1500;
 const INDEX_PROGRESS_FLUSH_INTERVAL_MS: i64 = 500;
 const INDEX_PARTIAL_SNAPSHOT_FLUSH_INTERVAL_MS: i64 = 5000;
-const SUMMARY_TEXT_MAX_BYTES: usize = 256 * 1024;
-const SUMMARY_ARCHIVE_ENTRY_MAX_BYTES: usize = 512 * 1024;
-const SUMMARY_ARCHIVE_MAX_ENTRIES: usize = 16;
+const SUMMARY_TEXT_MAX_BYTES: usize = 2 * 1024;
+const SUMMARY_MAX_CHARS: usize = 1000;
+// XML 标签也占空间；只给正文前缀少量余量，不为摘要遍历整份办公文档。
+const SUMMARY_ARCHIVE_ENTRY_MAX_BYTES: usize = 8 * 1024;
 const SUMMARY_PDF_MAX_BYTES: usize = 2 * 1024 * 1024;
 const SUMMARY_PDF_MAX_PAGES: usize = 3;
-const SUMMARY_PPTX_MAX_SLIDES: usize = 6;
-const SUMMARY_XLSX_MAX_SHEETS: usize = 3;
 const SUMMARY_XLSX_MAX_ROWS_PER_SHEET: usize = 20;
 const PDF_INFLATE_MAX_BYTES: u64 = 512 * 1024;
 
@@ -1433,7 +1432,8 @@ fn extension_type_tag(extension: &str) -> Option<&'static str> {
 fn read_summary(file: &ScannedFile) -> String {
     match file.extension.as_str() {
         ".csv" => read_csv_summary(&file.full_path),
-        ".pdf" => read_pdf_summary(&file.full_path),
+        // PDF 对象扫描成本较高，索引不再提取其摘要。
+        ".pdf" => String::new(),
         ".docx" => read_docx_summary(&file.full_path),
         ".odt" => read_odf_summary(&file.full_path, "content.xml", &["text:h", "text:p"]),
         ".xlsx" => read_xlsx_summary(&file.full_path),
@@ -1444,8 +1444,12 @@ fn read_summary(file: &ScannedFile) -> String {
         ),
         ".pptx" => read_pptx_summary(&file.full_path),
         ".odp" => read_odf_summary(&file.full_path, "content.xml", &["text:h", "text:p"]),
-        ".md" | ".markdown" | ".mdx" | ".txt" | ".rtf" | ".html" | ".htm" | ".xml" | ".json"
-        | ".yaml" | ".yml" | ".tsv" => read_text_summary(&file.full_path),
+        ".html" | ".htm" | ".xml" => {
+            let raw = read_text_prefix(&file.full_path, SUMMARY_TEXT_MAX_BYTES).unwrap_or_default();
+            short_summary(&decode_xml_entities(strip_xml_tags(&raw)), SUMMARY_MAX_CHARS)
+        }
+        ".md" | ".markdown" | ".mdx" | ".txt" | ".rtf" | ".json" | ".yaml" | ".yml"
+        | ".tsv" => read_text_summary(&file.full_path),
         _ => String::new(),
     }
 }
@@ -1454,7 +1458,7 @@ fn read_text_summary(path: &PathBuf) -> String {
     let Ok(raw) = read_text_prefix(path, SUMMARY_TEXT_MAX_BYTES) else {
         return String::new();
     };
-    short_summary(&raw, 180)
+    short_summary(&raw, SUMMARY_MAX_CHARS)
 }
 
 fn read_csv_summary(path: &PathBuf) -> String {
@@ -1473,9 +1477,11 @@ fn read_csv_summary(path: &PathBuf) -> String {
     if lines.is_empty() {
         return String::new();
     }
-    short_summary(&lines.join("\n"), 180)
+    short_summary(&lines.join("\n"), SUMMARY_MAX_CHARS)
 }
 
+// 保留旧解析器实现，方便后续评估；当前索引路径不再调用。
+#[allow(dead_code)]
 fn read_pdf_summary(path: &PathBuf) -> String {
     let Ok(raw) = read_binary_prefix(path, SUMMARY_PDF_MAX_BYTES) else {
         return String::new();
@@ -1510,46 +1516,28 @@ fn read_pdf_summary_from_text(pdf_text: &str) -> String {
 }
 
 fn read_docx_summary(path: &PathBuf) -> String {
-    let Ok(entries) = read_zip_text_entries_for_summary(path, &["word/document.xml"], |name| {
-        name == "word/document.xml"
-    }) else {
+    let Ok(entries) = read_zip_text_entries_for_summary(path, &["word/document.xml"]) else {
         return String::new();
     };
     let Some(document_xml) = entries.get("word/document.xml") else {
         return String::new();
     };
     let texts = extract_xml_texts(document_xml, "w:t");
-    short_summary(&texts.join("\n"), 180)
+    short_summary(&texts.join("\n"), SUMMARY_MAX_CHARS)
 }
 
 fn read_pptx_summary(path: &PathBuf) -> String {
-    let Ok(entries) = read_zip_text_entries_for_summary(path, &[], |name| {
-        name.starts_with("ppt/slides/slide") && name.ends_with(".xml")
-    }) else {
+    let Ok(entries) = read_zip_text_entries_for_summary(path, &["ppt/slides/slide1.xml"]) else {
         return String::new();
     };
-    let mut slide_names = entries
-        .keys()
-        .filter(|name| name.starts_with("ppt/slides/slide") && name.ends_with(".xml"))
-        .cloned()
-        .collect::<Vec<_>>();
-    slide_names.sort();
-    let mut chunks = Vec::new();
-    for slide_name in slide_names.into_iter().take(SUMMARY_PPTX_MAX_SLIDES) {
-        if let Some(slide_xml) = entries.get(&slide_name) {
-            let texts = extract_xml_texts(slide_xml, "a:t");
-            if !texts.is_empty() {
-                chunks.push(texts.join("\n"));
-            }
-        }
-    }
-    short_summary(&chunks.join("\n\n"), 180)
+    let Some(slide_xml) = entries.get("ppt/slides/slide1.xml") else {
+        return String::new();
+    };
+    short_summary(&extract_xml_texts(slide_xml, "a:t").join("\n"), SUMMARY_MAX_CHARS)
 }
 
 fn read_odf_summary(path: &PathBuf, content_entry: &str, text_tags: &[&str]) -> String {
-    let Ok(entries) =
-        read_zip_text_entries_for_summary(path, &[content_entry], |name| name == content_entry)
-    else {
+    let Ok(entries) = read_zip_text_entries_for_summary(path, &[content_entry]) else {
         return String::new();
     };
     let Some(content_xml) = entries.get(content_entry) else {
@@ -1559,48 +1547,43 @@ fn read_odf_summary(path: &PathBuf, content_entry: &str, text_tags: &[&str]) -> 
     for tag in text_tags {
         chunks.extend(extract_xml_texts(content_xml, tag));
     }
-    short_summary(&chunks.join("\n"), 180)
+    short_summary(&chunks.join("\n"), SUMMARY_MAX_CHARS)
 }
 
 fn read_xlsx_summary(path: &PathBuf) -> String {
-    let Ok(entries) = read_zip_text_entries_for_summary(path, &[], |name| {
-        name == "xl/sharedStrings.xml"
-            || (name.starts_with("xl/worksheets/sheet") && name.ends_with(".xml"))
-    }) else {
+    let Ok(entries) = read_zip_text_entries_for_summary(
+        path,
+        &["xl/sharedStrings.xml", "xl/worksheets/sheet1.xml"],
+    ) else {
         return String::new();
     };
     let shared_strings = entries
         .get("xl/sharedStrings.xml")
         .map(|xml| parse_xlsx_shared_strings(xml.as_str()))
         .unwrap_or_default();
-    let mut worksheet_names = entries
-        .keys()
-        .filter(|name| name.starts_with("xl/worksheets/sheet") && name.ends_with(".xml"))
-        .cloned()
+    let Some(worksheet_xml) = entries.get("xl/worksheets/sheet1.xml") else {
+        return String::new();
+    };
+    let chunks = parse_xlsx_rows(worksheet_xml, &shared_strings)
+        .into_iter()
+        .take(SUMMARY_XLSX_MAX_ROWS_PER_SHEET)
+        .map(|row| row.join(" "))
         .collect::<Vec<_>>();
-    worksheet_names.sort();
-    let mut chunks = Vec::new();
-    for worksheet_name in worksheet_names.into_iter().take(SUMMARY_XLSX_MAX_SHEETS) {
-        if let Some(worksheet_xml) = entries.get(&worksheet_name) {
-            let rows = parse_xlsx_rows(worksheet_xml, &shared_strings);
-            for row in rows.into_iter().take(SUMMARY_XLSX_MAX_ROWS_PER_SHEET) {
-                let normalized = row
-                    .into_iter()
-                    .filter(|cell| !cell.is_empty())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                if !normalized.is_empty() {
-                    chunks.push(normalized);
-                }
-            }
-        }
-    }
-    short_summary(&chunks.join("\n"), 180)
+    short_summary(&chunks.join("\n"), SUMMARY_MAX_CHARS)
 }
 
 fn read_text_prefix(path: &PathBuf, max_bytes: usize) -> Result<String, String> {
     let raw = read_binary_prefix(path, max_bytes)?;
-    Ok(String::from_utf8_lossy(&raw).replace('\u{feff}', ""))
+    Ok(decode_text_prefix(&raw).replace('\u{feff}', ""))
+}
+
+fn decode_text_prefix(raw: &[u8]) -> String {
+    // 前缀可能截断 UTF-8 字符，舍弃末尾残片而不是写入替换字符。
+    let end = match std::str::from_utf8(raw) {
+        Err(error) if error.error_len().is_none() => error.valid_up_to(),
+        _ => raw.len(),
+    };
+    String::from_utf8_lossy(&raw[..end]).into_owned()
 }
 
 fn read_binary_prefix(path: &PathBuf, max_bytes: usize) -> Result<Vec<u8>, String> {
@@ -1616,40 +1599,26 @@ fn read_binary_prefix(path: &PathBuf, max_bytes: usize) -> Result<Vec<u8>, Strin
 
 fn read_zip_text_entries_for_summary(
     path: &PathBuf,
-    required_entries: &[&str],
-    should_include: impl Fn(&str) -> bool,
+    entry_names: &[&str],
 ) -> Result<BTreeMap<String, String>, String> {
     let file = fs::File::open(path)
         .map_err(|error| format!("读取 zip 文件失败 {}: {error}", path.display()))?;
     let mut archive = ZipArchive::new(file)
         .map_err(|error| format!("解析 zip 容器失败 {}: {error}", path.display()))?;
     let mut entries = BTreeMap::new();
-    for index in 0..archive.len() {
-        if entries.len() >= SUMMARY_ARCHIVE_MAX_ENTRIES {
-            break;
-        }
-        let mut file = archive
-            .by_index(index)
-            .map_err(|error| format!("读取 zip 条目失败 {}: {error}", path.display()))?;
-        let name = file.name().to_string();
-        if !should_include(&name) {
+    for name in entry_names {
+        let Ok(mut file) = archive.by_name(name) else {
             continue;
-        }
-        let mut content = String::new();
+        };
+        let mut content = Vec::new();
         if file
             .by_ref()
             .take(SUMMARY_ARCHIVE_ENTRY_MAX_BYTES as u64)
-            .read_to_string(&mut content)
+            .read_to_end(&mut content)
             .is_ok()
         {
-            entries.insert(name, content);
+            entries.insert((*name).to_string(), decode_text_prefix(&content));
         }
-    }
-    if required_entries
-        .iter()
-        .any(|entry| !entries.contains_key(*entry))
-    {
-        return Err(format!("zip 缺少必需 xml 条目 {}", path.display()));
     }
     Ok(entries)
 }
@@ -1665,14 +1634,17 @@ fn extract_xml_texts(xml: &str, tag_name: &str) -> Vec<String> {
             break;
         };
         let content_start = start_index + content_start_rel + 1;
-        let Some(end_rel) = xml[content_start..].find(&close_tag) else {
-            break;
-        };
+        let end_rel = xml[content_start..]
+            .find(&close_tag)
+            .unwrap_or(xml.len() - content_start);
         let end_index = content_start + end_rel;
         let content = decode_xml_entities(strip_xml_tags(&xml[content_start..end_index]));
         let normalized = content.trim();
         if !normalized.is_empty() {
             result.push(normalized.to_string());
+        }
+        if end_index == xml.len() {
+            break;
         }
         cursor = end_index + close_tag.len();
     }
@@ -1802,18 +1774,31 @@ fn split_csv_line(line: &str) -> Vec<String> {
 }
 
 fn short_summary(raw: &str, limit: usize) -> String {
-    let normalized = raw.split_whitespace().collect::<Vec<_>>().join(" ");
-    if normalized.len() <= limit {
-        normalized
-    } else {
-        format!(
-            "{}…",
-            normalized
-                .chars()
-                .take(limit.saturating_sub(1))
-                .collect::<String>()
-        )
+    let mut output = String::new();
+    let mut count = 0;
+    let mut pending_space = false;
+    for ch in raw.chars() {
+        if ch.is_whitespace() {
+            pending_space = !output.is_empty();
+            continue;
+        }
+        if ch.is_control() || ch == '\u{fffd}' || ch == '\u{feff}' {
+            continue;
+        }
+        let space = usize::from(pending_space);
+        if count + space + 1 > limit
+            || output.len() + space + ch.len_utf8() > SUMMARY_TEXT_MAX_BYTES
+        {
+            break;
+        }
+        if pending_space {
+            output.push(' ');
+        }
+        output.push(ch);
+        count += space + 1;
+        pending_space = false;
     }
+    output
 }
 
 fn should_skip_directory(name: &str, relative_path: &str, options: &NativeIndexOptions) -> bool {
@@ -2667,7 +2652,7 @@ mod tests {
         resolve_reusable_previous_document, run_native_index_worker,
         write_runtime_mirror_snapshots, ExportCatalogSnapshot, NativeIndexRequest,
         ScanDocumentsResult, ScannedDocument, ScannedFile, SnapshotDocument, TargetScope,
-        SUMMARY_TEXT_MAX_BYTES, SUMMARY_XLSX_MAX_SHEETS,
+        SUMMARY_TEXT_MAX_BYTES,
     };
     use serde_json::Value;
     use std::collections::{BTreeMap, HashSet, VecDeque};
@@ -2944,6 +2929,19 @@ mod tests {
     }
 
     #[test]
+    fn pdf_summary_is_skipped_during_indexing() {
+        let file = ScannedFile {
+            relative_path: "report.pdf".to_string(),
+            full_path: PathBuf::from("missing-report.pdf"),
+            extension: ".pdf".to_string(),
+            size: 0,
+            mtime: String::new(),
+        };
+
+        assert!(super::read_summary(&file).is_empty());
+    }
+
+    #[test]
     fn index_only_一次写入文件属性和正文摘要() {
         let root_dir = make_temp_dir("x-file-native-index-metadata-only");
         fs::create_dir_all(root_dir.join(".ai-index")).unwrap();
@@ -3171,6 +3169,65 @@ mod tests {
     }
 
     #[test]
+    fn 摘要同时遵守字符和字节上限并保持有效文本() {
+        let ascii = super::short_summary(&"a".repeat(5000), super::SUMMARY_MAX_CHARS);
+        assert_eq!(ascii.len(), 1000);
+        let chinese = super::short_summary(&"中".repeat(5000), super::SUMMARY_MAX_CHARS);
+        assert_eq!(chinese.chars().count(), SUMMARY_TEXT_MAX_BYTES / 3);
+        assert!(chinese.len() <= SUMMARY_TEXT_MAX_BYTES);
+        assert_eq!(
+            super::short_summary(" \n alpha\t beta\u{0}\u{fffd}  ", super::SUMMARY_MAX_CHARS),
+            "alpha beta"
+        );
+    }
+
+    #[test]
+    fn 文本前缀截断中文时不生成替换字符() {
+        let root = make_temp_dir("x-file-summary-utf8-prefix");
+        let path = root.join("a.txt");
+        fs::write(&path, "中".repeat(1000)).unwrap();
+        let raw = super::read_text_prefix(&path, SUMMARY_TEXT_MAX_BYTES).unwrap();
+        fs::remove_dir_all(root).unwrap();
+        assert_eq!(raw, "中".repeat(SUMMARY_TEXT_MAX_BYTES / 3));
+    }
+
+    #[test]
+    fn 办公摘要只解压指定条目前缀并允许截断的正文节点() {
+        let root = make_temp_dir("x-file-summary-office-prefix");
+        let docx = root.join("a.docx");
+        let payload = format!(
+            "<w:document><w:p><w:r><w:t>{}tail-marker</w:t></w:r></w:p></w:document>",
+            "中".repeat(10000)
+        );
+        write_zip_file(&docx, &[("word/document.xml", &payload), ("other.xml", "ignored")]);
+        let entries = super::read_zip_text_entries_for_summary(&docx, &["word/document.xml"]).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries["word/document.xml"].len() <= super::SUMMARY_ARCHIVE_ENTRY_MAX_BYTES);
+        let summary = super::read_docx_summary(&docx);
+        fs::remove_dir_all(root).unwrap();
+        assert!(!summary.is_empty());
+        assert!(summary.len() <= SUMMARY_TEXT_MAX_BYTES);
+        assert!(summary.chars().count() <= super::SUMMARY_MAX_CHARS);
+        assert!(!summary.contains("tail-marker"));
+        assert!(!summary.contains('\u{fffd}'));
+    }
+
+    #[test]
+    fn 演示文稿摘要不读取后续幻灯片() {
+        let root = make_temp_dir("x-file-summary-first-slide");
+        let path = root.join("a.pptx");
+        write_zip_file(
+            &path,
+            &[
+                ("ppt/slides/slide1.xml", "<p:sld><a:t>第一页</a:t></p:sld>"),
+                ("ppt/slides/slide2.xml", "<p:sld><a:t>第二页</a:t></p:sld>"),
+            ],
+        );
+        assert_eq!(super::read_pptx_summary(&path), "第一页");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn xlsx_summary_限制读取工作表数量() {
         let root_dir = make_temp_dir("x-file-native-summary-xlsx-budget");
         let file_path = root_dir.join("budget.xlsx");
@@ -3180,7 +3237,7 @@ mod tests {
             <sst><si><t>共享文本</t></si></sst>"#,
         )];
         let mut sheet_payloads = Vec::new();
-        for index in 1..=SUMMARY_XLSX_MAX_SHEETS + 2 {
+        for index in 1..=3 {
             sheet_payloads.push((
                 format!("xl/worksheets/sheet{index}.xml"),
                 format!(
@@ -3198,8 +3255,8 @@ mod tests {
         fs::remove_dir_all(&root_dir).ok();
 
         assert!(summary.contains("sheet-1"));
-        assert!(summary.contains(&format!("sheet-{SUMMARY_XLSX_MAX_SHEETS}")));
-        assert!(!summary.contains(&format!("sheet-{}", SUMMARY_XLSX_MAX_SHEETS + 1)));
+        assert!(!summary.contains("sheet-2"));
+        assert!(!summary.contains("sheet-3"));
     }
 
     #[test]
