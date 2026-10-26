@@ -777,6 +777,7 @@ struct NativeListDocumentsRequest {
     selected_tag_paths: Option<Vec<String>>,
     selected_favorite_id: Option<String>,
     keyword: Option<String>,
+    updated_at_order: Option<String>,
     offset: Option<usize>,
     limit: Option<usize>,
 }
@@ -3353,7 +3354,18 @@ fn read_local_library_documents(
         });
     }
 
-    items.sort_by(|left, right| left.path.cmp(&right.path));
+    match request.updated_at_order.as_deref() {
+        Some(order @ ("asc" | "desc")) => {
+            // 按实际时间排序后再分页，缓存时间戳以避免比较时重复解析。
+            items.sort_by_cached_key(|item| {
+                let time = chrono::DateTime::parse_from_rfc3339(&item.updated_at)
+                    .map(|value| value.timestamp_millis())
+                    .unwrap_or(0);
+                (if order == "desc" { -time } else { time }, item.path.clone())
+            });
+        }
+        _ => items.sort_by(|left, right| left.path.cmp(&right.path)),
+    }
     let total = items.len();
     let mut paged_items = items
         .into_iter()
@@ -6458,6 +6470,7 @@ mod tests {
             selected_tag_paths: None,
             selected_favorite_id: None,
             keyword: None,
+            updated_at_order: None,
             offset: Some(0),
             limit: Some(20),
         })
@@ -6484,6 +6497,79 @@ mod tests {
                 .and_then(|status| status.generated_at.clone()),
             Some("2026-06-30T10:01:00Z".to_string())
         );
+    }
+
+    #[test]
+    fn native_修改时间先全局排序再分页() {
+        let _guard = test_env_lock().lock().expect("测试环境锁被污染");
+        let temp_root = env::temp_dir().join(format!("x-file-time-sort-{}", epoch_millis()));
+        let data_dir = temp_root.join("data");
+        let library_root = temp_root.join("library");
+        let runtime_dir = library_root.join(".ai-index/runtime");
+        fs::create_dir_all(&runtime_dir).expect("创建测试目录失败");
+        fs::create_dir_all(&data_dir).expect("创建数据目录失败");
+        write_json_file(
+            &data_dir.join("library-binding.json"),
+            &json!({
+                "libraryId": "default", "rootDir": library_root.to_string_lossy(),
+                "enabled": true, "allowedExtensions": [".md"], "includedHiddenPaths": [],
+                "folderOpenBehavior": "double_click",
+                "configRelativePath": ".ai-index/doc-semantic-index.config.json",
+                "exportMode": "v2", "initialized": true,
+                "initializedAt": "2026-10-26T00:00:00Z", "updatedAt": "2026-10-26T00:00:00Z"
+            }),
+        ).expect("写入测试绑定失败");
+        let documents = [
+            ("a.md", "2026-10-26T10:00:00+08:00"),
+            ("b.md", "2026-10-26T03:00:00Z"),
+            ("c.md", "2026-10-26T02:00:00Z"),
+            ("d.md", "2025-01-01T00:00:00Z"),
+            ("invalid.md", "invalid"),
+        ];
+        write_json_file(
+            &runtime_dir.join("export-catalog-snapshot.json"),
+            &json!({
+                "version": 1, "generatedAt": "2026-10-26T00:00:00Z", "tags": [],
+                "documents": documents.iter().map(|(path, mtime)| json!({
+                    "documentId": path, "path": path, "title": path, "summary": "",
+                    "tags": [], "derivedTags": [], "mtime": mtime
+                })).collect::<Vec<_>>()
+            }),
+        ).expect("写入测试快照失败");
+        let previous_data_dir = env::var("X_FILE_DATA_DIR").ok();
+        unsafe { env::set_var("X_FILE_DATA_DIR", &data_dir); }
+        let mut results = Vec::new();
+        for mode in ["folder", "tag"] {
+            for order in [Some("asc"), Some("desc"), None] {
+                let mut pages = Vec::new();
+                for offset in (0..documents.len()).step_by(2) {
+                    let request = serde_json::from_value(json!({
+                        "browseMode": mode, "updatedAtOrder": order, "offset": offset, "limit": 2
+                    })).expect("解析测试请求失败");
+                    pages.push(read_local_library_documents(request));
+                }
+                results.push((order, pages));
+            }
+        }
+        match previous_data_dir {
+            Some(value) => unsafe { env::set_var("X_FILE_DATA_DIR", value); },
+            None => unsafe { env::remove_var("X_FILE_DATA_DIR"); },
+        }
+        fs::remove_dir_all(&temp_root).ok();
+        for (order, pages) in results {
+            let expected = match order {
+                Some("asc") => vec!["invalid.md", "d.md", "a.md", "c.md", "b.md"],
+                Some("desc") => vec!["b.md", "a.md", "c.md", "d.md", "invalid.md"],
+                _ => vec!["a.md", "b.md", "c.md", "d.md", "invalid.md"],
+            };
+            let mut paths = Vec::new();
+            for page in pages {
+                let page = page.expect("读取测试分页失败");
+                assert_eq!(page.total, documents.len());
+                paths.extend(page.items.into_iter().map(|item| item.path));
+            }
+            assert_eq!(paths, expected);
+        }
     }
 
     #[test]
@@ -6782,6 +6868,7 @@ mod tests {
             selected_tag_paths: None,
             selected_favorite_id: None,
             keyword: None,
+            updated_at_order: None,
             offset: Some(0),
             limit: Some(20),
         })

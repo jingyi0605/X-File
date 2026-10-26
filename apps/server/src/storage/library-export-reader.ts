@@ -22,6 +22,7 @@ export interface ReadLibraryDocumentsInput {
   selectedTagPaths?: string[] | null;
   selectedFavoriteId?: string | null;
   keyword?: string | null;
+  updatedAtOrder?: "asc" | "desc";
   offset: number;
   limit: number;
   favorites?: LibraryFavoriteRecord[];
@@ -192,7 +193,14 @@ export class LibraryExportReader {
       markFavoriteDocuments(allDocuments, input.favorites ?? []),
       input,
       searchMatch,
-    ).sort((left, right) => compareSearchRank(left, right, searchMatch));
+    ).sort((left, right) => {
+      if (input.updatedAtOrder === "asc" || input.updatedAtOrder === "desc") {
+        const delta = (Date.parse(left.updatedAt) || 0) - (Date.parse(right.updatedAt) || 0);
+        return delta * (input.updatedAtOrder === "asc" ? 1 : -1)
+          || left.path.localeCompare(right.path, "zh-Hans-CN");
+      }
+      return compareSearchRank(left, right, searchMatch);
+    });
     return {
       total: filtered.length,
       visibleEntryTotal: filtered.length,

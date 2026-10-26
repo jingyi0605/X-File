@@ -190,6 +190,7 @@ export async function listNativeLibraryDocuments(query: {
   selectedTagPaths?: string[] | null;
   selectedFavoriteId?: string | null;
   keyword?: string | null;
+  updatedAtOrder?: "asc" | "desc";
   offset?: number;
   limit?: number;
 }): Promise<LibraryDocumentList | null> {

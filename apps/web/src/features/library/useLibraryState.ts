@@ -23,7 +23,8 @@ import {
   operateLibraryFile,
   requestLibraryRefresh,
   saveLibraryBinding,
-  updateLibraryFavorites
+  updateLibraryFavorites,
+  type ListDocumentsQuery,
 } from "../../api/library";
 import { toApiErrorMessage } from "../../api/http";
 import {
@@ -168,6 +169,10 @@ export function useLibraryState(): LibraryState {
   const nativeWatcherRootDirRef = useRef<string | null>(activeNativeWatcherRootDir);
   const pendingInitialQuickSyncRef = useRef(false);
   const listSignatureRef = useRef<{ queryKey: string; signature: string } | null>(null);
+  const listRequestTokenRef = useRef(0);
+  const listQueryKey = buildLibraryListQueryKey(viewState);
+  const listQueryKeyRef = useRef(listQueryKey);
+  listQueryKeyRef.current = listQueryKey;
   const [debugChannels, setDebugChannels] = useState<Record<keyof Omit<LibraryDebugState, "enabled" | "runtime" | "mode" | "nativeBridgeEligible" | "nativeBridgeAvailable">, LibraryDebugChannelState>>(() => ({
     watcher: createIdleDebugChannelState("未尝试"),
     health: createIdleDebugChannelState("未读取"),
@@ -368,6 +373,11 @@ export function useLibraryState(): LibraryState {
     showLoading = true,
     options: { commitUnchanged?: boolean } = {},
   ): Promise<void> {
+    const queryKey = buildLibraryListQueryKey(viewState);
+    if (queryKey !== listQueryKeyRef.current) {
+      return;
+    }
+    const requestToken = ++listRequestTokenRef.current;
     if (requiresInitialization || !snapshot?.binding?.enabled) {
       listSignatureRef.current = null;
       setDocumentPage(null);
@@ -384,18 +394,19 @@ export function useLibraryState(): LibraryState {
       const limit = reset
         ? Math.max(DOCUMENT_PAGE_LIMIT, documentPage?.items.length ?? 0)
         : DOCUMENT_PAGE_LIMIT;
-      const queryKey = buildLibraryListQueryKey(viewState);
+      const documentQuery: ListDocumentsQuery = {
+        browseMode: viewState.browseMode,
+        selectedFolderPath: viewState.selectedFolderPath,
+        selectedTagPath: viewState.selectedTagPath,
+        selectedTagPaths: viewState.selectedTagPaths,
+        selectedFavoriteId: viewState.selectedFavoriteId,
+        updatedAtOrder: viewState.librarySort.mode === "recent" ? viewState.librarySort.direction : undefined,
+        offset,
+        limit,
+      };
       const [nextDocuments, nextFiles] = await Promise.all([
         shouldUseNativeLibraryBridge()
-          ? listNativeLibraryDocuments({
-              browseMode: viewState.browseMode,
-              selectedFolderPath: viewState.selectedFolderPath,
-              selectedTagPath: viewState.selectedTagPath,
-              selectedTagPaths: viewState.selectedTagPaths,
-              selectedFavoriteId: viewState.selectedFavoriteId,
-              offset,
-              limit
-            }).then((result) => {
+          ? listNativeLibraryDocuments(documentQuery).then((result) => {
               updateDebugChannel(
                 "documents",
                 result ? "native" : "http",
@@ -403,25 +414,9 @@ export function useLibraryState(): LibraryState {
                   ? `documents 由 Rust 本地读取 export 清单，browseMode=${viewState.browseMode}`
                   : "native documents 不可用，已回退 HTTP /api/library/documents",
               );
-              return result ?? listLibraryDocuments({
-                browseMode: viewState.browseMode,
-                selectedFolderPath: viewState.selectedFolderPath,
-                selectedTagPath: viewState.selectedTagPath,
-                selectedTagPaths: viewState.selectedTagPaths,
-                selectedFavoriteId: viewState.selectedFavoriteId,
-                offset,
-                limit
-              });
+              return result ?? listLibraryDocuments(documentQuery);
             })
-          : listLibraryDocuments({
-              browseMode: viewState.browseMode,
-              selectedFolderPath: viewState.selectedFolderPath,
-              selectedTagPath: viewState.selectedTagPath,
-              selectedTagPaths: viewState.selectedTagPaths,
-              selectedFavoriteId: viewState.selectedFavoriteId,
-              offset,
-              limit
-            }),
+          : listLibraryDocuments(documentQuery),
         viewState.browseMode === "folder"
           ? shouldUseNativeLibraryBridge()
             ? listNativeLibraryFiles(viewState.selectedFolderPath, FILE_LIST_LIMIT)
@@ -438,6 +433,10 @@ export function useLibraryState(): LibraryState {
             : listLibraryFiles(viewState.selectedFolderPath, FILE_LIST_LIMIT)
           : Promise.resolve({ items: [] })
       ]);
+
+      if (requestToken !== listRequestTokenRef.current || queryKey !== listQueryKeyRef.current) {
+        return;
+      }
 
       if (!shouldUseNativeLibraryBridge()) {
         updateDebugChannel("documents", "http", "当前运行模式不走 native documents");
@@ -474,16 +473,18 @@ export function useLibraryState(): LibraryState {
         setFileItems(nextFiles.items);
       }
     } catch (err) {
-      setError(toApiErrorMessage(err));
+      if (requestToken === listRequestTokenRef.current) {
+        setError(toApiErrorMessage(err));
+      }
     } finally {
-      if (showLoading) {
+      if (requestToken === listRequestTokenRef.current) {
         setDocumentsLoading(false);
       }
     }
   }
 
   async function loadMore(): Promise<void> {
-    if (!hasMore || documentsLoading) {
+    if (!hasMore || documentsLoading || listSignatureRef.current?.queryKey !== listQueryKeyRef.current) {
       return;
     }
     await reloadDocuments(false, true, { commitUnchanged: true });
@@ -807,6 +808,8 @@ export function useLibraryState(): LibraryState {
     viewState.selectedTagPath,
     viewState.selectedTagPaths.join("|"),
     viewState.selectedFavoriteId,
+    viewState.librarySort.mode,
+    viewState.librarySort.direction,
   ]);
 
   useEffect(() => {
@@ -823,7 +826,9 @@ export function useLibraryState(): LibraryState {
     viewState.selectedFolderPath,
     viewState.selectedTagPath,
     viewState.selectedTagPaths.join("|"),
-    viewState.selectedFavoriteId
+    viewState.selectedFavoriteId,
+    viewState.librarySort.mode,
+    viewState.librarySort.direction,
   ]);
 
   useEffect(() => {
@@ -863,6 +868,8 @@ export function useLibraryState(): LibraryState {
     snapshot?.status.runningTaskId,
     viewState.browseMode,
     viewState.selectedFolderPath,
+    viewState.librarySort.mode,
+    viewState.librarySort.direction,
   ]);
 
   useEffect(() => {
@@ -908,6 +915,8 @@ export function useLibraryState(): LibraryState {
     snapshot?.status.runningTaskId,
     viewState.browseMode,
     viewState.selectedFolderPath,
+    viewState.librarySort.mode,
+    viewState.librarySort.direction,
   ]);
 
   return {
@@ -969,6 +978,8 @@ function buildLibraryListQueryKey(viewState: LibraryViewState): string {
     viewState.selectedTagPaths.join("\u001f"),
     viewState.selectedFavoriteId ?? "",
     viewState.keyword,
+    viewState.librarySort.mode,
+    viewState.librarySort.direction,
   ].join("\u001e");
 }
 

@@ -323,6 +323,49 @@ test("从临时 export 读取文档、标签和文件夹", () => {
   assert.equal(list.items[0]?.path, "docs/backend.md");
 });
 
+test("修改时间先全局排序再分页，支持双向排序、时区和相同时间", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "x-file-time-sort-"));
+  const rootDir = path.join(tempDir, "library");
+  writeExportFixture(rootDir);
+  const documents = [
+    { document_id: "a", path: "a.md", mtime: "2026-10-26T10:00:00+08:00" },
+    { document_id: "b", path: "b.md", mtime: "2026-10-26T03:00:00Z" },
+    { document_id: "c", path: "c.md", mtime: "2026-10-26T02:00:00Z" },
+    { document_id: "d", path: "d.md", mtime: "2025-01-01T00:00:00Z" },
+    { document_id: "invalid", path: "invalid.md", mtime: "invalid" },
+  ];
+  fs.writeFileSync(path.join(rootDir, ".ai-index/exports/meta/meta_docs.json"), JSON.stringify({ documents }));
+  const service = new LibraryService(
+    new LibraryBindingStore({ dataDir: path.join(tempDir, "data") }),
+    new LibraryExportReader(),
+    null,
+  );
+  service.saveBinding({ rootDir, completeInitialization: true });
+
+  try {
+    for (const browseMode of ["folder", "tag"]) {
+      for (const updatedAtOrder of ["asc", "desc"] as const) {
+        const expected = updatedAtOrder === "asc"
+          ? ["invalid.md", "d.md", "a.md", "c.md", "b.md"]
+          : ["b.md", "a.md", "c.md", "d.md", "invalid.md"];
+        const paths: string[] = [];
+        for (let offset = 0; offset < documents.length; offset += 2) {
+          const page = service.listDocuments({ browseMode, updatedAtOrder, offset, limit: 2 });
+          assert.equal(page.total, documents.length);
+          paths.push(...page.items.map((item) => item.path));
+        }
+        assert.deepEqual(paths, expected);
+      }
+    }
+    assert.deepEqual(
+      service.listDocuments({ browseMode: "folder" }).items.map((item) => item.path),
+      documents.map((item) => item.path),
+    );
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("listDocuments 对当前页文档补全大小与创建时间（对齐父仓库 stat 补全）", () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "x-file-library-stats-"));
   const rootDir = path.join(tempDir, "library");

@@ -75,6 +75,7 @@ export interface ListDocumentsQuery {
   selectedTagPaths?: string[] | null;
   selectedFavoriteId?: string | null;
   keyword?: string | null;
+  updatedAtOrder?: "asc" | "desc";
   offset?: number;
   limit?: number;
 }
@@ -215,6 +216,7 @@ export function listLibraryDocuments(
   appendSearch(search, "selectedTagPath", query.selectedTagPath);
   appendSearch(search, "selectedFavoriteId", query.selectedFavoriteId);
   appendSearch(search, "keyword", query.keyword);
+  appendSearch(search, "updatedAtOrder", query.updatedAtOrder);
 
   if (query.selectedTagPaths?.length) {
     search.set("selectedTagPaths", query.selectedTagPaths.join(","));
@@ -598,6 +600,7 @@ async function listLibraryDocumentsWithNative(
     selectedTagPaths: query.selectedTagPaths,
     selectedFavoriteId: query.selectedFavoriteId,
     keyword: query.keyword,
+    updatedAtOrder: query.updatedAtOrder,
     offset: query.offset,
     limit: query.limit,
   });

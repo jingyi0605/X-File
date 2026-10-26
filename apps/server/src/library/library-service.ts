@@ -63,6 +63,7 @@ export interface ListLibraryDocumentsInput {
   selectedTagPaths?: string[] | null;
   selectedFavoriteId?: string | null;
   keyword?: string | null;
+  updatedAtOrder?: "asc" | "desc";
   offset?: number;
   limit?: number;
 }
@@ -170,6 +171,7 @@ export class LibraryService {
       selectedTagPaths: input.selectedTagPaths,
       selectedFavoriteId: input.selectedFavoriteId,
       keyword: input.keyword,
+      updatedAtOrder: input.updatedAtOrder,
       offset: normalizeNonNegativeInteger(input.offset, 0),
       limit: normalizeLimit(input.limit, 50),
       favorites: binding ? this.readFavorites(binding) : []

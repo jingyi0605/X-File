@@ -156,6 +156,7 @@ interface LibraryDocumentsQuery {
   selectedTagPaths?: string;
   selectedFavoriteId?: string;
   keyword?: string;
+  updatedAtOrder?: string;
   offset?: string;
   limit?: string;
 }
@@ -186,6 +187,9 @@ function parseDocumentsQuery(query: LibraryDocumentsQuery): ListLibraryDocuments
       .filter((item) => item.length > 0) ?? null,
     selectedFavoriteId: query.selectedFavoriteId?.trim() ?? null,
     keyword: query.keyword?.trim() ?? null,
+    updatedAtOrder: query.updatedAtOrder === "asc" || query.updatedAtOrder === "desc"
+      ? query.updatedAtOrder
+      : undefined,
     offset: query.offset ? Number(query.offset) : undefined,
     limit: query.limit ? Number(query.limit) : undefined
   };
