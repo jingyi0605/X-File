@@ -27,12 +27,12 @@ import {
 } from "../../api/library";
 import { toApiErrorMessage } from "../../api/http";
 import {
-  fetchNativeLibraryStatus,
   fetchNativeLibrarySnapshot,
   getNativeLibraryPreview,
   getNativeOnlyOfficePreview,
   listNativeLibraryDocuments,
   listNativeLibraryFiles,
+  listenNativeLibraryUpdates,
   requestNativeLibraryRefresh,
   startNativeLibraryWatcher,
   stopNativeLibraryWatcher,
@@ -53,7 +53,6 @@ const FILE_LIST_LIMIT = 200;
 const RUNNING_INDEX_POLL_INTERVAL_MS = 4000;
 const DIRECTORY_PRIORITY_POLL_INTERVAL_MS = 800;
 const DIRECTORY_PRIORITY_POLL_COUNT = 12;
-const SUMMARY_BACKFILL_DIRECTORY_POLL_INTERVAL_MS = 3000;
 const VIEW_STATE_PERSIST_DELAY_MS = 300;
 let activeNativeWatcherRootDir: string | null = null;
 
@@ -79,10 +78,6 @@ function normalizeLibraryIndexStatus(
 
 function isLiveIndexState(state: string | null | undefined): boolean {
   return state === "queued" || state === "running" || state === "stale" || state === "queue_timeout";
-}
-
-function isSummaryBackfillStage(stage: string | null | undefined): boolean {
-  return stage === "summary_backfill" || stage === "summary_backfill_search";
 }
 
 type LibraryDebugTransport = "native" | "http" | "idle";
@@ -509,7 +504,7 @@ export function useLibraryState(): LibraryState {
         "refresh",
         nativeResult ? "native" : "http",
         nativeResult
-          ? `refresh 入口命中 Rust；桌面宿主先跑 index-only，再用 dirtyScope 驱动 export-only，reason=${reason}`
+          ? `refresh 入口命中 Rust；根目录队列在后台线程串行执行索引，并用 dirtyScope 驱动导出，reason=${reason}`
           : shouldUseNativeLibraryBridge()
             ? "native refresh 不可用，已直连 HTTP /api/library/refresh"
             : "当前运行模式不走 native refresh",
@@ -779,6 +774,42 @@ export function useLibraryState(): LibraryState {
   }, []);
 
   useEffect(() => {
+    const rootDir = snapshot?.binding?.rootDir;
+    if (!shouldUseNativeLibraryBridge() || !rootDir || !snapshot?.binding?.enabled) {
+      return;
+    }
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listenNativeLibraryUpdates((updatedRoot) => {
+      if (disposed || updatedRoot !== rootDir) {
+        return;
+      }
+      void (async () => {
+        await reload();
+        await reloadDocuments(true, false, { commitUnchanged: false });
+      })();
+    }).then((stop) => {
+      if (disposed) {
+        stop();
+      } else {
+        unlisten = stop;
+      }
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [
+    snapshot?.binding?.rootDir,
+    snapshot?.binding?.enabled,
+    viewState.browseMode,
+    viewState.selectedFolderPath,
+    viewState.selectedTagPath,
+    viewState.selectedTagPaths.join("|"),
+    viewState.selectedFavoriteId,
+  ]);
+
+  useEffect(() => {
     return () => {
       nativeWatcherRootDirRef.current = activeNativeWatcherRootDir;
     };
@@ -817,34 +848,6 @@ export function useLibraryState(): LibraryState {
       return;
     }
 
-    if (isSummaryBackfillStage(snapshot?.status.runningStage)) {
-      const timer = window.setInterval(() => {
-        void (async () => {
-          const nextStatus = shouldUseNativeLibraryBridge()
-            ? await fetchNativeLibraryStatus().catch(() => null)
-            : null;
-          if (!nextStatus) {
-            await reload();
-            return;
-          }
-          startTransition(() => {
-            setSnapshot((current) =>
-              current
-                ? { ...current, status: normalizeLibraryIndexStatus(nextStatus) }
-                : current,
-            );
-          });
-          if (!isLiveIndexState(nextStatus.state)) {
-            await reload();
-            if (viewState.browseMode === "folder") {
-              await reloadDocuments(true, false, { commitUnchanged: false });
-            }
-          }
-        })();
-      }, SUMMARY_BACKFILL_DIRECTORY_POLL_INTERVAL_MS);
-      return () => window.clearInterval(timer);
-    }
-
     const timer = window.setInterval(() => {
       void (async () => {
         await reload();
@@ -866,8 +869,7 @@ export function useLibraryState(): LibraryState {
     if (
       !shouldUseNativeLibraryBridge() ||
       viewState.browseMode !== "folder" ||
-      !isLiveIndexState(snapshot?.status.state) ||
-      isSummaryBackfillStage(snapshot?.status.runningStage)
+      !isLiveIndexState(snapshot?.status.state)
     ) {
       return;
     }

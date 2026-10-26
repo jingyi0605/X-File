@@ -2,7 +2,6 @@ import type {
   HttpServerState,
   HostDirectoryBrowseResult,
   LibraryBinding,
-  LibraryIndexStatus,
   LibraryConfig,
   LibraryDocumentList,
   LibraryDocumentTagDetails,
@@ -167,8 +166,13 @@ export async function fetchNativeLibrarySnapshot(): Promise<NativeLibrarySnapsho
   return invokeOptional<NativeLibrarySnapshotResponse>("native_get_library_snapshot");
 }
 
-export async function fetchNativeLibraryStatus(): Promise<LibraryIndexStatus | null> {
-  return invokeOptional<LibraryIndexStatus>("native_get_library_status");
+export async function listenNativeLibraryUpdates(
+  onUpdate: (rootDir: string) => void,
+): Promise<() => void> {
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<{ rootDir: string }>("x-file-library-updated", ({ payload }) => {
+    onUpdate(payload.rootDir);
+  });
 }
 
 export async function requestNativeLibraryRefresh(input: {

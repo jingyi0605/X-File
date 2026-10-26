@@ -1397,31 +1397,11 @@ function LibraryDesktopSidebar({
   const tagSearchInputRef = useRef<HTMLInputElement | null>(null);
   const selectedTagPaths = library.viewState.selectedTagPaths;
   const hasTagSelection = selectedTagPaths.length > 0;
-  const isSummaryBackfillRunning = isRunningSummaryBackfill(library.snapshot?.status.runningStage);
-  const liveTagFacetCounts = library.documentPage?.tagFacetCounts ?? {};
-  const [frozenTags, setFrozenTags] = useState<LibraryTagNode[]>(tags);
-  const [frozenTagFacetCounts, setFrozenTagFacetCounts] = useState<Record<string, number>>(liveTagFacetCounts);
-
-  useEffect(() => {
-    if (isSummaryBackfillRunning) {
-      return;
-    }
-    setFrozenTags(tags);
-  }, [isSummaryBackfillRunning, tags]);
-
-  useEffect(() => {
-    if (isSummaryBackfillRunning) {
-      return;
-    }
-    setFrozenTagFacetCounts(liveTagFacetCounts);
-  }, [isSummaryBackfillRunning, liveTagFacetCounts]);
-
-  const effectiveTags = isSummaryBackfillRunning ? frozenTags : tags;
-  const effectiveTagFacetCounts = isSummaryBackfillRunning ? frozenTagFacetCounts : liveTagFacetCounts;
-  const tagTree = useMemo(() => buildLibraryTagTree(effectiveTags), [effectiveTags]);
+  const tagFacetCounts = library.documentPage?.tagFacetCounts ?? {};
+  const tagTree = useMemo(() => buildLibraryTagTree(tags), [tags]);
   const tagTreeWithCounts = useMemo(
-    () => applyTagFacetCountsToTree(tagTree, effectiveTagFacetCounts, hasTagSelection),
-    [effectiveTagFacetCounts, hasTagSelection, tagTree],
+    () => applyTagFacetCountsToTree(tagTree, tagFacetCounts, hasTagSelection),
+    [tagFacetCounts, hasTagSelection, tagTree],
   );
   const tagTreeVisibility = useMemo(
     () => buildTagTreeVisibility(tagTreeWithCounts, selectedTagPaths),
@@ -1690,10 +1670,6 @@ function LibraryDesktopSidebar({
 }
 
 const MemoizedLibraryDesktopSidebar = memo(LibraryDesktopSidebar);
-
-function isRunningSummaryBackfill(stage: string | null | undefined): boolean {
-  return stage === "summary_backfill" || stage === "summary_backfill_search";
-}
 
 function LibraryTagFilterFavoriteModal({
   pending,
@@ -8567,17 +8543,11 @@ function resolveIndexStatusLabel(state: LibraryIndexState | undefined): string {
 
 function resolveIndexStageLabel(stage: string | null): string {
   const labels: Record<string, string> = {
-    load_config: t("libraryIndexStageLoadConfig"),
-    init_catalog: t("libraryIndexStageInitCatalog"),
-    count_files: t("libraryIndexStageCountFiles"),
     incremental_index: t("libraryIndexStageIncrementalIndex"),
     index: t("libraryIndexStageIndex"),
     index_text: t("libraryIndexStageIndexText"),
-    summary_backfill: t("libraryIndexStageSummaryBackfill"),
-    summary_backfill_search: t("libraryIndexStageSummaryBackfillSearch"),
     export_snapshot: t("libraryIndexStageExportSnapshot"),
     export_search: t("libraryIndexStageExportSearch"),
-    sqlite: t("libraryIndexStageSqlite"),
   };
   return stage ? labels[stage] ?? stage : "--";
 }
@@ -8923,44 +8893,19 @@ function resolveIndexStatusProgressVisual(
   if (status.state !== "running" || !progress) {
     return null;
   }
-  const isSummaryBackfill = status.runningStage === "summary_backfill";
   const total = progress.totalCount;
   if (typeof total === "number" && total > 0) {
     const percent = resolveIndexProgressPercent(progress);
     return {
       percent,
-      label: isSummaryBackfill
-        ? t("libraryStatusSummaryBackfillProgressBarLabel", { percent })
-        : t("libraryStatusProgressBarLabel", { percent }),
-      detail: isSummaryBackfill
-        ? t("libraryStatusSummaryBackfillProgressBarDetail", {
-            indexed: progress.indexedCount,
-            total,
-            unchanged: progress.unchangedCount,
-            skipped: progress.skippedCount,
-          })
-        : t("libraryStatusProgressBarDetail", {
-            processed: resolveIndexProcessedCount(progress),
-            indexed: progress.indexedCount,
-            total,
-          }),
+      label: t("libraryStatusProgressBarLabel", { percent }),
+      detail: t("libraryStatusProgressBarDetail", { processed: resolveIndexProcessedCount(progress), indexed: progress.indexedCount, total }),
     };
   }
   return {
     percent: 0,
-    label: isSummaryBackfill
-      ? t("libraryStatusSummaryBackfillPendingLabel")
-      : t("libraryStatusProgressPendingLabel"),
-    detail: isSummaryBackfill
-      ? t("libraryStatusSummaryBackfillPendingDetail", {
-          processed: resolveIndexProcessedCount(progress),
-          indexed: progress.indexedCount,
-          unchanged: progress.unchangedCount,
-        })
-      : t("libraryStatusProgressPendingDetail", {
-          processed: resolveIndexProcessedCount(progress),
-          indexed: progress.indexedCount,
-        }),
+    label: t("libraryStatusProgressPendingLabel"),
+    detail: t("libraryStatusProgressPendingDetail", { processed: resolveIndexProcessedCount(progress), indexed: progress.indexedCount }),
   };
 }
 
