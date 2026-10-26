@@ -345,6 +345,86 @@ describe("第 8 批：标签筛选树、多选过滤、徽标计数、排序、�
     expect(childTitlesOf("时间")).toEqual(["最近3天0"]);
   });
 
+  it.each(
+    ["时间", "time"].flatMap((root) => [3, 7, 30].map((days) => ({ root, days }))),
+  )("$root 选中最近 $days 天后隐藏其他非零最近分类，取消或切换到年份后恢复", async ({ root, days }) => {
+    const recentCounts = new Map([[3, 19], [7, 27], [30, 60]]);
+    const label = (value: number) => root === "时间" ? `最近${value}天` : `recent-${value}-days`;
+    const selectedPath = `${root}/${label(days)}`;
+    const selectedCount = recentCounts.get(days)!;
+    const yearPath = `${root}/2026`;
+    mockTags([
+      tag(root, 60, { rootType: "time" }),
+      ...Array.from(recentCounts, ([value, count]) =>
+        tag(`${root}/${label(value)}`, count, { rootType: "time", parentPath: root, depth: 1 }),
+      ),
+      tag(`${root}/${label(90)}`, 0, { rootType: "time", parentPath: root, depth: 1 }),
+      tag(yearPath, 60, { rootType: "time", parentPath: root, depth: 1 }),
+    ]);
+    libraryApiMock.listLibraryDocuments.mockImplementation(async (input: { selectedTagPaths: string[] }) => {
+      const count = input.selectedTagPaths.includes(selectedPath) ? selectedCount : 60;
+      return createDocumentList([], {
+        total: count,
+        tagFacetCounts: {
+          [root]: count,
+          [yearPath]: count,
+          ...Object.fromEntries(Array.from(recentCounts, ([value, total]) =>
+            [`${root}/${label(value)}`, Math.min(total, count)],
+          )),
+        },
+      });
+    });
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={() => undefined} platformData={platformData} />);
+    await expandTag(root);
+    const tree = screen.getByRole("tree", { name: "标签树" });
+    const expectAllRecentTags = () => {
+      for (const [value, count] of recentCounts) {
+        expect(within(tree).getByRole("button", { name: `${label(value)} ${count}` })).toBeInTheDocument();
+      }
+      expect(within(tree).queryByRole("treeitem", { name: label(90) })).not.toBeInTheDocument();
+    };
+    const selectRecentTag = async () => {
+      await userEvent.click(within(tree).getByRole("button", { name: `${label(days)} ${selectedCount}` }));
+      await waitFor(() => {
+        expect(libraryApiMock.listLibraryDocuments).toHaveBeenLastCalledWith(expect.objectContaining({
+          selectedTagPaths: [selectedPath],
+        }));
+      });
+      expect(within(tree).getByRole("button", { name: `${label(days)} ${selectedCount}` })).toBeInTheDocument();
+      for (const value of recentCounts.keys()) {
+        if (value !== days) {
+          expect(within(tree).queryByRole("treeitem", { name: label(value) })).not.toBeInTheDocument();
+        }
+      }
+      expect(within(tree).getByRole("treeitem", { name: "2026" })).toBeInTheDocument();
+    };
+
+    expectAllRecentTags();
+    await selectRecentTag();
+    await userEvent.click(within(tree).getByRole("button", { name: `2026 ${selectedCount}` }));
+    await waitFor(() => {
+      expect(libraryApiMock.listLibraryDocuments).toHaveBeenLastCalledWith(expect.objectContaining({
+        selectedTagPaths: [yearPath],
+      }));
+    });
+    expectAllRecentTags();
+
+    await selectRecentTag();
+    await userEvent.click(within(tree).getByRole("button", { name: `${label(days)} ${selectedCount}` }));
+    await waitFor(() => {
+      expect(libraryApiMock.listLibraryDocuments).toHaveBeenLastCalledWith(expect.objectContaining({
+        selectedTagPaths: [],
+      }));
+    });
+    expectAllRecentTags();
+
+    await selectRecentTag();
+    await userEvent.click(screen.getByLabelText("清除标签筛选"));
+    expectAllRecentTags();
+  });
+
   it("英文时间标签同样固定最近分类并按年月降序排列", async () => {
     mockTags([
       tag("time", 2, { rootType: "time" }),

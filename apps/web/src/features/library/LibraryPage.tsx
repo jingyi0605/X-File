@@ -9038,6 +9038,7 @@ function buildTagTreeVisibility(
 ): { visiblePathSet: Set<string> } {
   const visiblePathSet = new Set<string>();
   const selectedSet = new Set(selectedTagPaths);
+  const hasSelectedRecentTimeTag = selectedTagPaths.some((path) => resolveRecentTimeTagDays(path) !== null);
   const markAncestorsVisible = (pathValue: string) => {
     for (const ancestorPath of buildTagAncestorPaths(pathValue)) {
       visiblePathSet.add(ancestorPath);
@@ -9045,6 +9046,10 @@ function buildTagTreeVisibility(
   };
 
   const visit = (node: LibraryTagTreeNodeRecord): boolean => {
+    // 选中最近时间范围后只显示该入口，避免其他范围的交叉计数随筛选变化。
+    if (hasSelectedRecentTimeTag && resolveRecentTimeTagDays(node.path) !== null && !selectedSet.has(node.path)) {
+      return false;
+    }
     // 与当前选中相关的节点（选中项本身、其祖先或后代）必须保持可见，避免用户选中的标签凭空消失
     const selectedRelated = selectedTagPaths.some((selectedPath) => (
       selectedPath === node.path ||
