@@ -90,6 +90,19 @@ pub fn get_native_library_tag_detail(tag_id: &str) -> Result<Value, String> {
         .map_err(|error| format!("序列化本地 tag detail 失败：{error}"))
 }
 
+pub fn ensure_native_library_tag(path: &str) -> Result<Value, String> {
+    let binding = read_local_library_binding()?.ok_or_else(|| "当前未绑定文档库".to_string())?;
+    let mut store = read_local_library_tags_store(&binding)?;
+    let count = store.tags.len();
+    let id = ensure_local_tag_path(&mut store, path)?;
+    if store.tags.len() != count {
+        store.updated_at = iso_now();
+        write_local_library_tags_store(&binding, &store)?;
+        sync_local_tag_exports_core(&binding, "external_agent_tag_ensured")?;
+    }
+    get_native_library_tag_detail(&id)
+}
+
 pub fn create_native_library_tag(
     request: NativeSaveLibraryTagDefinitionRequest,
 ) -> Result<Value, String> {

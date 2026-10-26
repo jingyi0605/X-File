@@ -1,7 +1,7 @@
 name: ci
 
 # X-File PR 检查：TS 类型检查 + Web 单元测试 + 共享包/前后端构建。
-# Rust 桌面壳的编译由 desktop-release.yml 在 tag 时跨平台验证，这里不重复（避免 PR 耗时）。
+# 原生 Agent 工具单独在 macOS 验证；安装包仍由 desktop-release.yml 跨平台验证。
 
 on:
   push:
@@ -13,6 +13,22 @@ env:
   PNPM_VERSION: "9.15.4"
 
 jobs:
+  native-agent-tools:
+    name: native-agent-tools
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: 构建原生 CLI 与 MCP
+        run: cargo build --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
+      - name: Rust 单元测试
+        run: cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml --lib
+      - name: CLI 与 MCP 真实子进程测试
+        run: node --test scripts/agent-tools.test.mjs
+
   typecheck-test-build:
     name: typecheck-test-build
     runs-on: ubuntu-latest

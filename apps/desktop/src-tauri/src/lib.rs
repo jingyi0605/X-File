@@ -1,7 +1,10 @@
 mod native_core;
+mod agent_tools;
 mod native_export;
 mod native_index;
 mod updater;
+
+pub use agent_tools::cli::run_agent_cli_from_args;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use hmac::{Hmac, Mac};
@@ -2145,6 +2148,18 @@ fn native_get_onlyoffice_settings() -> Result<Value, String> {
 }
 
 #[tauri::command]
+fn native_get_agent_integration_settings() -> Result<agent_tools::settings::SettingsView, String> {
+    agent_tools::settings::get_settings()
+}
+
+#[tauri::command]
+fn native_save_agent_integration_settings(
+    input: agent_tools::settings::SettingsInput,
+) -> Result<agent_tools::settings::SettingsSaved, String> {
+    agent_tools::settings::save_settings(input)
+}
+
+#[tauri::command]
 fn native_save_onlyoffice_settings(input: NativeOnlyOfficeSettingsInput) -> Result<Value, String> {
     save_local_onlyoffice_settings(input)
 }
@@ -3806,7 +3821,7 @@ fn read_local_library_preview(
     }
 
     if kind == "office" {
-        println!(
+        eprintln!(
             "[x-file native] preview.resolve kind=office transport=native-fallback path={}",
             relative_path
         );
@@ -3827,7 +3842,7 @@ fn read_local_library_preview(
         });
     }
 
-    println!(
+    eprintln!(
         "[x-file native] preview.resolve kind={} transport=native path={}",
         kind, relative_path
     );
@@ -7375,6 +7390,8 @@ pub fn run() {
             native_build_onlyoffice_preview,
             native_fetch_library_health,
             native_get_onlyoffice_settings,
+            native_get_agent_integration_settings,
+            native_save_agent_integration_settings,
             native_save_onlyoffice_settings,
             native_get_onlyoffice_status,
             native_get_http_server_state,

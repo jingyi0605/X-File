@@ -20,7 +20,8 @@
     "prepare:bundled-server": "bash scripts/archive/20260616/prepare-bundled-server.sh",
     "prepare:library-engine": "bash scripts/archive/20260616/prepare-bundled-server.sh",
     "version:sync": "node scripts/sync-version.mjs",
-    "benchmark:index": "node scripts/benchmark-native-library.mjs"
+    "benchmark:index": "node scripts/benchmark-native-library.mjs",
+    "test:agent-tools": "node --test scripts/agent-tools.test.mjs"
   },
   "engines": {
     "node": ">=20.11.0",

@@ -1,0 +1,1438 @@
+[
+  {
+    "name": "xfile_status",
+    "description": "读取原生工具版本、应用状态目录和当前资料库绑定。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "requiresBinding": false
+    }
+  },
+  {
+    "name": "xfile_binding_get",
+    "description": "读取当前资料库绑定，不自动初始化。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "requiresBinding": false
+    }
+  },
+  {
+    "name": "xfile_binding_set",
+    "description": "显式选择一个已经存在的资料库根目录，并保存应用绑定。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "rootDir": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "completeInitialization": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "rootDir"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "requiresBinding": false
+    }
+  },
+  {
+    "name": "xfile_config_get",
+    "description": "读取索引范围、可见性和目录打开方式。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "requiresBinding": false
+    }
+  },
+  {
+    "name": "xfile_config_set",
+    "description": "更新明确提供的资料库配置字段；调整索引范围后调用 index_refresh。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "mirrorRoot": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "allowedExtensions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "maxItems": 1000
+        },
+        "includedHiddenPaths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "maxItems": 1000
+        },
+        "hideDotFiles": {
+          "type": "boolean"
+        },
+        "hideSystemFolders": {
+          "type": "boolean"
+        },
+        "folderOpenBehavior": {
+          "type": "string",
+          "enum": [
+            "single_click",
+            "double_click"
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "requiresBinding": true
+    }
+  },
+  {
+    "name": "xfile_snapshot",
+    "description": "读取资料库索引概况、标签、目录和收藏。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "requiresBinding": false
+    }
+  },
+  {
+    "name": "xfile_documents_list",
+    "description": "分页检索索引中的文档；keyword 匹配标题、摘要和路径。默认 tag 模式跨目录检索。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "browseMode": {
+          "type": "string",
+          "enum": [
+            "folder",
+            "tag"
+          ]
+        },
+        "selectedFolderPath": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "绑定资料库内的相对路径，不允许上级路径或内部状态目录"
+        },
+        "selectedTagPath": {
+          "type": "string"
+        },
+        "selectedTagPaths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "maxItems": 1000
+        },
+        "selectedFavoriteId": {
+          "type": "string"
+        },
+        "keyword": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "updatedAtOrder": {
+          "type": "string",
+          "enum": [
+            "asc",
+            "desc"
+          ]
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000000
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "requiresBinding": true
+    }
+  },
+  {
+    "name": "xfile_files_list",
+    "description": "列出资料库内真实目录项。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "绑定资料库内的相对路径，不允许上级路径或内部状态目录"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "requiresBinding": true
+    }
+  },
+  {
+    "name": "xfile_file_preview",
+    "description": "生成不超过 512 KiB 的原生轻量预览。更大或二进制文件使用 file_read 分块读取。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "绑定资料库内的相对路径，不允许上级路径或内部状态目录"
+        },
+        "displayMode": {
+          "type": "string",
+          "enum": [
+            "preview",
+            "edit",
+            "view"
+          ]
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "requiresBinding": true
+    }
+  },
+  {
+    "name": "xfile_file_read",
+    "description": "分块读取 UTF-8 或 Base64 文件，返回完整内容 SHA-256 version、截断标记和下一字节偏移；文件上限 20 MiB。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "绑定资料库内的相对路径，不允许上级路径或内部状态目录"
+        },
+        "encoding": {
+          "type": "string",
+          "enum": [
+            "utf8",
+            "base64"
+          ]
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20971520
+        },
+        "limitBytes": {
+          "type": "integer",
+          "minimum": 4,
+          "maximum": 262144
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "requiresBinding": true
+    }
+  },
+  {
+    "name": "xfile_file_operation",
+    "description": "创建、复制、移动、删除或覆盖资料库文件；写入需要读取时的 expectedVersion。变更后同步刷新索引；indexUpdated:false 时文件仍已修改，请只重试索引。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "opType": {
+          "type": "string",
+          "enum": [
+            "create_file",
+            "create_directory",
+            "copy",
+            "move",
+            "delete",
+            "write"
+          ]
+        },
+        "srcPath": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "绑定资料库内的相对路径，不允许上级路径或内部状态目录"
+        },
+        "dstPath": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "绑定资料库内的相对路径，不允许上级路径或内部状态目录"
+        },
+        "content": {
+          "type": "string",
+          "maxLength": 524288
+        },
+        "expectedVersion": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "recursive": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "opType"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "opType": {
+                "enum": [
+                  "create_file",
+                  "create_directory"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "dstPath"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "opType": {
+                "enum": [
+                  "copy",
+                  "move"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "srcPath",
+              "dstPath"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "opType": {
+                "enum": [
+                  "delete"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "srcPath"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "opType": {
+                "enum": [
+                  "write"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "srcPath",
+              "content",
+              "expectedVersion"
+            ]
+          }
+        }
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "requiresBinding": true
+    }
+  },
+  {
+    "name": "xfile_favorites_get",
+    "description": "读取当前资料库的完整收藏集合。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "requiresBinding": true
+    }
+  },
+  {
+    "name": "xfile_favorites_set",
+    "description": "替换完整收藏集合；先读取并合并用户要求，保留无关收藏。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "favorites": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "folder",
+                  "tag",
+                  "tag_filter"
+                ]
+              },
+              "path": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "label": {
+                "type": "string",
+                "maxLength": 1024
+              },
+              "tagPaths": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                },
+                "maxItems": 1000
+              }
+            },
+            "required": [
+              "kind",
+              "path",
+              "label"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 1000
+        }
+      },
+      "required": [
+        "favorites"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "requiresBinding": true
+    }
+  },
+  {
+    "name": "xfile_index_refresh",
+    "description": "同步运行原生扫描、索引和导出；完成后返回最终状态。省略 targetPaths 时刷新全部资料库。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "targetPaths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "description": "绑定资料库内的相对路径，不允许上级路径或内部状态目录"
+          },
+          "maxItems": 1000
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "requiresBinding": true
+    }
+  },
+  {
+    "name": "xfile_index_status",
+    "description": "读取原生索引状态、进度及最近错误。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "requiresBinding": true
+    }
+  },
+  {
+    "name": "xfile_tags_list",
+    "description": "读取标签定义、计数、关系和规则摘要。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "includeDisabled": {
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "requiresBinding": true
+    }
+  },
+  {
+    "name": "xfile_tags_get",
+    "description": "读取单个标签定义和规则。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "tagId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "tagId"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "requiresBinding": true
+    }
+  },
+  {
+    "name": "xfile_tags_create",
+    "description": "创建标签，可附带智能规则。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "parentId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "active",
+            "disabled"
+          ]
+        },
+        "smartRules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "relation": {
+                "type": "string",
+                "enum": [
+                  "and",
+                  "or",
+                  "not"
+                ]
+              },
+              "ruleType": {
+                "type": "string",
+                "minLength": 1,
+                "enum": [
+                  "file_name_contains",
+                  "file_content_contains",
+                  "file_extension_in",
+                  "document_path_in_folder",
+                  "modified_time_between"
+                ]
+              },
+              "matcher": {
+                "type": "object",
+                "properties": {
+                  "keyword": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "extensions": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "maxItems": 100
+                  },
+                  "folderPath": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "start": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "end": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "priority": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "ruleType",
+              "matcher"
+            ],
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "ruleType": {
+                      "enum": [
+                        "file_name_contains",
+                        "file_content_contains"
+                      ]
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "matcher": {
+                      "required": [
+                        "keyword"
+                      ]
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "ruleType": {
+                      "const": "file_extension_in"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "matcher": {
+                      "required": [
+                        "extensions"
+                      ]
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "ruleType": {
+                      "const": "document_path_in_folder"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "matcher": {
+                      "required": [
+                        "folderPath"
+                      ]
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "ruleType": {
+                      "const": "modified_time_between"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "matcher": {
+                      "anyOf": [
+                        {
+                          "required": [
+                            "start"
+                          ]
+                        },
+                        {
+                          "required": [
+                            "end"
+                          ]
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "maxItems": 100
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "requiresBinding": true
+    }
+  },
+  {
+    "name": "xfile_tags_update",
+    "description": "更新标签定义，必须提供 name；先通过 tags_get 读取并合并当前定义。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "parentId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "active",
+            "disabled"
+          ]
+        },
+        "smartRules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "relation": {
+                "type": "string",
+                "enum": [
+                  "and",
+                  "or",
+                  "not"
+                ]
+              },
+              "ruleType": {
+                "type": "string",
+                "minLength": 1,
+                "enum": [
+                  "file_name_contains",
+                  "file_content_contains",
+                  "file_extension_in",
+                  "document_path_in_folder",
+                  "modified_time_between"
+                ]
+              },
+              "matcher": {
+                "type": "object",
+                "properties": {
+                  "keyword": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "extensions": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "maxItems": 100
+                  },
+                  "folderPath": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "start": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "end": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "priority": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "ruleType",
+              "matcher"
+            ],
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "ruleType": {
+                      "enum": [
+                        "file_name_contains",
+                        "file_content_contains"
+                      ]
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "matcher": {
+                      "required": [
+                        "keyword"
+                      ]
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "ruleType": {
+                      "const": "file_extension_in"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "matcher": {
+                      "required": [
+                        "extensions"
+                      ]
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "ruleType": {
+                      "const": "document_path_in_folder"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "matcher": {
+                      "required": [
+                        "folderPath"
+                      ]
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "ruleType": {
+                      "const": "modified_time_between"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "matcher": {
+                      "anyOf": [
+                        {
+                          "required": [
+                            "start"
+                          ]
+                        },
+                        {
+                          "required": [
+                            "end"
+                          ]
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "maxItems": 100
+        },
+        "tagId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "tagId",
+        "name"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "requiresBinding": true
+    }
+  },
+  {
+    "name": "xfile_tags_delete",
+    "description": "删除标签定义、子标签及相应手工关系。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "tagId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "tagId"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "requiresBinding": true
+    }
+  },
+  {
+    "name": "xfile_tags_ensure",
+    "description": "幂等确保层级标签路径存在，返回最终标签定义。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "requiresBinding": true
+    }
+  },
+  {
+    "name": "xfile_document_tags_get",
+    "description": "读取文档手工标签、派生关系和推荐标签。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "documentId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "documentId"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "requiresBinding": true
+    }
+  },
+  {
+    "name": "xfile_document_tags_set",
+    "description": "替换文档完整手工标签集合并同步重算；先读后合并，createTagPaths 可同时创建标签。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "documentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tagIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "maxItems": 1000
+        },
+        "createTagPaths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "maxItems": 1000
+        }
+      },
+      "required": [
+        "documentId",
+        "tagIds"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "requiresBinding": true
+    }
+  },
+  {
+    "name": "xfile_folder_tags_get",
+    "description": "读取目录手工标签与继承关系。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "folderPath": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "绑定资料库内的相对路径，不允许上级路径或内部状态目录"
+        }
+      },
+      "required": [
+        "folderPath"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "requiresBinding": true
+    }
+  },
+  {
+    "name": "xfile_folder_tags_set",
+    "description": "替换目录完整手工标签集合并同步重算；先读后合并。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "folderPath": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "绑定资料库内的相对路径，不允许上级路径或内部状态目录"
+        },
+        "tagIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "maxItems": 1000
+        },
+        "createTagPaths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "maxItems": 1000
+        }
+      },
+      "required": [
+        "folderPath",
+        "tagIds"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "requiresBinding": true
+    }
+  },
+  {
+    "name": "xfile_tags_recompute",
+    "description": "同步执行完整标签重算和导出，返回最终任务状态。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "requiresBinding": true
+    }
+  },
+  {
+    "name": "xfile_tags_recompute_status",
+    "description": "读取标签重算任务状态。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "requiresBinding": true
+    }
+  },
+  {
+    "name": "xfile_onlyoffice_settings_get",
+    "description": "读取 ONLYOFFICE 设置；不返回 JWT 密钥原文。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "requiresBinding": false
+    }
+  },
+  {
+    "name": "xfile_onlyoffice_settings_set",
+    "description": "更新 ONLYOFFICE 服务设置，不启动开发服务。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "serverUrl": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096
+        },
+        "publicBaseUrl": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096
+        },
+        "callbackBaseUrl": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096
+        },
+        "userDisplayName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "userAvatarUrl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "jwtSecret": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 16384
+        },
+        "clearJwtSecret": {
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "requiresBinding": false
+    }
+  },
+  {
+    "name": "xfile_onlyoffice_status",
+    "description": "读取 ONLYOFFICE 配置与连接状态，可能按配置探测文档服务。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "_meta": {
+      "requiresBinding": false
+    }
+  },
+  {
+    "name": "xfile_host_directories",
+    "description": "浏览本机目录，以便用户显式选择资料库；path 为宿主目录路径，受当前用户文件权限约束。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "requiresBinding": false
+    }
+  }
+]
