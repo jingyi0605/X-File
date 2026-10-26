@@ -507,20 +507,19 @@ fn scan_documents(
     mut progress_reporter: impl FnMut(IndexProgress) -> Result<(), String>,
 ) -> Result<ScanDocumentsResult, String> {
     let root = PathBuf::from(root_dir);
-    let mut queue = VecDeque::from(resolve_scan_bases(&root, target_scope));
-    let mut queued = queue
-        .iter()
-        .map(|path| directory_queue_key(&root, path))
-        .collect::<HashSet<_>>();
-    let mut visited = HashSet::new();
+    let files = discover_scannable_files(root_dir, &root, options, target_scope)?;
+    let mut progress = ScanProgressStats {
+        total_count: Some(files.len()),
+        ..ScanProgressStats::default()
+    };
+    progress_reporter(build_running_index_progress(&progress))?;
+
     let mut documents = Vec::new();
     let mut skipped_documents = Vec::new();
     let mut parser_skips = BTreeMap::new();
     let mut seen_paths = HashSet::new();
-    let mut progress = ScanProgressStats::default();
     let mut last_progress = chrono::Utc::now().timestamp_millis();
     let mut last_snapshot = last_progress;
-    let mut last_hint = 0;
     let journal_path = indexed_document_journal_path(root_dir);
     fs::create_dir_all(journal_path.parent().unwrap()).map_err(|error| error.to_string())?;
     let mut journal = BufWriter::new(
@@ -531,85 +530,42 @@ fn scan_documents(
             .map_err(|error| error.to_string())?,
     );
 
-    while let Some(current) = queue.pop_front() {
-        queued.remove(&directory_queue_key(&root, &current));
-        maybe_apply_priority_hints(
-            root_dir,
-            &root,
-            options,
-            target_scope,
-            &mut queue,
-            &mut queued,
-            &visited,
-            &mut last_hint,
-        )?;
-        let metadata = match fs::symlink_metadata(&current) {
-            Ok(value) => value,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(format!("读取文件属性失败 {}: {error}", current.display())),
-        };
-        let mut files = Vec::new();
-        if metadata.is_dir() {
-            visited.insert(directory_queue_key(&root, &current));
-            for entry in fs::read_dir(&current).map_err(|error| error.to_string())? {
-                let entry = entry.map_err(|error| error.to_string())?;
-                let entry_path = entry.path();
-                let kind = entry.file_type().map_err(|error| error.to_string())?;
-                let relative = directory_queue_key(&root, &entry_path);
-                if kind.is_dir() {
-                    if !should_skip_directory(
-                        &entry.file_name().to_string_lossy(),
-                        &relative,
-                        options,
-                    ) && !visited.contains(&relative)
-                        && queued.insert(relative)
-                    {
-                        queue.push_back(entry_path);
-                    }
-                } else if kind.is_file() && is_supported_file(&entry_path, options) {
-                    files.push(entry_path);
+    for file_path in files {
+        let metadata = fs::metadata(&file_path).map_err(|error| error.to_string())?;
+        match scan_file(&root, &file_path, &metadata, options) {
+            ScanFileOutcome::Indexed(file) => {
+                seen_paths.insert(file.relative_path.clone());
+                progress.scanned_count += 1;
+                let document = index_document(file, previous_state);
+                if document.reused_previous {
+                    progress.unchanged_count += 1;
+                } else {
+                    progress.indexed_count += 1;
+                    write_document_journal_entry(&mut journal, &document)?;
                 }
+                documents.push(document);
             }
-        } else if metadata.is_file() {
-            files.push(current);
+            ScanFileOutcome::Skipped(skip) => {
+                seen_paths.insert(skip.path.clone());
+                progress.scanned_count += 1;
+                progress.skipped_count += 1;
+                register_runtime_skip(&mut skipped_documents, &mut parser_skips, skip);
+            }
+            ScanFileOutcome::Ignored => continue,
         }
-        for file_path in files {
-            let metadata = fs::metadata(&file_path).map_err(|error| error.to_string())?;
-            match scan_file(&root, &file_path, &metadata, options) {
-                ScanFileOutcome::Indexed(file) => {
-                    seen_paths.insert(file.relative_path.clone());
-                    progress.scanned_count += 1;
-                    let document = index_document(file, previous_state);
-                    if document.reused_previous {
-                        progress.unchanged_count += 1;
-                    } else {
-                        progress.indexed_count += 1;
-                        write_document_journal_entry(&mut journal, &document)?;
-                    }
-                    documents.push(document);
-                }
-                ScanFileOutcome::Skipped(skip) => {
-                    seen_paths.insert(skip.path.clone());
-                    progress.scanned_count += 1;
-                    progress.skipped_count += 1;
-                    register_runtime_skip(&mut skipped_documents, &mut parser_skips, skip);
-                }
-                ScanFileOutcome::Ignored => continue,
-            }
-            let now = chrono::Utc::now().timestamp_millis();
-            if now - last_progress >= INDEX_PROGRESS_FLUSH_INTERVAL_MS {
-                journal.flush().map_err(|error| error.to_string())?;
-                progress_reporter(build_running_index_progress(&progress))?;
-                last_progress = now;
-            }
-            if now - last_snapshot >= INDEX_PARTIAL_SNAPSHOT_FLUSH_INTERVAL_MS {
-                write_partial_export_snapshot(root_dir, &documents, previous_state)?;
-                last_snapshot = now;
-            }
+        let now = chrono::Utc::now().timestamp_millis();
+        if now - last_progress >= INDEX_PROGRESS_FLUSH_INTERVAL_MS {
+            journal.flush().map_err(|error| error.to_string())?;
+            progress_reporter(build_running_index_progress(&progress))?;
+            last_progress = now;
+        }
+        if now - last_snapshot >= INDEX_PARTIAL_SNAPSHOT_FLUSH_INTERVAL_MS {
+            write_partial_export_snapshot(root_dir, &documents, previous_state)?;
+            last_snapshot = now;
         }
     }
     journal.flush().map_err(|error| error.to_string())?;
-    progress.total_count = Some(progress.scanned_count);
+    progress.total_count = Some(progress.total_count.unwrap_or(0).max(progress.scanned_count));
     progress_reporter(build_running_index_progress(&progress))?;
     documents.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
     let deleted_paths = previous_state
@@ -637,6 +593,82 @@ fn scan_documents(
         skipped_count: progress.skipped_count,
         deleted_paths,
     })
+}
+
+fn discover_scannable_files(
+    root_dir: &str,
+    root: &Path,
+    options: &NativeIndexOptions,
+    target_scope: &TargetScope,
+) -> Result<Vec<PathBuf>, String> {
+    let mut queue = VecDeque::from(resolve_scan_bases(root, target_scope));
+    let mut queued = queue
+        .iter()
+        .map(|path| directory_queue_key(root, path))
+        .collect::<HashSet<_>>();
+    let mut visited = HashSet::new();
+    let mut discovered_files = Vec::new();
+    let mut last_hint = 0;
+
+    while let Some(current) = queue.pop_front() {
+        let current_key = directory_queue_key(root, &current);
+        queued.remove(&current_key);
+        if !visited.insert(current_key) {
+            continue;
+        }
+        maybe_apply_priority_hints(
+            root_dir,
+            root,
+            options,
+            target_scope,
+            &mut queue,
+            &mut queued,
+            &visited,
+            &mut last_hint,
+        )?;
+
+        let metadata = match fs::symlink_metadata(&current) {
+            Ok(value) => value,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(format!("读取文件属性失败 {}: {error}", current.display())),
+        };
+        let mut candidates = Vec::new();
+        if metadata.is_dir() {
+            for entry in fs::read_dir(&current).map_err(|error| error.to_string())? {
+                let entry = entry.map_err(|error| error.to_string())?;
+                let entry_path = entry.path();
+                let kind = entry.file_type().map_err(|error| error.to_string())?;
+                let relative = directory_queue_key(root, &entry_path);
+                if kind.is_dir() {
+                    if !should_skip_directory(
+                        &entry.file_name().to_string_lossy(),
+                        &relative,
+                        options,
+                    ) && !visited.contains(&relative)
+                        && queued.insert(relative)
+                    {
+                        queue.push_back(entry_path);
+                    }
+                } else if kind.is_file() && is_supported_file(&entry_path, options) {
+                    candidates.push(entry_path);
+                }
+            }
+        } else if metadata.is_file() {
+            candidates.push(current);
+        }
+
+        for file_path in candidates {
+            let metadata = fs::metadata(&file_path).map_err(|error| error.to_string())?;
+            if !matches!(
+                scan_file(root, &file_path, &metadata, options),
+                ScanFileOutcome::Ignored
+            ) {
+                discovered_files.push(file_path);
+            }
+        }
+    }
+
+    Ok(discovered_files)
 }
 
 fn is_supported_file(path: &Path, options: &NativeIndexOptions) -> bool {
@@ -2866,6 +2898,49 @@ mod tests {
             .get("progressUpdatedAt")
             .and_then(Value::as_str)
             .is_some());
+    }
+
+    #[test]
+    fn discovery_publishes_total_before_any_file_is_indexed() {
+        let root_dir = make_temp_dir("x-file-native-index-discovery-total");
+        fs::create_dir_all(root_dir.join("nested")).unwrap();
+        fs::create_dir_all(root_dir.join(".hidden")).unwrap();
+        fs::create_dir_all(root_dir.join(".ai-index")).unwrap();
+        fs::write(root_dir.join("a.md"), "# A").unwrap();
+        fs::write(root_dir.join("nested/b.md"), "# B").unwrap();
+        fs::write(root_dir.join("c.doc"), "legacy office binary placeholder").unwrap();
+        fs::write(root_dir.join(".hidden/hidden.md"), "# hidden").unwrap();
+        fs::write(root_dir.join(".ai-index/leak.md"), "# leak").unwrap();
+
+        let request = NativeIndexRequest {
+            root_dir: root_dir.to_string_lossy().to_string(),
+            allowed_extensions: vec![".md".to_string(), ".doc".to_string()],
+            included_hidden_paths: vec![],
+            hide_dot_files: true,
+            hide_system_folders: true,
+            reason: "native_test".to_string(),
+            target_path: None,
+            target_paths: Vec::new(),
+        };
+        let options = super::NativeIndexOptions::from_request(&request);
+        let mut updates = Vec::new();
+        let result = super::scan_documents(
+            &request.root_dir,
+            &options,
+            &TargetScope::All,
+            None,
+            |progress| {
+                updates.push(progress);
+                Ok(())
+            },
+        )
+        .unwrap();
+        fs::remove_dir_all(&root_dir).unwrap();
+
+        assert_eq!(updates[0].scanned_count, 0);
+        assert_eq!(updates[0].total_count, Some(3));
+        assert_eq!(result.total_scanned, 3);
+        assert_eq!(result.skipped_count, 1);
     }
 
     #[test]
