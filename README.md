@@ -1,12 +1,13 @@
 # X-File
 
-X-File 是从 CodingNS 拆出的文档库独立应用。当前仓库已经建立第一版骨架：Tauri 2 桌面壳、React 前端、Fastify 后端、HTTP 服务启停 API、系统托盘菜单、窗口常驻策略、桌面壳托管后端入口和 CodingNS 集成入口。
+X-File 是从 CodingNS 拆出的文档库独立应用，使用 Tauri 2、React 和 Rust 原生文档引擎。文档扫描、索引和静态导出统一由 Rust 执行；Fastify 保留 HTTP 业务接口，通过原生 CLI 发起索引任务。
 
 ## 目录
 
 - `apps/web`：React + TypeScript 前端，负责显示应用入口和后端连接状态。
 - `apps/server`：Fastify + TypeScript 后端，提供健康检查、文档库 API、HTTP 服务状态和集成入口。
 - `apps/desktop`：Tauri 2 桌面壳骨架，包含窗口配置、Rust 入口、系统托盘菜单、常驻策略和后端子进程托管入口。
+- `packages/indexer`：原生 CLI 客户端、只读快照类型和文件可见性规则，不包含 TypeScript 扫描器、解析器或 SQLite 存储。
 - `docs`：验收说明和 CodingNS 接入说明。
 - `scripts`：前后端调试脚本，以及桌面客户端统一验证、统一打包脚本。
 
@@ -23,6 +24,31 @@ pnpm verify:desktop
 pnpm package:desktop:macos
 pnpm package:desktop:windows
 ```
+
+## 文档索引
+
+- 扫描在一次目录遍历中完成文件发现、属性比对和数量统计，不再预扫描目录。
+- 目录发现使用队列；文件扩展名在读取文件属性前过滤。索引一次保存路径、属性、标签和摘要，不再启动后台摘要回填。
+- 同一根目录的桌面任务在后台线程中串行执行，复用带文件版本校验的目录与索引状态缓存；运行中的新变更保留到下一轮。跨目录变更保留独立路径集合，不再扩大为公共根目录。独立 CLI 与标签重算通过系统文件锁串行写入同一根目录。
+- 文件监听回调先快速收集路径，每 150ms 合并提交一次；文件系统要求重扫时按通知范围重新遍历。任务完成后通过原生事件同步空闲页面的列表和标签计数。
+- 索引恢复日志使用缓冲追加；进度每 500ms 合并写入，部分快照按 5 秒间隔保存。文件属性未变化时复用旧索引；无变化刷新不改写 catalog、活动文件快照、索引状态快照和导出文件。
+- 导出按 `dirtyScope` 更新受影响的文档详情、目录元数据、标签根和文档关系。目录元数据使用稳定的目录分片标识，首次读取旧布局时重建为新布局。
+- 搜索索引保存文档到搜索桶的映射和词项指纹，只对变化文档分词，并更新其新旧搜索桶；词项未变化时复用搜索产物。每个词项前缀按文档标识分成 16 片，桶名如 `han-03`，读取器按 manifest 中的路径读取。桶内仍为 `search-bucket-v2`；manifest 保持 `search-v2` 并记录 `partition_count: 16`。旧前缀桶在下次有变化时迁移，读取器兼容新旧布局。删除文档同时清理旧倒排记录。
+- 桌面读取视图按快照文件版本缓存，并缓存目录到文档位置的映射；分页后才读取当前页文件的大小和创建时间。
+
+手动刷新和文件监听使用 `full` 流程。原生 CLI 支持 `full`、`index-only`、`export-only` 和 `tags-only`，请求 JSON 可以通过 stdin 传入；`targetPath` 使用文档库内的相对路径，`targetPaths` 可传入多个文件或目录，重叠范围只遍历一次。旧 TypeScript worker、执行器注册层、SQLite 回退、独立全文解析和重复的搜索构建入口已经删除。
+
+验证与性能测量不需要启动开发服务器：
+
+```bash
+cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib
+pnpm --filter @x-file/shared build
+pnpm --filter @x-file/indexer build
+pnpm benchmark:index -- --files 10000 --dirs 100
+```
+
+性能脚本创建临时资料库，分别测量首次索引、无变化刷新，以及摘要词项不变和改变两种单文件更新，并报告实际改写的导出文件数量，结束后清理测试数据。`X_FILE_DESKTOP_CLI_PATH` 可以指定待测 CLI；默认寻找本地桌面构建产物。
 
 调试脚本只保留前后端独立入口：
 
@@ -166,5 +192,5 @@ Windows self-hosted 实机构建入口（手动，保留用于实机调试）：
 - 已建立 dev/stable 双更新通道（GitHub Releases + Tauri updater）和 tag 触发的跨平台发布 CI；macOS 签名公证复用 Apple Developer ID 证书，Windows 不做 authenticode 签名（首次运行有 SmartScreen 警告）。
 - 不主动启动长期 dev server。
 - 已实现基础系统托盘菜单；不实现开机自启和 deep link 注册。
-- 桌面壳能托管后端子进程并优先寻找打包资源里的 `x-file-library-engine/dist/main.js`；`x-file-server/*` 仅保留历史兼容路径。发布包仍需要携带 Node runtime 或改为真正 sidecar，不能假设用户机器一定有 Node。
+- 文档库索引不依赖 Node 或 SQLite。独立 Web/HTTP 与会话同步等功能的 Node 依赖由各自模块维护，不能假设用户机器一定有 Node。
 - 不引入 CodingNS 的工作区、事务模式、Teable、Butler 或代码工作台能力。

@@ -1,0 +1,1380 @@
+{
+  "date": "2026-10-26",
+  "environment": {
+    "chip": "Apple M4",
+    "memoryGiB": 16,
+    "logicalCpus": 10,
+    "os": "macOS 26.5",
+    "build": "Rust debug + Vite development frontend",
+    "files": 10000,
+    "directories": 100,
+    "initialDocumentBytes": 13598890
+  },
+  "measurementNotes": [
+    "桌面任务计时覆盖后台线程中的真实索引与导出，不含监听合并窗口、界面渲染和自动化工具开销。",
+    "基线桌面计时来自独立原生子进程，本轮改为后台线程；CLI 数据单独记录，仍包含独立进程启动。",
+    "文件缓存、温度及其他进程负载未受控，基线没有在本轮重新运行。",
+    "持续写入基线包含一个额外验证文档，共 10,001 个；本轮删除该文档后为 10,000 个。",
+    "单文件发生变化时仍会序列化完整目录和活动文件快照，尚未达到所有持久化操作均为 O(变化量)。"
+  ],
+  "desktop": [
+    {
+      "name": "desktop-initial",
+      "changeAtMs": null,
+      "tasks": [
+        {
+          "completedAtMs": 1793009449520,
+          "durationMs": 9316.399875000001,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 10000,
+            "scannedCount": 10000,
+            "timingsMs": {
+              "total": 3078.979084
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "manual_refresh",
+          "startedAtMs": 1793009440204,
+          "targetPath": null,
+          "targetPathCount": 0,
+          "filesWrittenCount": 10366
+        }
+      ],
+      "rewrittenExports": 10366,
+      "removedExports": 0,
+      "changedRuntimeFiles": [],
+      "snapshotAuditCaptured": false
+    },
+    {
+      "name": "same-terms",
+      "changeAtMs": 1793009449712,
+      "tasks": [
+        {
+          "completedAtMs": 1793009450463,
+          "durationMs": 591.856042,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 1,
+            "scannedCount": 1,
+            "timingsMs": {
+              "total": 357.664833
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793009449871,
+          "targetPath": null,
+          "targetPathCount": 1,
+          "filesWrittenCount": 4
+        }
+      ],
+      "rewrittenExports": 4,
+      "removedExports": 0,
+      "changedRuntimeFiles": [
+        {
+          "path": "runtime-status.json",
+          "bytes": 541
+        },
+        {
+          "path": "runtime/index-state.json",
+          "bytes": 123
+        },
+        {
+          "path": "runtime/export-catalog-snapshot.json",
+          "bytes": 7213110
+        },
+        {
+          "path": "runtime/active-file-state-snapshot.json",
+          "bytes": 1400040
+        }
+      ]
+    },
+    {
+      "name": "new-terms",
+      "changeAtMs": 1793009452830,
+      "tasks": [
+        {
+          "completedAtMs": 1793009453632,
+          "durationMs": 640.14675,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 1,
+            "scannedCount": 1,
+            "timingsMs": {
+              "total": 315.204333
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793009452992,
+          "targetPath": null,
+          "targetPathCount": 1,
+          "filesWrittenCount": 18
+        }
+      ],
+      "rewrittenExports": 18,
+      "removedExports": 0,
+      "changedRuntimeFiles": [
+        {
+          "path": "runtime-status.json",
+          "bytes": 541
+        },
+        {
+          "path": "runtime/index-state.json",
+          "bytes": 123
+        },
+        {
+          "path": "runtime/export-catalog-snapshot.json",
+          "bytes": 7212730
+        },
+        {
+          "path": "runtime/active-file-state-snapshot.json",
+          "bytes": 1400038
+        }
+      ]
+    },
+    {
+      "name": "burst100",
+      "changeAtMs": 1793009455994,
+      "tasks": [
+        {
+          "completedAtMs": 1793009459071,
+          "durationMs": 2918.235,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 100,
+            "scannedCount": 100,
+            "timingsMs": {
+              "total": 331.167292
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793009456153,
+          "targetPath": null,
+          "targetPathCount": 100,
+          "filesWrittenCount": 440
+        }
+      ],
+      "rewrittenExports": 440,
+      "removedExports": 2,
+      "changedRuntimeFiles": [
+        {
+          "path": "runtime-status.json",
+          "bytes": 549
+        },
+        {
+          "path": "runtime/index-state.json",
+          "bytes": 123
+        },
+        {
+          "path": "runtime/export-catalog-snapshot.json",
+          "bytes": 7174790
+        },
+        {
+          "path": "runtime/active-file-state-snapshot.json",
+          "bytes": 1399840
+        }
+      ]
+    },
+    {
+      "name": "burst1000",
+      "changeAtMs": 1793009461556,
+      "tasks": [
+        {
+          "completedAtMs": 1793009465015,
+          "durationMs": 3302.568875,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 1000,
+            "scannedCount": 1000,
+            "timingsMs": {
+              "total": 476.94629100000003
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793009461713,
+          "targetPath": null,
+          "targetPathCount": 1000,
+          "filesWrittenCount": 1407
+        },
+        {
+          "completedAtMs": 1793009465752,
+          "durationMs": 730.3017090000001,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 1,
+            "scannedCount": 1,
+            "timingsMs": {
+              "total": 342.994
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793009465021,
+          "targetPath": null,
+          "targetPathCount": 1,
+          "filesWrittenCount": 19
+        }
+      ],
+      "rewrittenExports": 1410,
+      "removedExports": 0,
+      "changedRuntimeFiles": [
+        {
+          "path": "runtime-status.json",
+          "bytes": 541
+        },
+        {
+          "path": "runtime/index-state.json",
+          "bytes": 123
+        },
+        {
+          "path": "runtime/export-catalog-snapshot.json",
+          "bytes": 6806190
+        },
+        {
+          "path": "runtime/active-file-state-snapshot.json",
+          "bytes": 1397837
+        }
+      ]
+    },
+    {
+      "name": "sentinel",
+      "changeAtMs": 1793009511315,
+      "tasks": [
+        {
+          "completedAtMs": 1793009512845,
+          "durationMs": 1098.329375,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 1,
+            "scannedCount": 1,
+            "timingsMs": {
+              "total": 321.166292
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793009511746,
+          "targetPath": null,
+          "targetPathCount": 1,
+          "filesWrittenCount": 27
+        }
+      ],
+      "rewrittenExports": 27,
+      "removedExports": 0,
+      "changedRuntimeFiles": [
+        {
+          "path": "runtime-status.json",
+          "bytes": 541
+        },
+        {
+          "path": "runtime/index-state.json",
+          "bytes": 123
+        },
+        {
+          "path": "runtime/export-catalog-snapshot.json",
+          "bytes": 6806545
+        },
+        {
+          "path": "runtime/active-file-state-snapshot.json",
+          "bytes": 1397977
+        }
+      ]
+    },
+    {
+      "name": "delete-sentinel",
+      "changeAtMs": 1793009527719,
+      "tasks": [
+        {
+          "completedAtMs": 1793009529242,
+          "durationMs": 1082.8015,
+          "index": {
+            "deletedCount": 1,
+            "indexedCount": 0,
+            "scannedCount": 0,
+            "timingsMs": {
+              "total": 315.672708
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793009528159,
+          "targetPath": null,
+          "targetPathCount": 1,
+          "filesWrittenCount": 20
+        }
+      ],
+      "rewrittenExports": 20,
+      "removedExports": 7,
+      "changedRuntimeFiles": [
+        {
+          "path": "runtime-status.json",
+          "bytes": 541
+        },
+        {
+          "path": "runtime/index-state.json",
+          "bytes": 123
+        },
+        {
+          "path": "runtime/export-catalog-snapshot.json",
+          "bytes": 6806190
+        },
+        {
+          "path": "runtime/active-file-state-snapshot.json",
+          "bytes": 1397837
+        }
+      ]
+    },
+    {
+      "name": "unchanged-1",
+      "changeAtMs": 1793009531583,
+      "tasks": [
+        {
+          "completedAtMs": 1793009558994,
+          "durationMs": 265.88262499999996,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 0,
+            "scannedCount": 10000,
+            "timingsMs": {
+              "total": 240.164584
+            },
+            "unchangedCount": 10000
+          },
+          "mode": "full",
+          "reason": "manual_refresh",
+          "startedAtMs": 1793009558728,
+          "targetPath": null,
+          "targetPathCount": 0,
+          "filesWrittenCount": 0
+        }
+      ],
+      "rewrittenExports": 0,
+      "removedExports": 0,
+      "changedRuntimeFiles": [
+        {
+          "path": "runtime-status.json",
+          "bytes": 557
+        }
+      ]
+    },
+    {
+      "name": "unchanged-2",
+      "changeAtMs": 1793009569417,
+      "tasks": [
+        {
+          "completedAtMs": 1793009615457,
+          "durationMs": 254.264291,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 0,
+            "scannedCount": 10000,
+            "timingsMs": {
+              "total": 224.965958
+            },
+            "unchangedCount": 10000
+          },
+          "mode": "full",
+          "reason": "manual_refresh",
+          "startedAtMs": 1793009615202,
+          "targetPath": null,
+          "targetPathCount": 0,
+          "filesWrittenCount": 0
+        }
+      ],
+      "rewrittenExports": 0,
+      "removedExports": 0,
+      "changedRuntimeFiles": [
+        {
+          "path": "runtime-status.json",
+          "bytes": 557
+        }
+      ]
+    },
+    {
+      "name": "sustained-30-batches",
+      "changeAtMs": 1793009625518,
+      "tasks": [
+        {
+          "completedAtMs": 1793009628535,
+          "durationMs": 2860.922375,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 1000,
+            "scannedCount": 1000,
+            "timingsMs": {
+              "total": 403.868959
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793009625673,
+          "targetPath": null,
+          "targetPathCount": 1000,
+          "filesWrittenCount": 1279
+        },
+        {
+          "completedAtMs": 1793009631325,
+          "durationMs": 2784.162417,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 1000,
+            "scannedCount": 1000,
+            "timingsMs": {
+              "total": 412.411166
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793009628540,
+          "targetPath": null,
+          "targetPathCount": 1000,
+          "filesWrittenCount": 1247
+        },
+        {
+          "completedAtMs": 1793009633874,
+          "durationMs": 2542.541208,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 1000,
+            "scannedCount": 1000,
+            "timingsMs": {
+              "total": 451.511458
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793009631331,
+          "targetPath": null,
+          "targetPathCount": 1000,
+          "filesWrittenCount": 1247
+        },
+        {
+          "completedAtMs": 1793009636287,
+          "durationMs": 2406.872542,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 1000,
+            "scannedCount": 1000,
+            "timingsMs": {
+              "total": 428.69708299999996
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793009633879,
+          "targetPath": null,
+          "targetPathCount": 1000,
+          "filesWrittenCount": 1247
+        },
+        {
+          "completedAtMs": 1793009638772,
+          "durationMs": 2478.80225,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 1000,
+            "scannedCount": 1000,
+            "timingsMs": {
+              "total": 416.67758399999997
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793009636293,
+          "targetPath": null,
+          "targetPathCount": 1000,
+          "filesWrittenCount": 1247
+        },
+        {
+          "completedAtMs": 1793009641443,
+          "durationMs": 2664.756958,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 1000,
+            "scannedCount": 1000,
+            "timingsMs": {
+              "total": 440.017875
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793009638778,
+          "targetPath": null,
+          "targetPathCount": 1000,
+          "filesWrittenCount": 1247
+        },
+        {
+          "completedAtMs": 1793009643848,
+          "durationMs": 2399.080167,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 1000,
+            "scannedCount": 1000,
+            "timingsMs": {
+              "total": 404.762958
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793009641449,
+          "targetPath": null,
+          "targetPathCount": 1000,
+          "filesWrittenCount": 1247
+        },
+        {
+          "completedAtMs": 1793009646491,
+          "durationMs": 2638.1258340000004,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 1000,
+            "scannedCount": 1000,
+            "timingsMs": {
+              "total": 442.204791
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793009643853,
+          "targetPath": null,
+          "targetPathCount": 1000,
+          "filesWrittenCount": 1247
+        },
+        {
+          "completedAtMs": 1793009649117,
+          "durationMs": 2618.7416670000002,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 1000,
+            "scannedCount": 1000,
+            "timingsMs": {
+              "total": 439.792791
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793009646498,
+          "targetPath": null,
+          "targetPathCount": 1000,
+          "filesWrittenCount": 1247
+        },
+        {
+          "completedAtMs": 1793009651547,
+          "durationMs": 2425.507125,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 1000,
+            "scannedCount": 1000,
+            "timingsMs": {
+              "total": 406.31829200000004
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793009649122,
+          "targetPath": null,
+          "targetPathCount": 1000,
+          "filesWrittenCount": 1247
+        },
+        {
+          "completedAtMs": 1793009654061,
+          "durationMs": 2507.8740000000003,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 1000,
+            "scannedCount": 1000,
+            "timingsMs": {
+              "total": 429.222958
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793009651553,
+          "targetPath": null,
+          "targetPathCount": 1000,
+          "filesWrittenCount": 1247
+        },
+        {
+          "completedAtMs": 1793009656473,
+          "durationMs": 2407.327875,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 1000,
+            "scannedCount": 1000,
+            "timingsMs": {
+              "total": 391.368875
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793009654066,
+          "targetPath": null,
+          "targetPathCount": 1000,
+          "filesWrittenCount": 1247
+        },
+        {
+          "completedAtMs": 1793009659051,
+          "durationMs": 2571.942708,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 1000,
+            "scannedCount": 1000,
+            "timingsMs": {
+              "total": 445.840417
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793009656479,
+          "targetPath": null,
+          "targetPathCount": 1000,
+          "filesWrittenCount": 1247
+        },
+        {
+          "completedAtMs": 1793009661491,
+          "durationMs": 2434.502875,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 1000,
+            "scannedCount": 1000,
+            "timingsMs": {
+              "total": 386.303334
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793009659056,
+          "targetPath": null,
+          "targetPathCount": 1000,
+          "filesWrittenCount": 1247
+        },
+        {
+          "completedAtMs": 1793009664161,
+          "durationMs": 2661.253834,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 1000,
+            "scannedCount": 1000,
+            "timingsMs": {
+              "total": 423.86625
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793009661500,
+          "targetPath": null,
+          "targetPathCount": 1000,
+          "filesWrittenCount": 1247
+        },
+        {
+          "completedAtMs": 1793009666633,
+          "durationMs": 2466.655166,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 1000,
+            "scannedCount": 1000,
+            "timingsMs": {
+              "total": 390.317667
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793009664166,
+          "targetPath": null,
+          "targetPathCount": 1000,
+          "filesWrittenCount": 1247
+        },
+        {
+          "completedAtMs": 1793009669026,
+          "durationMs": 2386.671,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 1000,
+            "scannedCount": 1000,
+            "timingsMs": {
+              "total": 427.11454100000003
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793009666639,
+          "targetPath": null,
+          "targetPathCount": 1000,
+          "filesWrittenCount": 1247
+        },
+        {
+          "completedAtMs": 1793009671544,
+          "durationMs": 2513.2795410000003,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 1000,
+            "scannedCount": 1000,
+            "timingsMs": {
+              "total": 415.858458
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793009669031,
+          "targetPath": null,
+          "targetPathCount": 1000,
+          "filesWrittenCount": 1247
+        },
+        {
+          "completedAtMs": 1793009674232,
+          "durationMs": 2683.01625,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 1000,
+            "scannedCount": 1000,
+            "timingsMs": {
+              "total": 435.925208
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793009671550,
+          "targetPath": null,
+          "targetPathCount": 1000,
+          "filesWrittenCount": 1247
+        },
+        {
+          "completedAtMs": 1793009676850,
+          "durationMs": 2611.49975,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 1000,
+            "scannedCount": 1000,
+            "timingsMs": {
+              "total": 434.29137499999996
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793009674238,
+          "targetPath": null,
+          "targetPathCount": 1000,
+          "filesWrittenCount": 1247
+        },
+        {
+          "completedAtMs": 1793009679432,
+          "durationMs": 2576.2672909999997,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 1000,
+            "scannedCount": 1000,
+            "timingsMs": {
+              "total": 441.63625
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793009676855,
+          "targetPath": null,
+          "targetPathCount": 1000,
+          "filesWrittenCount": 1247
+        },
+        {
+          "completedAtMs": 1793009681832,
+          "durationMs": 2395.011416,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 1000,
+            "scannedCount": 1000,
+            "timingsMs": {
+              "total": 449.168291
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793009679437,
+          "targetPath": null,
+          "targetPathCount": 1000,
+          "filesWrittenCount": 1247
+        },
+        {
+          "completedAtMs": 1793009684383,
+          "durationMs": 2545.825958,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 1000,
+            "scannedCount": 1000,
+            "timingsMs": {
+              "total": 446.962167
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793009681838,
+          "targetPath": null,
+          "targetPathCount": 1000,
+          "filesWrittenCount": 1247
+        },
+        {
+          "completedAtMs": 1793009686746,
+          "durationMs": 2357.7272080000002,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 1000,
+            "scannedCount": 1000,
+            "timingsMs": {
+              "total": 391.59816600000005
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793009684388,
+          "targetPath": null,
+          "targetPathCount": 1000,
+          "filesWrittenCount": 1247
+        }
+      ],
+      "rewrittenExports": 1279,
+      "removedExports": 0,
+      "changedRuntimeFiles": [
+        {
+          "path": "runtime-status.json",
+          "bytes": 553
+        },
+        {
+          "path": "runtime/index-state.json",
+          "bytes": 123
+        },
+        {
+          "path": "runtime/export-catalog-snapshot.json",
+          "bytes": 6439181
+        },
+        {
+          "path": "runtime/active-file-state-snapshot.json",
+          "bytes": 1395828
+        }
+      ]
+    },
+    {
+      "name": "sentinel",
+      "changeAtMs": 1793010345261,
+      "tasks": [
+        {
+          "completedAtMs": 1793010346651,
+          "durationMs": 1152.669916,
+          "index": {
+            "deletedCount": 0,
+            "indexedCount": 1,
+            "scannedCount": 1,
+            "timingsMs": {
+              "total": 403.948958
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793010345498,
+          "targetPath": null,
+          "targetPathCount": 1,
+          "filesWrittenCount": 27
+        }
+      ],
+      "rewrittenExports": 27,
+      "removedExports": 0,
+      "changedRuntimeFiles": [
+        {
+          "path": "runtime-status.json",
+          "bytes": 541
+        },
+        {
+          "path": "runtime/index-state.json",
+          "bytes": 123
+        },
+        {
+          "path": "runtime/export-catalog-snapshot.json",
+          "bytes": 6439536
+        },
+        {
+          "path": "runtime/active-file-state-snapshot.json",
+          "bytes": 1395968
+        }
+      ],
+      "phase": "final-build-after-restart"
+    },
+    {
+      "name": "delete-sentinel",
+      "changeAtMs": 1793010430420,
+      "tasks": [
+        {
+          "completedAtMs": 1793010431669,
+          "durationMs": 1058.000375,
+          "index": {
+            "deletedCount": 1,
+            "indexedCount": 0,
+            "scannedCount": 0,
+            "timingsMs": {
+              "total": 330.431958
+            },
+            "unchangedCount": 0
+          },
+          "mode": "full",
+          "reason": "native_watcher_change",
+          "startedAtMs": 1793010430611,
+          "targetPath": null,
+          "targetPathCount": 1,
+          "filesWrittenCount": 21
+        }
+      ],
+      "rewrittenExports": 21,
+      "removedExports": 6,
+      "changedRuntimeFiles": [
+        {
+          "path": "runtime-status.json",
+          "bytes": 541
+        },
+        {
+          "path": "runtime/index-state.json",
+          "bytes": 123
+        },
+        {
+          "path": "runtime/export-catalog-snapshot.json",
+          "bytes": 6439181
+        },
+        {
+          "path": "runtime/active-file-state-snapshot.json",
+          "bytes": 1395828
+        }
+      ],
+      "phase": "final-build-after-restart"
+    }
+  ],
+  "cli": {
+    "fileCount": 10000,
+    "directoryCount": 100,
+    "results": [
+      {
+        "name": "首次完整索引",
+        "durationMs": 7690,
+        "scanned": 10000,
+        "indexed": 10000,
+        "unchanged": 0,
+        "rewrittenExports": 10366,
+        "removedExports": 0,
+        "rewrittenSnapshots": [
+          "export-catalog-snapshot.json",
+          "active-file-state-snapshot.json",
+          "index-state.json"
+        ]
+      },
+      {
+        "name": "无变化刷新 #1",
+        "durationMs": 478,
+        "scanned": 10000,
+        "indexed": 0,
+        "unchanged": 10000,
+        "rewrittenExports": 0,
+        "removedExports": 0,
+        "rewrittenSnapshots": []
+      },
+      {
+        "name": "无变化刷新 #2",
+        "durationMs": 270,
+        "scanned": 10000,
+        "indexed": 0,
+        "unchanged": 10000,
+        "rewrittenExports": 0,
+        "removedExports": 0,
+        "rewrittenSnapshots": []
+      },
+      {
+        "name": "无变化刷新 #3",
+        "durationMs": 271,
+        "scanned": 10000,
+        "indexed": 0,
+        "unchanged": 10000,
+        "rewrittenExports": 0,
+        "removedExports": 0,
+        "rewrittenSnapshots": []
+      },
+      {
+        "name": "单文件更新，摘要词项不变",
+        "durationMs": 586,
+        "scanned": 1,
+        "indexed": 1,
+        "unchanged": 0,
+        "rewrittenExports": 4,
+        "removedExports": 0,
+        "rewrittenSnapshots": [
+          "export-catalog-snapshot.json",
+          "active-file-state-snapshot.json",
+          "index-state.json"
+        ]
+      },
+      {
+        "name": "单文件更新，摘要词项改变",
+        "durationMs": 717,
+        "scanned": 1,
+        "indexed": 1,
+        "unchanged": 0,
+        "rewrittenExports": 15,
+        "removedExports": 0,
+        "rewrittenSnapshots": [
+          "export-catalog-snapshot.json",
+          "active-file-state-snapshot.json",
+          "index-state.json"
+        ]
+      }
+    ]
+  },
+  "traversal": [
+    {
+      "shape": "flat",
+      "fileCount": 10000,
+      "initialMs": 1793.293624999933,
+      "warmMedianMs": 224.28879095241427,
+      "warmMinMs": 221.5429170173593,
+      "warmMaxMs": 245.68162503419444,
+      "runs": [
+        {
+          "durationMs": 1793.293624999933,
+          "indexTimingsMs": {
+            "total": 1716.2504159999999
+          },
+          "scanned": 10000,
+          "indexed": 10000
+        },
+        {
+          "durationMs": 245.68162503419444,
+          "indexTimingsMs": {
+            "total": 234.16600000000003
+          },
+          "scanned": 10000,
+          "indexed": 0
+        },
+        {
+          "durationMs": 225.49516701838002,
+          "indexTimingsMs": {
+            "total": 214.54654100000002
+          },
+          "scanned": 10000,
+          "indexed": 0
+        },
+        {
+          "durationMs": 224.28879095241427,
+          "indexTimingsMs": {
+            "total": 213.74633300000002
+          },
+          "scanned": 10000,
+          "indexed": 0
+        },
+        {
+          "durationMs": 221.5429170173593,
+          "indexTimingsMs": {
+            "total": 210.82916600000001
+          },
+          "scanned": 10000,
+          "indexed": 0
+        },
+        {
+          "durationMs": 223.2266670325771,
+          "indexTimingsMs": {
+            "total": 213.609084
+          },
+          "scanned": 10000,
+          "indexed": 0
+        }
+      ]
+    },
+    {
+      "shape": "directories-100",
+      "fileCount": 10000,
+      "initialMs": 1730.8171250042506,
+      "warmMedianMs": 227.09370800293982,
+      "warmMinMs": 226.41908400692046,
+      "warmMaxMs": 238.5458330390975,
+      "runs": [
+        {
+          "durationMs": 1730.8171250042506,
+          "indexTimingsMs": {
+            "total": 1669.164125
+          },
+          "scanned": 10000,
+          "indexed": 10000
+        },
+        {
+          "durationMs": 238.5458330390975,
+          "indexTimingsMs": {
+            "total": 224.74841600000002
+          },
+          "scanned": 10000,
+          "indexed": 0
+        },
+        {
+          "durationMs": 227.09370800293982,
+          "indexTimingsMs": {
+            "total": 217.145875
+          },
+          "scanned": 10000,
+          "indexed": 0
+        },
+        {
+          "durationMs": 227.01812500599772,
+          "indexTimingsMs": {
+            "total": 216.93025
+          },
+          "scanned": 10000,
+          "indexed": 0
+        },
+        {
+          "durationMs": 226.41908400692046,
+          "indexTimingsMs": {
+            "total": 216.64775
+          },
+          "scanned": 10000,
+          "indexed": 0
+        },
+        {
+          "durationMs": 230.83558300277218,
+          "indexTimingsMs": {
+            "total": 221.576833
+          },
+          "scanned": 10000,
+          "indexed": 0
+        }
+      ]
+    },
+    {
+      "shape": "directories-1000",
+      "fileCount": 10000,
+      "initialMs": 1767.3023749957792,
+      "warmMedianMs": 250.04679203266278,
+      "warmMinMs": 248.70833399472758,
+      "warmMaxMs": 254.15987498126924,
+      "runs": [
+        {
+          "durationMs": 1767.3023749957792,
+          "indexTimingsMs": {
+            "total": 1702.64625
+          },
+          "scanned": 10000,
+          "indexed": 10000
+        },
+        {
+          "durationMs": 253.7100839545019,
+          "indexTimingsMs": {
+            "total": 243.805125
+          },
+          "scanned": 10000,
+          "indexed": 0
+        },
+        {
+          "durationMs": 249.4368749903515,
+          "indexTimingsMs": {
+            "total": 239.67575
+          },
+          "scanned": 10000,
+          "indexed": 0
+        },
+        {
+          "durationMs": 248.70833399472758,
+          "indexTimingsMs": {
+            "total": 238.99854100000002
+          },
+          "scanned": 10000,
+          "indexed": 0
+        },
+        {
+          "durationMs": 250.04679203266278,
+          "indexTimingsMs": {
+            "total": 240.02525
+          },
+          "scanned": 10000,
+          "indexed": 0
+        },
+        {
+          "durationMs": 254.15987498126924,
+          "indexTimingsMs": {
+            "total": 244.33374999999998
+          },
+          "scanned": 10000,
+          "indexed": 0
+        }
+      ]
+    },
+    {
+      "shape": "depth-32",
+      "fileCount": 10000,
+      "initialMs": 3042.194042005576,
+      "warmMedianMs": 542.3522500204854,
+      "warmMinMs": 537.463334039785,
+      "warmMaxMs": 583.6442500003614,
+      "runs": [
+        {
+          "durationMs": 3042.194042005576,
+          "indexTimingsMs": {
+            "total": 2774.9482080000002
+          },
+          "scanned": 10000,
+          "indexed": 10000
+        },
+        {
+          "durationMs": 556.3401250401512,
+          "indexTimingsMs": {
+            "total": 543.573917
+          },
+          "scanned": 10000,
+          "indexed": 0
+        },
+        {
+          "durationMs": 583.6442500003614,
+          "indexTimingsMs": {
+            "total": 573.2564580000001
+          },
+          "scanned": 10000,
+          "indexed": 0
+        },
+        {
+          "durationMs": 537.463334039785,
+          "indexTimingsMs": {
+            "total": 527.426208
+          },
+          "scanned": 10000,
+          "indexed": 0
+        },
+        {
+          "durationMs": 539.9937079637311,
+          "indexTimingsMs": {
+            "total": 528.584541
+          },
+          "scanned": 10000,
+          "indexed": 0
+        },
+        {
+          "durationMs": 542.3522500204854,
+          "indexTimingsMs": {
+            "total": 532.0124579999999
+          },
+          "scanned": 10000,
+          "indexed": 0
+        }
+      ]
+    }
+  ],
+  "offlineReader": {
+    "checks": [
+      {
+        "keyword": "duringrununique",
+        "expected": 1,
+        "actual": 1,
+        "durationMs": 124.01750000000001
+      },
+      {
+        "keyword": "bulkuniqueword",
+        "expected": 999,
+        "actual": 999,
+        "durationMs": 18.438457999999997
+      },
+      {
+        "keyword": "finalversion29",
+        "expected": 1000,
+        "actual": 1000,
+        "durationMs": 16.643417
+      },
+      {
+        "keyword": "finalversion0",
+        "expected": 0,
+        "actual": 0,
+        "durationMs": 3.3437090000000182
+      }
+    ],
+    "directory": {
+      "minMs": 1.0274580000000242,
+      "medianMs": 1.1066040000000044,
+      "maxMs": 3.0397500000000264
+    }
+  },
+  "sustainedSummary": {
+    "batches": 30,
+    "filesPerBatch": 1000,
+    "workers": 24,
+    "scanned": 24000,
+    "indexed": 24000,
+    "workerMedianMs": 2527.9103745,
+    "workerIntervalMs": 61073,
+    "overlap": false,
+    "finalVersionsVerified": 1000
+  },
+  "uiVerification": {
+    "idleCreatedFileVisible": true,
+    "idleDeletedFileRemoved": true,
+    "tagCountsObserved": [
+      10000,
+      10001,
+      10000
+    ],
+    "repeatedOnFinalBuildAfterRestart": true,
+    "navigationWhileWorkerActive": {
+      "actionAtMs": 1793009636090,
+      "automationRoundTripMs": 533,
+      "workerStartedAtMs": 1793009633879,
+      "workerCompletedAtMs": 1793009636287,
+      "note": "该自动化往返时间不能当作原生 API 延迟或帧时间。"
+    }
+  },
+  "iterationFinding": {
+    "earlierPreciseBatchMissingUpdates": 142,
+    "fixes": [
+      "监听回调通过通道快速收集路径，按固定 150ms 窗口提交，避免逐事件合并大队列。",
+      "处理带路径与无路径的文件系统 Rescan 通知；运行产物路径仍不触发自身索引。"
+    ],
+    "finalThousandFileBurstVerified": true,
+    "note": "没有单独隔离上述两项修复各自的贡献。"
+  },
+  "validation": {
+    "rustTests": 43,
+    "serverTests": 37,
+    "frontendTests": 20,
+    "rustDebugBuild": true,
+    "indexerBuild": true,
+    "serverBuild": true,
+    "webBuild": true,
+    "diffCheck": true,
+    "legacyCatalogMissingOptionalFields": true,
+    "actualLegacyExportCli": true
+  },
+  "cleanupVerified": {
+    "desktopStopped": true,
+    "viteStopped": true,
+    "isolatedFixturesRemoved": true,
+    "temporaryScriptsRemoved": true
+  }
+}
