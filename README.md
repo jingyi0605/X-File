@@ -20,6 +20,7 @@ pnpm typecheck
 pnpm dev:server
 pnpm dev:web
 pnpm dev:desktop
+pnpm dev:desktop:frontend
 pnpm verify:desktop
 pnpm package:desktop:macos
 pnpm package:desktop:windows
@@ -59,6 +60,8 @@ pnpm benchmark:index -- --files 10000 --dirs 100
 可通过环境变量覆盖：`X_FILE_WEB_HOST`、`X_FILE_WEB_PORT`、`X_FILE_SERVER_HOST`、`X_FILE_SERVER_PORT`。后端调试脚本会显式设置 `X_FILE_ALLOW_PUBLIC_HOST=1`，并把 HTTP 状态写到仓库内 `.x-file-dev/http-server-state.json`，避免污染正式用户配置。
 
 `pnpm dev:desktop` 现在直接走 `pnpm --filter @x-file/desktop tauri:dev`，会按 Tauri dev 流程自动拉起前端开发服务并启动桌面调试窗口。正式桌面骨架校验使用 `pnpm --filter @x-file/desktop build`，它会跑 TypeScript 编译和 Tauri Rust `cargo check`。
+
+`pnpm dev:desktop:frontend` 启动仅前端热更新的桌面调试窗口：保留 Vite 热更新，通过 `tauri dev --no-watch` 关闭 Rust 源码监听，同时关闭共享包监听编译和 Node 后端自动重启。启动时仍会编译共享依赖并按需编译 Rust；运行期间修改 Rust、Node 后端或共享包源码不会自动重编译或重启后端与桌面窗口。这些改动需要退出并重新运行该命令才会生效。
 
 ## 健康检查
 

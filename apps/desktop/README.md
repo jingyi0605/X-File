@@ -29,6 +29,14 @@ pnpm --filter @x-file/web dev
 pnpm --filter @x-file/desktop tauri:dev
 ```
 
+在仓库根目录运行以下命令，可仅保留前端热更新：
+
+```bash
+pnpm dev:desktop:frontend
+```
+
+该模式启动时仍会编译共享依赖并按需编译 Rust，但运行期间关闭 Rust 源码监听、共享包监听编译和 Node 后端自动重启，仅保留 Vite 热更新。后端和共享包源码改动需要退出并重新运行该命令才会生效；`pnpm dev:desktop` 的原有监听行为不变。
+
 ## 构建校验
 
 ```bash
