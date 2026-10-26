@@ -80,6 +80,8 @@ import {
   saveFileOpenPreferenceItems,
 } from "../../preferences/file-open-preference-store";
 import { formatBytes, formatDateTime, getPathName } from "../../shared/format";
+import { InterfaceIcon } from "../../shared/InterfaceIcon";
+import { AnimatedDetails } from "../../shared/AnimatedDetails";
 import {
   DesktopModal,
   type DesktopModalSizePreset,
@@ -627,7 +629,8 @@ export function LibraryPage({
     setPendingTagAssignment(resolvePendingTagAssignmentTarget(target));
   }, []);
 
-  const handleOpenSearch = useCallback((): void => {
+  const handleOpenSearch = useCallback((keyword = ""): void => {
+    setSearchDraft(keyword);
     setSearchOpen(true);
   }, []);
 
@@ -1072,12 +1075,13 @@ export function LibraryPage({
         ref={panels.containerRef}
         style={
           panels.gridTemplateColumns
-            ? { gridTemplateColumns: panels.gridTemplateColumns }
+            ? { "--workbench-grid-template": panels.gridTemplateColumns } as CSSProperties
             : undefined
         }
       >
         <MemoizedLibraryDesktopSidebar
           library={sidebarLibrary}
+          onOpenSearch={handleOpenSearch}
           onOpenSettings={onOpenSettings}
           onOpenTagManager={handleOpenTagManager}
           overlayMacOsTitlebar={overlayMacOsTitlebar}
@@ -1378,12 +1382,14 @@ function LibraryDesktopSidebar({
   const tags = library.tags;
   const [tagSearchOpen, setTagSearchOpen] = useState(false);
   const [tagSearchQuery, setTagSearchQuery] = useState("");
+  const [quickFindQuery, setQuickFindQuery] = useState("");
   const [tagTreeState, setTagTreeState] = useState<LibraryTagTreeState>(() => readLibraryTagTreeState());
   const tagSearchInputRef = useRef<HTMLInputElement | null>(null);
   const selectedTagPaths = library.viewState.selectedTagPaths;
   const hasTagSelection = selectedTagPaths.length > 0;
   const tagFacetCounts = library.documentPage?.tagFacetCounts ?? {};
-  const tagTree = useMemo(() => buildLibraryTagTree(tags), [tags]);
+  const language = usePreferencesSelector((state) => state.profile.language);
+  const tagTree = useMemo(() => buildLibraryTagTree(tags), [tags, language]);
   const tagTreeWithCounts = useMemo(
     () => applyTagFacetCountsToTree(tagTree, tagFacetCounts, hasTagSelection),
     [tagFacetCounts, hasTagSelection, tagTree],
@@ -1509,6 +1515,29 @@ function LibraryDesktopSidebar({
             </span>
           </div>
         </div>
+        <form
+          className="library-quick-find"
+          role="search"
+          aria-label={t("libraryQuickFindLabel")}
+          onSubmit={(event) => {
+            event.preventDefault();
+            onOpenSearch(quickFindQuery.trim());
+          }}
+        >
+          <button type="submit" aria-label={t("libraryQuickFindSubmit")} title={t("libraryQuickFindSubmit")}>
+            {renderSearchIcon()}
+          </button>
+          <input
+            type="search"
+            aria-label={t("libraryQuickFindLabel")}
+            placeholder={t("libraryQuickFindPlaceholder")}
+            value={quickFindQuery}
+            onChange={(event) => setQuickFindQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") setQuickFindQuery("");
+            }}
+          />
+        </form>
         <div className="affairs-sidebar-shell">
           <div className="affairs-sidebar-content">
             <div className="affairs-sidebar-groups affairs-library-sidebar-groups">
@@ -1741,22 +1770,19 @@ function LibraryTagTreeNode({
     ? node.children
     : node.children.slice(0, LIBRARY_TAG_TREE_VISIBLE_LIMIT);
   const hiddenChildCount = Math.max(0, node.children.length - visibleChildren.length);
-  return (
-    <div
-      className="affairs-tag-tree-node"
-      role="treeitem"
-      aria-label={node.label}
-      aria-expanded={hasChildren ? expanded : undefined}
-      data-depth={depth}
-    >
-      <div className={active ? "affairs-sidebar-item active" : "affairs-sidebar-item"} data-tone="tag">
-        <div className="affairs-tag-tree-row">
+  const row = (
+      <span className={active ? "affairs-sidebar-item active" : "affairs-sidebar-item"} data-tone="tag" data-system-tag={isGroupRoot || undefined}>
+        <span className="affairs-tag-tree-row">
           {hasChildren ? (
             <button
               type="button"
               className="affairs-tag-tree-toggle"
               aria-label={expanded ? t("libraryTagTreeCollapse") : t("libraryTagTreeExpand")}
-              onClick={() => onToggleExpand(node.path)}
+              aria-expanded={expanded}
+              onClick={(event) => {
+                event.preventDefault();
+                onToggleExpand(node.path);
+              }}
             >
               {renderTagTreeChevronIcon(expanded)}
             </button>
@@ -1767,19 +1793,35 @@ function LibraryTagTreeNode({
             type="button"
             className="affairs-sidebar-item-button affairs-sidebar-item-button-content"
             aria-expanded={isGroupRoot && hasChildren ? expanded : undefined}
-            onClick={() => isGroupRoot ? onToggleExpand(node.path) : onSelect(node.path)}
+            onClick={(event) => {
+              event.preventDefault();
+              if (isGroupRoot) onToggleExpand(node.path);
+              else onSelect(node.path);
+            }}
           >
-            <div className="affairs-sidebar-item-row">
-              <span className="affairs-sidebar-item-title" title={node.label}>{node.label}</span>
-              <div className="affairs-sidebar-item-actions">
+            <span className="affairs-sidebar-item-row">
+              <span
+                className="affairs-sidebar-item-title"
+                title={isGroupRoot ? `${node.label} · ${t("librarySystemTag")}` : node.label}
+              >
+                {isGroupRoot ? (
+                  renderSystemTagIcon(isTimeLibraryTagPath(node.path))
+                ) : null}
+                <span>{node.label}</span>
+              </span>
+              <span className="affairs-sidebar-item-actions">
                 <span className="affairs-sidebar-item-badge">{node.count}</span>
-              </div>
-            </div>
+              </span>
+            </span>
           </button>
-        </div>
-      </div>
-      {expanded ? (
-        <div className="affairs-tag-tree-children" role="group">
+        </span>
+      </span>
+  );
+  if (!hasChildren) {
+    return <div className="affairs-tag-tree-node" role="treeitem" aria-label={node.label} data-depth={depth}>{row}</div>;
+  }
+  return (
+    <AnimatedDetails open={expanded} label={node.label} depth={depth} summary={row} onOpenChange={() => onToggleExpand(node.path)}>
           {visibleChildren.map((child) => (
             <LibraryTagTreeNode
               key={child.path}
@@ -1806,9 +1848,7 @@ function LibraryTagTreeNode({
                 : t("libraryTagTreeShowMore", { count: hiddenChildCount })}
             </button>
           ) : null}
-        </div>
-      ) : null}
-    </div>
+    </AnimatedDetails>
   );
 }
 
@@ -3596,7 +3636,12 @@ function VirtualLibraryFinderList({
   }
 
   return (
-    <div className="affairs-finder-shell">
+    <div
+      className="affairs-finder-shell"
+      style={{
+        "--finder-table-width": `${Object.values(library.viewState.finderColumnWidths).reduce((total, width) => total + width, 0)}px`,
+      } as CSSProperties}
+    >
       <div
         className="affairs-finder-header"
         style={{ gridTemplateColumns: finderGridTemplateColumns }}
@@ -4258,7 +4303,7 @@ function LibraryFinderRow({
           {formatDateTime(entry.updatedAt)}
         </span>
         <span className="affairs-finder-cell">
-          {t("libraryFinderKindFolder")}
+          <span className="library-format-tag">{t("libraryFinderKindFolder")}</span>
         </span>
         <span className="affairs-finder-cell">--</span>
       </button>
@@ -4310,7 +4355,7 @@ function LibraryFinderRow({
         {formatDateTime(entry.updatedAt)}
       </span>
       <span className="affairs-finder-cell">
-        {resolveFinderKindLabel(entry.path)}
+        <span className="library-format-tag">{resolveFinderKindLabel(entry.path)}</span>
       </span>
       <span className="affairs-finder-cell">
         {formatDateTime(entry.createdAt)}
@@ -4592,6 +4637,7 @@ function LibraryDetail({
                 className="affairs-detail-action-button"
                 onClick={() => library.selectFolder(resolveDocumentFolderPath(selected.path))}
               >
+                <InterfaceIcon name="locate" />
                 {t("libraryContextLocateShort")}
               </button>
               <button
@@ -4599,6 +4645,7 @@ function LibraryDetail({
                 className="affairs-detail-action-button"
                 onClick={() => void library.openPreview(selected.path)}
               >
+                <InterfaceIcon name="preview" />
                 {t("libraryPreview")}
               </button>
               <button
@@ -4606,6 +4653,7 @@ function LibraryDetail({
                 className="affairs-detail-action-button"
                 onClick={() => void library.downloadSelected(selected.path)}
               >
+                <InterfaceIcon name="download" />
                 {t("libraryDownload")}
               </button>
               <button
@@ -4613,6 +4661,7 @@ function LibraryDetail({
                 className="affairs-detail-action-button"
                 onClick={() => onRequestRename(selected.path)}
               >
+                <InterfaceIcon name="rename" />
                 {t("libraryRename")}
               </button>
               <button
@@ -5192,10 +5241,12 @@ function LibrarySearchModal({
   const hasDraftKeyword = keyword.trim().length > 0;
   const showsResults = activeKeyword.length > 0;
   const hasMore = (resultPage?.items.length ?? 0) < (resultPage?.total ?? 0);
+  const initialKeyword = useRef(keyword.trim());
 
   useEffect(() => {
     inputRef.current?.focus();
     inputRef.current?.select();
+    if (initialKeyword.current) void runSearch(initialKeyword.current);
   }, []);
 
   async function runSearch(nextKeyword: string, reset = true): Promise<void> {
@@ -8806,7 +8857,11 @@ function buildLibraryTagTree(tags: LibraryTagNode[]): LibraryTagTreeNodeRecord[]
     }
     nodes.set(tag.path, {
       path: tag.path,
-      label: tag.name,
+      label: tag.path === "时间" || tag.path === "time"
+        ? t("libraryTimeRange")
+        : tag.path === "类型" || tag.path === "type"
+          ? t("librarySmartClassification")
+          : tag.name,
       count: tag.documentCount,
       children: [],
     });
@@ -8857,7 +8912,9 @@ function getLibraryTagRootOrder(path: string): number {
   if (isTimeLibraryTagPath(path)) return 0;
   const root = path.split("/").filter(Boolean)[0] ?? path;
   if (root === "类型" || root === "type") return 1;
-  return 2;
+  if (root === "工作" || root === "work") return 2;
+  if (root === "客户" || root === "client") return 3;
+  return 4;
 }
 
 function isTimeLibraryTagPath(path: string): boolean {
@@ -9847,11 +9904,23 @@ function findNextLibrarySearchHighlight(
   return matchedIndex < 0 ? null : { index: matchedIndex, keyword: matchedKeyword };
 }
 
+function renderSystemTagIcon(isTimeRange: boolean) {
+  return (
+    <svg className="library-system-tag-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {isTimeRange ? (
+        <path d="M8 3v3m8-3v3M4 9h16M6 5h12a2 2 0 0 1 2 2v12H4V7a2 2 0 0 1 2-2Zm2 8h2m4 0h2M8 17h2" />
+      ) : (
+        <path d="M4 4h6v6H4zm10 0h6v6h-6zM4 14h6v6H4zm10 0h6v6h-6zM7 7h.01m10 0h.01M7 17h.01m10 0h.01" />
+      )}
+    </svg>
+  );
+}
+
 function renderTagTreeChevronIcon(expanded: boolean) {
   return (
-    <svg viewBox="0 0 16 16" aria-hidden="true">
+    <svg className="library-tree-chevron" data-expanded={expanded} viewBox="0 0 16 16" aria-hidden="true">
       <path
-        d={expanded ? "M4.2 6.2 8 10l3.8-3.8" : "M6.2 4.2 10 8l-3.8 3.8"}
+        d="M6.2 4.2 10 8l-3.8 3.8"
         fill="none"
         stroke="currentColor"
         strokeWidth="1.6"

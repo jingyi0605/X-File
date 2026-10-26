@@ -1,0 +1,233 @@
+:root {
+  --motion-easing: cubic-bezier(0.4, 0, 0.2, 1);
+  --tree-motion-duration: 220;
+  --motion-lift: -1px;
+  --motion-nav-shift: 2px;
+  --motion-icon-scale: 1.05;
+  --quick-find-margin: var(--space-1);
+  --motion-panel-shadow: 0 12px 38px rgba(0, 0, 0, 0.06), inset 0 1px 0 var(--glass-edge);
+}
+
+/* V3 交互补全：侧栏、文档与详情动效；任务中心沿用现有样式。 */
+.library-quick-find {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--control-height-sm);
+  margin: var(--quick-find-margin);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--modal-control-border);
+  border-radius: var(--radius-pill);
+  background: var(--modal-control-surface);
+  color: var(--text-tertiary);
+  transition: background var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.library-quick-find:focus-within {
+  background: var(--glass-control-hover);
+  box-shadow: var(--modal-control-focus-ring);
+}
+
+.library-quick-find > button {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  padding: 0;
+  color: inherit;
+}
+
+.library-quick-find svg {
+  width: var(--action-icon-size);
+  height: var(--action-icon-size);
+}
+
+.library-quick-find input[type="search"] {
+  width: 100%;
+  height: var(--control-height-sm);
+  min-height: var(--control-height-sm);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  font-size: 12px;
+}
+
+.affairs-tag-tree-node .affairs-sidebar-item[data-system-tag="true"]:not(.active) {
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.affairs-sidebar-item[data-system-tag="true"] .affairs-tag-tree-toggle:hover {
+  background: transparent;
+  color: var(--text-primary);
+}
+
+.affairs-sidebar-item[data-system-tag="true"] .affairs-sidebar-item-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.affairs-sidebar-item[data-system-tag="true"] .affairs-sidebar-item-title > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.affairs-sidebar-item[data-system-tag="true"] .affairs-sidebar-item-badge {
+  background: transparent;
+  color: var(--text-tertiary);
+}
+
+.library-system-tag-icon {
+  width: var(--space-5);
+  height: var(--space-5);
+  flex: 0 0 auto;
+}
+
+.affairs-tag-tree-node > summary {
+  list-style: none;
+  cursor: pointer;
+  border-radius: var(--radius-control);
+}
+
+.affairs-tag-tree-node > summary::marker {
+  content: "";
+}
+
+.affairs-tag-tree-node > summary::-webkit-details-marker {
+  display: none;
+}
+
+.affairs-tag-tree-node > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.affairs-tag-tree-reveal {
+  overflow: hidden;
+}
+
+.affairs-tag-tree-node > summary > .affairs-sidebar-item {
+  display: block;
+  transition: background var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast);
+}
+
+.affairs-tag-tree-node > .affairs-sidebar-item {
+  display: block;
+}
+
+.library-tree-chevron {
+  transform: rotate(0deg);
+  transform-origin: center;
+  transition: transform var(--transition-fast);
+}
+
+.library-tree-chevron[data-expanded="true"] {
+  transform: rotate(90deg);
+}
+
+.primary-button,
+.xfile-sidebar-brand-icon,
+.affairs-finder-row,
+.affairs-finder-icon,
+.affairs-doc-icon,
+.library-format-tag,
+.affairs-document-tag-token,
+.affairs-document-tag-recommendation,
+.affairs-detail-action-button > svg,
+.affairs-preview-block .preview-box,
+.settings-appearance-card {
+  transition: background var(--transition-fast), border-color var(--transition-fast),
+    color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast);
+}
+
+.primary-button:hover:not(:disabled),
+.affairs-finder-row:hover:not(.is-placeholder),
+.affairs-document-tag-token:hover:not(:disabled),
+.affairs-document-tag-recommendation:hover:not(:disabled),
+.settings-appearance-card:hover {
+  transform: translateY(var(--motion-lift));
+}
+
+.xfile-sidebar-brand-icon:hover,
+.affairs-finder-row:hover .affairs-finder-icon,
+.affairs-doc-item:hover .affairs-doc-icon {
+  transform: scale(var(--motion-icon-scale));
+}
+
+.workbench-sidebar .affairs-sidebar-item,
+.workbench-sidebar-footer-button {
+  transition: background var(--transition-fast), color var(--transition-fast),
+    box-shadow var(--transition-fast), transform var(--transition-fast);
+}
+
+.workbench-sidebar .affairs-sidebar-item:hover:not(.active),
+.workbench-sidebar-footer-button:hover {
+  transform: translateX(var(--motion-nav-shift));
+}
+
+.workbench-sidebar .affairs-sidebar-item.active {
+  transform: translateX(0);
+}
+
+.library-format-tag {
+  display: inline-block;
+  max-width: 100%;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--glass-control-border);
+  border-radius: var(--space-3);
+  background: var(--glass-control-surface);
+  color: var(--text-secondary);
+  box-shadow: var(--glass-control-shadow);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
+
+.affairs-finder-row:hover .library-format-tag {
+  background: var(--glass-control-hover);
+  transform: translateY(var(--motion-lift));
+}
+
+.affairs-finder-row.active .library-format-tag {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--text-on-accent);
+}
+
+.affairs-detail-action-button:hover > svg {
+  background: var(--glass-control-hover);
+  box-shadow: var(--glass-control-shadow);
+  transform: translateY(calc(var(--motion-lift) * 2)) scale(var(--motion-icon-scale));
+}
+
+.affairs-preview-block .preview-box:hover,
+.settings-appearance-card:hover {
+  box-shadow: var(--motion-panel-shadow);
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .workbench-sidebar { background: var(--bg-primary); }
+  .affairs-detail-panel { background: var(--bg-surface); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .primary-button:hover:not(:disabled),
+  .workbench-sidebar .affairs-sidebar-item:hover,
+  .workbench-sidebar-footer-button:hover,
+  .xfile-sidebar-brand-icon:hover,
+  .affairs-finder-row:hover,
+  .affairs-finder-row:hover .affairs-finder-icon,
+  .affairs-finder-row:hover .library-format-tag,
+  .affairs-doc-item:hover .affairs-doc-icon,
+  .affairs-document-tag-token:hover,
+  .affairs-document-tag-recommendation:hover,
+  .affairs-detail-action-button:hover > svg,
+  .settings-appearance-card:hover {
+    transform: none;
+  }
+}

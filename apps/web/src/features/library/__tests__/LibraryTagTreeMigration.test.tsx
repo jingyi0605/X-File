@@ -67,8 +67,11 @@ describe("第 8 批：标签筛选树、多选过滤、徽标计数、排序、�
     render(<LibraryPage onOpenSettings={() => undefined} platformData={platformData} />);
 
     const tree = await screen.findByRole("tree", { name: "标签树" });
-    const rootItem = within(tree).getByRole("treeitem", { name: root });
-    const rootButton = within(rootItem).getByRole("button", { name: `${root} 2` });
+    const rootLabel = systemRootLabel(root);
+    const rootItem = within(tree).getByRole("treeitem", { name: rootLabel });
+    const rootButton = within(rootItem).getByRole("button", { name: `${rootLabel} 2` });
+    expect(rootButton.closest(".affairs-sidebar-item")).toHaveAttribute("data-system-tag", "true");
+    expect(within(rootButton).getByTitle(`${rootLabel} · 系统内置标签`)).toBeInTheDocument();
     const initialRequestCount = libraryApiMock.listLibraryDocuments.mock.calls.length;
 
     expect(rootButton).toHaveAttribute("aria-expanded", "false");
@@ -285,7 +288,7 @@ describe("第 8 批：标签筛选树、多选过滤、徽标计数、排序、�
     render(<LibraryPage onOpenSettings={() => undefined} platformData={platformData} />);
 
     await expandTag("时间");
-    const timeRoot = screen.getByRole("treeitem", { name: "时间" });
+    const timeRoot = screen.getByRole("treeitem", { name: "时间范围" });
     const timeChildren = timeRoot.querySelectorAll(":scope > [role=group] > [role=treeitem]");
     expect(Array.from(timeChildren, (child) => child.getAttribute("aria-label")))
       .toEqual(["2026", "2025", "2024"]);
@@ -522,8 +525,14 @@ function tag(
   };
 }
 
+function systemRootLabel(label: string): string {
+  if (label === "时间" || label === "time") return "时间范围";
+  if (label === "类型" || label === "type") return "智能分类";
+  return label;
+}
+
 async function expandTag(label: string): Promise<void> {
-  const row = await screen.findByRole("treeitem", { name: label });
+  const row = await screen.findByRole("treeitem", { name: systemRootLabel(label) });
   const toggle = within(row).queryByRole("button", { name: /展开标签/ });
   if (toggle) {
     await userEvent.click(toggle);
@@ -531,7 +540,7 @@ async function expandTag(label: string): Promise<void> {
 }
 
 function childTitlesOf(rootLabel: string): string[] {
-  const root = screen.getByRole("treeitem", { name: rootLabel });
+  const root = screen.getByRole("treeitem", { name: systemRootLabel(rootLabel) });
   const group = within(root).getByRole("group");
   return within(group)
     .getAllByRole("button")

@@ -14,6 +14,7 @@ import { isRuntimeConfigured } from "./runtime/runtime-config";
 import { useRuntimeConfigSelector } from "./runtime/runtime-config-store";
 import { formatDateTime } from "./shared/format";
 import "./styles.css";
+import "./features/library/LibraryV3Interactions.css";
 
 type AppSection = "library" | "health";
 
