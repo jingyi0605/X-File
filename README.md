@@ -113,6 +113,14 @@ PUT /api/server/state
 
 第一版规则是：关闭窗口和退出应用必须区分；`persistent=true` 时桌面壳会隐藏主窗口并保留当前进程，用户可以从托盘恢复窗口或退出应用，用户明确退出应用时停止桌面壳托管的后端子进程。开机自启和安装包代码签名不在本轮声称完成范围内。
 
+## 外部 Agent 接入方向
+
+X-File 不再提供内置 AI 助手或文件助手，也不再内置 Codex、Claude Code 的对话、会话、权限审批和供应商插件。已有文档管理、预览、索引、标签及 ONLYOFFICE 功能继续保留；本次移除不会主动清理用户磁盘上的历史助手数据。
+
+后续将提供完整 MCP 工具和 CLI 工具，并通过 SKILL 描述工具发现、参数、结果和错误处理，让外部 Agent 直接调用文档库能力。完整 MCP / CLI / SKILL 接入尚未实现；当前原生 CLI 主要用于索引任务，现有 HTTP 集成状态接口也不等同于 MCP server。
+
+范围与验收见 `specs/spec004-X-File移除内置助手与外部Agent接入/`。
+
 ## CodingNS 集成入口
 
 ```text
@@ -195,5 +203,5 @@ Windows self-hosted 实机构建入口（手动，保留用于实机调试）：
 - 已建立 dev/stable 双更新通道（GitHub Releases + Tauri updater）和 tag 触发的跨平台发布 CI；macOS 签名公证复用 Apple Developer ID 证书，Windows 不做 authenticode 签名（首次运行有 SmartScreen 警告）。
 - 不主动启动长期 dev server。
 - 已实现基础系统托盘菜单；不实现开机自启和 deep link 注册。
-- 文档库索引不依赖 Node 或 SQLite。独立 Web/HTTP 与会话同步等功能的 Node 依赖由各自模块维护，不能假设用户机器一定有 Node。
+- 文档库索引不依赖 Node 或 SQLite。独立 Web/HTTP 功能的 Node 依赖由对应模块维护，不能假设用户机器一定有 Node。
 - 不引入 CodingNS 的工作区、事务模式、Teable、Butler 或代码工作台能力。

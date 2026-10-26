@@ -53,7 +53,7 @@
     "longDescription": "X-File 是从 CodingNS 拆出的本机文档库应用。签名和自动更新配置已预留，发布前必须替换真实 secrets 并在实机 runner 验证。",
     "createUpdaterArtifacts": true,
     "resources": {
-      "resources/x-file-plugins": "x-file-plugins"
+      "resources/x-file-resource-boundary.json": "x-file-resource-boundary.json"
     }
   },
   "plugins": {

@@ -4,19 +4,16 @@ import { HttpServerManager, type HttpServerRuntimeState } from "../http-server-m
 import { PersistentBackendManager } from "../lifecycle/persistent-backend-manager.js";
 import { OnlyOfficeController } from "../office/onlyoffice-controller.js";
 import { OnlyOfficeService } from "../office/onlyoffice-service.js";
-import { PluginService } from "../plugins/plugin-service.js";
 import { registerHostDirectoryRoutes } from "../routes/host-directory-routes.js";
 import { registerIntegrationRoutes } from "../routes/integration-routes.js";
 import { registerLibraryRoutes } from "../routes/library-routes.js";
 import { registerOfficeRoutes } from "../routes/office-routes.js";
-import { registerPluginRoutes } from "../routes/plugin-routes.js";
 import { registerServerStateRoutes } from "../routes/server-state-routes.js";
 import { registerTagRoutes } from "../routes/tag-routes.js";
 import { IndexRuntimeStore } from "../storage/index-runtime-store.js";
 import { LibraryBindingStore } from "../storage/library-binding-store.js";
 import { LibraryConfigStore } from "../storage/library-config-store.js";
 import { OnlyOfficeSettingsStore } from "../storage/onlyoffice-settings-store.js";
-import { PluginRegistryStore } from "../storage/plugin-registry-store.js";
 import { TagStore } from "../storage/tag-store.js";
 import { TaskManager } from "../tasks/task-manager.js";
 import { HostDirectoryBrowserService } from "./host-directory-browser-service.js";
@@ -42,7 +39,6 @@ export interface LibraryEngineFeature {
   libraryBindingStore: LibraryBindingStore;
   libraryService: LibraryService;
   libraryIndexService: LibraryIndexService;
-  pluginService: PluginService;
   taskManager: TaskManager;
   httpServerManager: HttpServerManager;
   persistentBackendManager: PersistentBackendManager;
@@ -74,7 +70,6 @@ export function createLibraryEngineFeature(
     options.httpServerManager ??
     new HttpServerManager(undefined, options.httpServerRuntimeState);
   const persistentBackendManager = new PersistentBackendManager();
-  const pluginService = new PluginService(new PluginRegistryStore());
   const signingSecret =
     process.env.X_FILE_SIGNING_SECRET?.trim() || DEFAULT_SIGNING_SECRET;
   const previewLinkService = new LibraryPreviewLinkService(
@@ -92,7 +87,6 @@ export function createLibraryEngineFeature(
     libraryBindingStore,
     libraryService,
     libraryIndexService,
-    pluginService,
     taskManager,
     httpServerManager,
     persistentBackendManager,
@@ -149,7 +143,7 @@ export function registerLibraryNodeServiceRoutes(
   options: RegisterLibraryEngineFeatureOptions = {},
 ): void {
   // 这里保留的是 Node sidecar 仍必须承担的服务面：
-  // ONLYOFFICE 回调、plugin runtime、integration/status、server state。
+  // ONLYOFFICE 回调、integration/status、server state。
   // 它们可以消费 library 的只读视图或通过 notifyFileChanged 上报文件变更，
   // 但不应重新持有 index/export 执行面的宿主职责。
   const previewLinkService = new LibraryPreviewLinkService(
@@ -179,7 +173,6 @@ export function registerLibraryNodeServiceRoutes(
   } else {
     void registerIntegrationRoutes(server, feature.libraryService, feature.httpServerManager);
   }
-  void registerPluginRoutes(server, feature.pluginService);
 }
 
 export function registerLibraryEngineFeature(
@@ -265,7 +258,6 @@ function registerSidecarOnlyIntegrationRoutes(
     api: {
       health: "/api/health",
       serverState: "/api/server/state",
-      plugins: "/api/plugins",
       onlyOfficeStatus: "/api/office/onlyoffice/status",
       onlyOfficeCallback: "/api/office/onlyoffice/callback/:token",
     },

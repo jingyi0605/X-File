@@ -40,7 +40,6 @@ jobs:
         run: |
           pnpm --filter @x-file/shared build
           pnpm --filter @x-file/indexer build
-          pnpm --filter @codingns/session-sync-core build
 
       - name: Typecheck（全仓 TS）
         run: pnpm typecheck

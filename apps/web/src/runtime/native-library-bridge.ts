@@ -18,8 +18,6 @@ import type {
   SaveLibraryTagsInput,
   OnlyOfficeSettings,
   OnlyOfficeStatus,
-  PluginListResult,
-  PluginMutationResult,
   SaveHttpServerStateInput,
   SaveLibraryBindingInput,
   SaveLibraryConfigInput,
@@ -286,22 +284,6 @@ export async function saveNativeOnlyOfficeSettings(
 
 export async function getNativeOnlyOfficeStatus(): Promise<OnlyOfficeStatus | null> {
   return invokeOptional<OnlyOfficeStatus>("native_get_onlyoffice_status");
-}
-
-export async function listNativePlugins(): Promise<PluginListResult | null> {
-  return invokeOptional<PluginListResult>("native_list_plugins");
-}
-
-export async function enableNativePlugin(pluginId: string): Promise<PluginMutationResult | null> {
-  return invokeOptional<PluginMutationResult>("native_enable_plugin", {
-    request: { pluginId },
-  });
-}
-
-export async function disableNativePlugin(pluginId: string): Promise<PluginMutationResult | null> {
-  return invokeOptional<PluginMutationResult>("native_disable_plugin", {
-    request: { pluginId },
-  });
 }
 
 export async function getNativeHttpServerState(): Promise<HttpServerState | null> {

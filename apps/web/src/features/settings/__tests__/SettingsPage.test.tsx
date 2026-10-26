@@ -5,8 +5,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createLibraryBinding,
   createLibraryConfig,
-  createPluginListItem,
-  createPluginListResult,
   installLibraryApiMock,
   libraryApiMock,
   resetLibraryApiMock,
@@ -194,88 +192,14 @@ describe("SettingsPage 文档库索引配置迁移行为", () => {
     expect(screen.getByText("listen EADDRINUSE: address already in use 127.0.0.1:17321")).toBeInTheDocument();
   });
 
-  it("集成页会展示插件注册表信息", async () => {
-    libraryApiMock.listPlugins.mockResolvedValue(
-      createPluginListResult({
-        plugins: [createPluginListItem({
-          manifest: {
-            capabilities: ["provider.detect", "assistant.entry"],
-            pluginType: "integration" as const,
-            provider: {
-              providerId: "codex",
-              displayName: "Codex",
-              command: "codex",
-              auth: {
-                strategy: "file_exists",
-                path: "~/.codex/auth.json",
-              },
-            },
-          },
-        })],
-      }),
-    );
-
+  it("集成页保留 ONLYOFFICE，不再提供内置助手插件管理", async () => {
     const { SettingsPage } = await import("../SettingsPage");
     render(<SettingsPage />);
 
     await userEvent.click(await screen.findByRole("tab", { name: /集成服务/ }));
-    expect(await screen.findByText("Codex Integration")).toBeInTheDocument();
-    expect(screen.getByText("集成清单")).toBeInTheDocument();
-    expect(screen.getByText("降级")).toBeInTheDocument();
-    expect(screen.getByText("0.1.0")).toBeInTheDocument();
-    expect(screen.getByRole("switch", { name: "Codex Integration" })).toHaveAttribute("aria-checked", "true");
-  });
-
-  it("集成页直接显示内置插件列表，并移除手工安装表单", async () => {
-    libraryApiMock.listPlugins.mockResolvedValue(
-      createPluginListResult({
-        plugins: [createPluginListItem({
-          manifest: {
-            id: "codex",
-            name: "Codex Integration",
-            capabilities: ["provider.detect", "assistant.entry"],
-            runtime: {
-              install: {
-                strategy: "system-cli" as const,
-              },
-            },
-            provider: {
-              providerId: "codex",
-              displayName: "Codex",
-              command: "codex",
-              auth: {
-                strategy: "file_exists",
-                path: "~/.codex/auth.json",
-              },
-            },
-          },
-          registry: {
-            pluginId: "codex",
-            installDir: "/Applications/X-File.app/Contents/Resources/x-file-plugins/codex",
-          },
-          health: {
-            status: "healthy",
-          },
-        })],
-      }),
-    );
-
-    const { SettingsPage } = await import("../SettingsPage");
-    render(<SettingsPage />);
-
-    await userEvent.click(await screen.findByRole("tab", { name: /集成服务/ }));
-    expect(screen.queryByPlaceholderText("/Users/you/Downloads/codex-plugin")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "安装插件" })).not.toBeInTheDocument();
-    expect(await screen.findByText("内置插件数量")).toBeInTheDocument();
-    expect(screen.getByText("1")).toBeInTheDocument();
-    expect(await screen.findByText("Codex Integration")).toBeInTheDocument();
-    expect(screen.getByText("健康")).toBeInTheDocument();
-    expect(screen.getByRole("switch", { name: "Codex Integration" })).toHaveAttribute("aria-checked", "true");
-    await userEvent.click(screen.getByRole("switch", { name: "Codex Integration" }));
-
-    await waitFor(() => {
-      expect(libraryApiMock.disablePlugin).toHaveBeenCalledWith("codex");
-    });
+    expect(await screen.findByRole("heading", { name: "OnlyOffice" })).toBeInTheDocument();
+    expect(screen.queryByText("内置插件数量")).not.toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: /Codex|Claude/ })).not.toBeInTheDocument();
   });
 
   it("更新页必须经过三次确认后才会触发彻底重置", async () => {

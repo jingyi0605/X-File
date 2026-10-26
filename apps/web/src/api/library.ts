@@ -21,14 +21,10 @@ import type {
   LibraryTagRule,
   OnlyOfficeSettings,
   OnlyOfficeStatus,
-  PluginMutationResult,
-  PluginListResult,
-  InstallPluginInput,
   RequestLibraryRefreshInput,
   SaveHttpServerStateInput,
   SaveLibraryBindingInput,
   SaveLibraryConfigInput,
-  UpdatePluginInput,
   UpdateLibraryFavoritesInput,
   UpdateOnlyOfficeSettingsInput,
 } from "@x-file/shared";
@@ -39,8 +35,6 @@ import {
   browseNativeHostDirectories,
   createNativeLibraryTag,
   deleteNativeLibraryTag,
-  disableNativePlugin,
-  enableNativePlugin,
   fetchNativeLibrarySnapshot,
   getNativeDocumentTagDetails,
   getNativeFolderTagDetails,
@@ -56,7 +50,6 @@ import {
   listNativeLibraryTagDetails,
   listNativeLibraryDocuments,
   listNativeLibraryFiles,
-  listNativePlugins,
   requestNativeLibraryRefresh,
   requestNativeLibraryTagRecompute,
   saveNativeHttpServerState,
@@ -88,62 +81,6 @@ export async function getLibraryBinding(): Promise<LibraryBinding | null> {
     }
   }
   return apiRequest<LibraryBinding | null>("/api/library/binding");
-}
-
-export async function listPlugins(): Promise<PluginListResult> {
-  if (getRuntimeConfigSnapshot().config.mode === "local") {
-    const native = await listNativePlugins();
-    if (native) {
-      return native;
-    }
-    throw new Error("主包本地模式已移除内建插件 sidecar，且缺少 native_list_plugins。");
-  }
-  return apiRequest<PluginListResult>("/api/plugins");
-}
-
-export function installPlugin(input: InstallPluginInput): Promise<PluginMutationResult> {
-  if (getRuntimeConfigSnapshot().config.mode === "local") {
-    throw new Error("主包本地模式已移除内建插件安装 sidecar。");
-  }
-  return postJson<PluginMutationResult>("/api/plugins/install", input);
-}
-
-export function updatePlugin(pluginId: string, input: UpdatePluginInput): Promise<PluginMutationResult> {
-  if (getRuntimeConfigSnapshot().config.mode === "local") {
-    throw new Error("主包本地模式已移除内建插件更新 sidecar。");
-  }
-  return postJson<PluginMutationResult>(`/api/plugins/${encodeURIComponent(pluginId)}/update`, input);
-}
-
-export async function enablePlugin(pluginId: string): Promise<PluginMutationResult> {
-  if (getRuntimeConfigSnapshot().config.mode === "local") {
-    const native = await enableNativePlugin(pluginId);
-    if (native) {
-      return native;
-    }
-    throw new Error("主包本地模式已移除内建插件 sidecar，且缺少 native_enable_plugin。");
-  }
-  return putJson<PluginMutationResult>(`/api/plugins/${encodeURIComponent(pluginId)}/enable`, {});
-}
-
-export async function disablePlugin(pluginId: string): Promise<PluginMutationResult> {
-  if (getRuntimeConfigSnapshot().config.mode === "local") {
-    const native = await disableNativePlugin(pluginId);
-    if (native) {
-      return native;
-    }
-    throw new Error("主包本地模式已移除内建插件 sidecar，且缺少 native_disable_plugin。");
-  }
-  return putJson<PluginMutationResult>(`/api/plugins/${encodeURIComponent(pluginId)}/disable`, {});
-}
-
-export function uninstallPlugin(pluginId: string): Promise<PluginListResult> {
-  if (getRuntimeConfigSnapshot().config.mode === "local") {
-    throw new Error("主包本地模式已移除内建插件卸载 sidecar。");
-  }
-  return apiRequest<PluginListResult>(`/api/plugins/${encodeURIComponent(pluginId)}`, {
-    method: "DELETE",
-  });
 }
 
 export async function saveLibraryBinding(

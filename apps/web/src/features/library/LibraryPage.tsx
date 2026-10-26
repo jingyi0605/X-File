@@ -16,7 +16,6 @@ import {
   type ReactNode,
 } from "react";
 import type {
-  AssistantProviderId,
   HostDirectoryOption,
   LibraryDirectorySource,
   LibraryDirectoryState,
@@ -92,8 +91,6 @@ import {
 } from "../../shared/modal";
 import { useTheme } from "../../shared/theme/theme";
 import { resolveDocumentVisual } from "./document-visual";
-import { useDocumentAssistant } from "../assistant/useDocumentAssistant";
-import type { DocumentAssistantContext } from "../assistant/useDocumentAssistant";
 import {
   StaticHtmlPresentationView,
   inspectStaticHtmlPresentation,
@@ -107,7 +104,6 @@ import {
   detectLanguage,
 } from "./LibraryFileCodeViewer";
 import { useLibraryState, type LibraryState } from "./useLibraryState";
-import { DocumentAssistantPanel } from "../assistant/components/DocumentAssistantPanel";
 import {
   DEFAULT_DETAIL,
   DEFAULT_SIDEBAR,
@@ -124,8 +120,6 @@ import {
   type LibrarySortMode,
   type LibrarySortState,
 } from "./library-view-state";
-import codexIcon from "../../assets/provider-icons/codex.png";
-import claudeCodeIcon from "../../assets/provider-icons/claude-code.png";
 
 export interface WorkbenchPlatformData {
   runtimePlatform: "desktop" | "web";
@@ -407,15 +401,6 @@ type DetailLibraryState = Pick<
 
 type LibraryReloadBridge = Pick<LibraryState, "reload" | "reloadDocuments">;
 type LibrarySnapshotBridge = Pick<LibraryState, "snapshot">;
-type AssistantSelectionBridge = Pick<
-  LibraryState,
-  "selectedDocuments" | "selectedFolderEntries"
->;
-type AssistantContextSource = Pick<
-  LibraryState,
-  "selectedDocuments" | "selectedFolderEntries" | "viewState"
->;
-
 const LIBRARY_TAG_TREE_DEFAULT_ROOTS = new Set(["时间", "类型", "time", "type"]);
 const LIBRARY_TAG_TREE_NOISE_ROOTS = new Set([
   "来源",
@@ -4387,10 +4372,7 @@ function LibraryDetail({
   onRequestDelete: (target: LibraryContextMenuTarget) => void;
   onRequestTagAssignment: (target: LibraryContextMenuTarget) => void;
 }) {
-  const [activeTab, setActiveTab] = useState<"detail" | "assistant">("detail");
   const detailScrollRef = useRef<HTMLDivElement | null>(null);
-  const [assistantHistoryModalOpen, setAssistantHistoryModalOpen] = useState(false);
-  const [assistantCreateModalOpen, setAssistantCreateModalOpen] = useState(false);
   const incomingDetailSelection = useMemo<SettledLibraryDetailSelection>(() => ({
     key: buildLibraryDetailSelectionKey(
       library.viewState.selectedDocumentIds,
@@ -4422,40 +4404,6 @@ function LibraryDetail({
           isLibraryDirectoryEntry(entry) && entry.path === settledFolderPath,
       ) ?? null
     : null;
-  const settledSelectedDocuments = useMemo(
-    () => library.entries.filter(
-      (entry): entry is LibraryDocumentEntry =>
-        entry.kind === "document" && settledDetailSelection.documentIds.includes(entry.documentId),
-    ),
-    [library.entries, settledDetailSelection.documentIds],
-  );
-  const settledSelectedFolders = useMemo(
-    () => library.entries.filter(
-      (entry): entry is LibraryDirectoryEntry =>
-        isLibraryDirectoryEntry(entry) && settledDetailSelection.folderPaths.includes(entry.path),
-    ),
-    [library.entries, settledDetailSelection.folderPaths],
-  );
-  const settledLibrary = useMemo<AssistantContextSource>(() => ({
-    selectedDocuments: settledSelectedDocuments,
-    selectedFolderEntries: settledSelectedFolders,
-    viewState: library.viewState,
-  }), [
-    library.viewState,
-    settledSelectedDocuments,
-    settledSelectedFolders,
-  ]);
-  const assistantContext = useMemo(
-    () => (activeTab === "assistant" && !detailPending
-      ? buildLibraryAssistantContext(settledLibrary)
-      : null),
-    [
-      activeTab,
-      detailPending,
-      settledLibrary,
-    ]
-  );
-  const assistant = useDocumentAssistant(assistantContext);
   const selectedLocalPath = selected
     ? resolveDocumentLocalPath(library, selected.path)
     : null;
@@ -4482,31 +4430,16 @@ function LibraryDetail({
   }, [detailPending, library.openPreview, selected?.documentId]);
 
   useEffect(() => {
-    if (activeTab !== "assistant") {
-      return;
-    }
-    void assistant.init();
-  }, [activeTab, assistant.init]);
-
-  useEffect(() => {
-    if (activeTab !== "assistant" || !assistant.ready) {
-      return;
-    }
-    void assistant.ensureSessionReady();
-  }, [activeTab, assistant.ensureSessionReady, assistant.ready]);
-
-  useEffect(() => {
     const element = detailScrollRef.current;
-    if (!element || activeTab === "assistant") {
+    if (!element) {
       return;
     }
     return installAutoHideScrollbarBehavior(element);
-  }, [activeTab, selected?.documentId, selectedFolder?.path]);
+  }, [selected?.documentId, selectedFolder?.path]);
 
   return (
     <aside
       className="affairs-detail-panel library-detail"
-      data-assistant-active={activeTab === "assistant" ? "true" : undefined}
       aria-label={t("libraryDetails")}
     >
       <header
@@ -4516,21 +4449,11 @@ function LibraryDetail({
         <div className="workbench-info-tabs affairs-auxiliary-tabs" role="tablist" aria-label={t("libraryDetails")}>
           <button
             type="button"
-            className={activeTab === "detail" ? "active" : ""}
+            className="active"
             role="tab"
-            aria-selected={activeTab === "detail"}
-            onClick={() => setActiveTab("detail")}
+            aria-selected={true}
           >
             {t("libraryObjectDetail")}
-          </button>
-          <button
-            type="button"
-            className={activeTab === "assistant" ? "active" : ""}
-            role="tab"
-            aria-selected={activeTab === "assistant"}
-            onClick={() => setActiveTab("assistant")}
-          >
-            {t("libraryAssistant")}
           </button>
         </div>
         <div
@@ -4539,50 +4462,8 @@ function LibraryDetail({
           data-window-drag-handle={overlayMacOsTitlebar ? "xfile-detail-header-spacer" : undefined}
           data-tauri-drag-region={overlayMacOsTitlebar ? "" : undefined}
         />
-        <div className="affairs-auxiliary-header-tools">
-          <div
-            className="affairs-auxiliary-header-actions"
-            data-visible={activeTab === "assistant" ? "true" : "false"}
-            aria-hidden={activeTab === "assistant" ? undefined : "true"}
-          >
-            {activeTab === "assistant" ? (
-              <>
-                <button
-                  type="button"
-                  className="workbench-nav-toolbar-button"
-                  aria-label={t("assistantSessionSelect")}
-                  title={t("assistantSessionSelect")}
-                  aria-haspopup="dialog"
-                  aria-expanded={assistantHistoryModalOpen}
-                  onClick={() => setAssistantHistoryModalOpen(true)}
-                >
-                  <AssistantHistoryIcon />
-                </button>
-                <button
-                  type="button"
-                  className="workbench-nav-toolbar-button"
-                  aria-label={t("assistantNewSession")}
-                  title={t("assistantNewSession")}
-                  aria-haspopup="dialog"
-                  aria-expanded={assistantCreateModalOpen}
-                  onClick={() => setAssistantCreateModalOpen(true)}
-                >
-                  <AssistantPlusIcon />
-                </button>
-              </>
-            ) : null}
-          </div>
-        </div>
       </header>
-      {activeTab === "assistant" ? (
-        <DocumentAssistantPanel
-          library={{
-            selectedDocuments: settledSelectedDocuments,
-            selectedFolderEntries: settledSelectedFolders,
-          }}
-          assistant={assistant}
-        />
-      ) : detailPending ? (
+      {detailPending ? (
         <LibraryDetailSkeleton />
       ) : !selected && !selectedFolder ? (
         <div
@@ -4759,32 +4640,6 @@ function LibraryDetail({
           </section>
         </div>
       ) : null}
-      <AssistantHistoryModal
-        open={assistantHistoryModalOpen}
-        currentSessionId={assistant.currentSessionId}
-        sessions={assistant.sessions}
-        onClose={() => setAssistantHistoryModalOpen(false)}
-        onSelect={(sessionId) => {
-          void assistant.loadSession(sessionId);
-          setAssistantHistoryModalOpen(false);
-        }}
-      />
-      <AssistantCreateSessionModal
-        open={assistantCreateModalOpen}
-        providers={assistant.providers}
-        currentProvider={assistant.provider}
-        onClose={() => setAssistantCreateModalOpen(false)}
-        onSelect={(providerId) => {
-          void (async () => {
-            const createdSessionId = await assistant.newSession(providerId);
-            if (createdSessionId) {
-              await assistant.loadSession(createdSessionId);
-              setActiveTab("assistant");
-            }
-            setAssistantCreateModalOpen(false);
-          })();
-        }}
-      />
     </aside>
   );
 }
@@ -9227,90 +9082,6 @@ export function handleFolderClick(library: LibraryState, path: string): void {
   library.selectFolderEntry(path);
 }
 
-function buildLibraryAssistantContext(
-  library: AssistantContextSource
-): DocumentAssistantContext | null {
-  const selectedDocuments = library.selectedDocuments;
-  const selectedFolders = library.selectedFolderEntries;
-  const explicitFolderPath =
-    library.viewState.browseMode === "folder" ? library.viewState.selectedFolderPath : null;
-  const fallbackFolder = explicitFolderPath && selectedFolders.length === 0 ? [explicitFolderPath] : [];
-  const folderPaths = [
-    ...selectedFolders.map((item) => item.path),
-    ...fallbackFolder
-  ];
-  const filePaths = selectedDocuments.map((item) => item.path);
-  const sourceRefs = Array.from(new Set([...filePaths, ...folderPaths]));
-
-  if (sourceRefs.length === 0) {
-    return null;
-  }
-
-  const selectionKind = resolveAssistantSelectionKind(filePaths.length, folderPaths.length);
-  return {
-    selectionLabel: buildAssistantSelectionLabel(selectedDocuments, folderPaths),
-    selectionSummary: buildAssistantSelectionSummary(selectedDocuments, folderPaths, selectionKind),
-    sourceRefs,
-    selectionKind
-  };
-}
-
-function resolveAssistantSelectionKind(
-  fileCount: number,
-  folderCount: number
-): DocumentAssistantContext["selectionKind"] {
-  if (fileCount === 0 && folderCount === 0) {
-    return "empty";
-  }
-  if (fileCount > 0 && folderCount > 0) {
-    return "mixed";
-  }
-  if (folderCount > 1) {
-    return "folders";
-  }
-  if (folderCount === 1) {
-    return "folder";
-  }
-  if (fileCount > 1) {
-    return "files";
-  }
-  return "file";
-}
-
-function buildAssistantSelectionLabel(
-  selectedDocuments: AssistantSelectionBridge["selectedDocuments"],
-  folderPaths: string[]
-): string {
-  const documentTitles = selectedDocuments.map((item) => item.title || getPathName(item.path) || item.path);
-  const names = [...documentTitles, ...folderPaths.map((path) => getPathName(path) || path)];
-  if (names.length === 1) {
-    return names[0] ?? t("assistantSelectionFallbackLabel");
-  }
-  return `${names[0] ?? t("assistantSelectionFallbackLabel")} 等 ${names.length} 项`;
-}
-
-function buildAssistantSelectionSummary(
-  selectedDocuments: AssistantSelectionBridge["selectedDocuments"],
-  folderPaths: string[],
-  selectionKind: DocumentAssistantContext["selectionKind"]
-): string {
-  const fileCount = selectedDocuments.length;
-  const folderCount = folderPaths.length;
-  if (selectionKind === "file") {
-    return selectedDocuments[0]?.summary?.trim() || t("assistantSelectionSingleFileSummary");
-  }
-  if (selectionKind === "folder") {
-    return t("assistantSelectionFolderSummary", { count: folderCount });
-  }
-  if (selectionKind === "files") {
-    return t("assistantSelectionFilesSummary", { count: fileCount });
-  }
-  if (selectionKind === "folders") {
-    return t("assistantSelectionFoldersSummary", { count: folderCount });
-  }
-  return t("assistantSelectionMixedSummary", { fileCount, folderCount });
-}
-
 export function resolveLibraryDocumentDisplayName(
   entry: Pick<LibraryDocumentRecord, "path" | "title">,
 ): string {
@@ -10188,224 +9959,6 @@ function renderListIcon() {
         fill="none"
         stroke="currentColor"
         strokeWidth="1.6"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-function buildAssistantSessionTitle(session: { title: string; createdAt: string }): string {
-  const normalized = session.title.trim();
-  if (normalized) {
-    return normalized;
-  }
-  const date = new Date(session.createdAt);
-  if (Number.isNaN(date.getTime())) {
-    return session.createdAt;
-  }
-  return `${date.getMonth() + 1}/${date.getDate()} ${String(date.getHours()).padStart(2, "0")}:${String(
-    date.getMinutes()
-  ).padStart(2, "0")}`;
-}
-
-function buildAssistantSessionMeta(messageCount: number, hasActiveRun: boolean): string {
-  return `${messageCount} 条 · ${hasActiveRun ? "运行中" : "已停止"}`;
-}
-
-function resolveAssistantProviderLabel(providerId: AssistantProviderId): string {
-  return providerId === "claude-code" ? "Claude Code" : "Codex";
-}
-
-function resolveAssistantProviderDescription(providerId: AssistantProviderId): string {
-  return providerId === "claude-code"
-    ? "Claude Code 已就绪"
-    : "Codex 已就绪";
-}
-
-function resolveAssistantProviderIcon(providerId: AssistantProviderId): string {
-  return providerId === "claude-code" ? claudeCodeIcon : codexIcon;
-}
-
-function resolveAssistantProviderStatus(item: {
-  id: AssistantProviderId;
-  available: boolean;
-  commandReady?: boolean;
-  authReady?: boolean;
-  detail: string | null;
-}): string {
-  if (item.available) {
-    return resolveAssistantProviderDescription(item.id);
-  }
-  if (item.detail?.trim()) {
-    return item.detail;
-  }
-  if (item.commandReady === false) {
-    return `未安装 ${resolveAssistantProviderLabel(item.id)} CLI`;
-  }
-  if (item.authReady === false) {
-    return `${resolveAssistantProviderLabel(item.id)} 未登录`;
-  }
-  return t("assistantProviderUnavailable");
-}
-
-function AssistantHistoryModal({
-  open,
-  currentSessionId,
-  sessions,
-  onClose,
-  onSelect,
-}: {
-  open: boolean;
-  currentSessionId: string | null;
-  sessions: Array<{
-    sessionId: string;
-    title: string;
-    provider: AssistantProviderId;
-    createdAt: string;
-    hasActiveRun: boolean;
-    messageCount: number;
-  }>;
-  onClose: () => void;
-  onSelect: (sessionId: string) => void;
-}) {
-  return (
-    <DesktopModal
-      open={open}
-      onClose={onClose}
-      title={t("assistantSessionSelect")}
-      description={t("assistantHistoryModalDescription")}
-      size="compact"
-      layout="list"
-      className="workbench-create-session-modal affairs-assistant-history-modal"
-    >
-      <ModalSection
-        heading={t("assistantHistorySessionCount")}
-        description={`${sessions.length} ${t("assistantHistorySessionUnit")}`}
-      >
-        {sessions.length === 0 ? (
-          <ModalEmptyState
-            compact
-            title={t("assistantSessionEmpty")}
-            description={t("assistantHistoryEmptyDescription")}
-          />
-        ) : (
-          <div className="affairs-assistant-history-list" role="list">
-            {sessions.map((session) => (
-              <button
-                key={session.sessionId}
-                type="button"
-                role="listitem"
-                className="affairs-assistant-history-item"
-                data-active={currentSessionId === session.sessionId ? "true" : undefined}
-                onClick={() => onSelect(session.sessionId)}
-              >
-                <div className="affairs-assistant-history-item-main">
-                  <div className="affairs-assistant-history-item-title-row">
-                    <span
-                      className="affairs-assistant-history-item-title"
-                      title={buildAssistantSessionTitle(session)}
-                    >
-                      {buildAssistantSessionTitle(session)}
-                    </span>
-                  </div>
-                  <div className="affairs-assistant-history-item-meta">
-                    {buildAssistantSessionMeta(session.messageCount, session.hasActiveRun)}
-                  </div>
-                </div>
-                <span className={`session-provider-badge ${session.provider}`}>
-                  {resolveAssistantProviderLabel(session.provider)}
-                </span>
-              </button>
-            ))}
-          </div>
-        )}
-      </ModalSection>
-    </DesktopModal>
-  );
-}
-
-function AssistantCreateSessionModal({
-  open,
-  providers,
-  currentProvider,
-  onClose,
-  onSelect,
-}: {
-  open: boolean;
-  providers: Array<{
-    id: AssistantProviderId;
-    label: string;
-    available: boolean;
-    commandReady?: boolean;
-    authReady?: boolean;
-    detail: string | null;
-  }>;
-  currentProvider: AssistantProviderId | null;
-  onClose: () => void;
-  onSelect: (providerId: AssistantProviderId) => void;
-}) {
-  return (
-    <DesktopModal
-      open={open}
-      onClose={onClose}
-      title={t("assistantNewSession")}
-      size="compact"
-      layout="form"
-      className="workbench-create-session-modal affairs-assistant-create-modal"
-    >
-      <ModalSection heading={t("assistantProviderSelect")}>
-        <div className="session-provider-grid">
-          {providers.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className="session-provider-card"
-              data-provider={item.id}
-              data-selected={currentProvider === item.id ? "true" : undefined}
-              disabled={!item.available}
-              onClick={() => onSelect(item.id)}
-            >
-              <span className="session-provider-card-icon affairs-assistant-provider-card-icon" aria-hidden="true">
-                <img
-                  src={resolveAssistantProviderIcon(item.id)}
-                  alt=""
-                  loading="eager"
-                  decoding="async"
-                />
-              </span>
-              <span className="session-provider-card-copy">
-                <strong>{resolveAssistantProviderLabel(item.id)}</strong>
-                <span className="session-provider-card-status">
-                  {resolveAssistantProviderStatus(item)}
-                </span>
-              </span>
-            </button>
-          ))}
-        </div>
-      </ModalSection>
-    </DesktopModal>
-  );
-}
-
-function AssistantHistoryIcon() {
-  return (
-    <svg viewBox="0 0 16 16" aria-hidden="true">
-      <path
-        d="M8 3.1a4.9 4.9 0 1 0 4.9 4.9A4.9 4.9 0 0 0 8 3.1Zm0-1.6a6.5 6.5 0 1 1-6.5 6.5A6.5 6.5 0 0 1 8 1.5Zm-.8 2.8h1.6v3.1l2.2 1.2-.8 1.4-3-1.6Z"
-        fill="currentColor"
-      />
-    </svg>
-  );
-}
-
-function AssistantPlusIcon() {
-  return (
-    <svg viewBox="0 0 16 16" aria-hidden="true">
-      <path
-        d="M8 3v10M3 8h10"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
         strokeLinecap="round"
       />
     </svg>

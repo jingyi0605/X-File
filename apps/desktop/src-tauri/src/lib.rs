@@ -332,10 +332,7 @@ impl BackendProcessManager {
         match Command::new(&self.command)
             .args(&self.args)
             .current_dir(&self.cwd)
-            .envs(resolve_backend_extra_env(
-                &self.cwd,
-                &self.server_state_path,
-            ))
+            .envs(resolve_backend_extra_env(&self.server_state_path))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -447,14 +444,7 @@ fn bundled_backend_entry_candidates(resource_dir: &std::path::Path) -> Vec<PathB
     Vec::new()
 }
 
-fn resolve_backend_extra_env(
-    cwd: &std::path::Path,
-    server_state_path: &PathBuf,
-) -> Vec<(String, String)> {
-    let bundled_plugin_dir = cwd
-        .parent()
-        .and_then(|dir| dir.parent().map(|parent| parent.join("x-file-plugins")))
-        .unwrap_or_else(|| cwd.join("x-file-plugins"));
+fn resolve_backend_extra_env(server_state_path: &PathBuf) -> Vec<(String, String)> {
     let mut envs = Vec::new();
     envs.push((
         "X_FILE_SERVER_STATE_PATH".to_string(),
@@ -478,12 +468,6 @@ fn resolve_backend_extra_env(
             envs.push(("X_FILE_SERVER_HOST".to_string(), host.to_string()));
         }
     }
-    if env::var("X_FILE_BUNDLED_PLUGIN_DIR").is_err() {
-        envs.push((
-            "X_FILE_BUNDLED_PLUGIN_DIR".to_string(),
-            bundled_plugin_dir.to_string_lossy().to_string(),
-        ));
-    }
     if env::var("X_FILE_DESKTOP_CLI_PATH").is_err() {
         if let Ok(current_exe) = env::current_exe() {
             envs.push((
@@ -503,7 +487,6 @@ struct DesktopState {
     initialization_window_restore_maximized: bool,
     initialization_window_active: bool,
     backend: BackendProcessManager,
-    resource_dir: Option<PathBuf>,
     native_context_menu_selection: Option<String>,
     native_library: NativeLibraryState,
     onlyoffice_bridge: OnlyOfficeBridgeState,
@@ -520,7 +503,6 @@ impl DesktopState {
             initialization_window_restore_maximized: false,
             initialization_window_active: false,
             backend: BackendProcessManager::from_env(),
-            resource_dir: None,
             native_context_menu_selection: None,
             native_library: NativeLibraryState::new(),
             onlyoffice_bridge: OnlyOfficeBridgeState::new(),
@@ -589,33 +571,6 @@ struct LocalOnlyOfficeResolvedSetting {
     user_display_name: Option<String>,
     user_avatar_url: Option<String>,
     jwt_secret: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-struct LocalPluginRegistryFile {
-    records: Vec<LocalPluginRegistryRecord>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LocalPluginRegistryRecord {
-    plugin_id: String,
-    version: String,
-    install_dir: String,
-    enabled: bool,
-    installed_at: String,
-    updated_at: String,
-    last_health_status: String,
-    last_error: Option<String>,
-    runtime_install_dir: Option<String>,
-    granted_capabilities: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
-struct LocalPluginCatalogItem {
-    manifest: Value,
-    registry: LocalPluginRegistryRecord,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -721,12 +676,6 @@ struct NativeOnlyOfficeSettingsInput {
     user_avatar_url: Option<String>,
     jwt_secret: Option<String>,
     clear_jwt_secret: Option<bool>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct NativePluginToggleRequest {
-    plugin_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2206,39 +2155,6 @@ fn native_get_onlyoffice_status() -> Result<Value, String> {
 }
 
 #[tauri::command]
-fn native_list_plugins(state: tauri::State<'_, Mutex<DesktopState>>) -> Result<Value, String> {
-    let resource_dir = {
-        let state = lock_desktop_state(&state);
-        state.resource_dir.clone()
-    };
-    read_local_plugin_list(resource_dir.as_ref())
-}
-
-#[tauri::command]
-fn native_enable_plugin(
-    state: tauri::State<'_, Mutex<DesktopState>>,
-    request: NativePluginToggleRequest,
-) -> Result<Value, String> {
-    let resource_dir = {
-        let state = lock_desktop_state(&state);
-        state.resource_dir.clone()
-    };
-    set_local_plugin_enabled(resource_dir.as_ref(), &request.plugin_id, true)
-}
-
-#[tauri::command]
-fn native_disable_plugin(
-    state: tauri::State<'_, Mutex<DesktopState>>,
-    request: NativePluginToggleRequest,
-) -> Result<Value, String> {
-    let resource_dir = {
-        let state = lock_desktop_state(&state);
-        state.resource_dir.clone()
-    };
-    set_local_plugin_enabled(resource_dir.as_ref(), &request.plugin_id, false)
-}
-
-#[tauri::command]
 fn native_get_http_server_state(
     state: tauri::State<'_, Mutex<DesktopState>>,
 ) -> Result<Value, String> {
@@ -3087,7 +3003,6 @@ fn configure_backend_process(app: &tauri::App) {
     let state = app.state::<Mutex<DesktopState>>();
     let mut state = state.lock().expect("桌面状态锁已损坏");
 
-    state.resource_dir = resource_dir.clone();
 
     if let Some(resource_dir) = resource_dir {
         state
@@ -5482,155 +5397,6 @@ where
     read_json_file(path).map(Some)
 }
 
-fn read_local_plugin_list(resource_dir: Option<&PathBuf>) -> Result<Value, String> {
-    let candidates = resolve_bundled_plugin_root_candidates(resource_dir);
-    let bundled_root_dir = candidates
-        .iter()
-        .find(|candidate| is_usable_bundled_plugin_root_dir(candidate))
-        .cloned();
-    let mut records = read_local_plugin_registry_records()?;
-    let mut record_map = HashMap::new();
-    for record in records.drain(..) {
-        record_map.insert(record.plugin_id.clone(), record);
-    }
-    let mut items: Vec<LocalPluginCatalogItem> = vec![];
-    let mut seen = HashSet::new();
-    if let Some(root_dir) = bundled_root_dir.as_ref() {
-        for entry in fs::read_dir(root_dir).map_err(|error| format!("读取插件目录失败：{error}"))?
-        {
-            let entry = entry.map_err(|error| format!("读取插件目录失败：{error}"))?;
-            let plugin_dir = entry.path();
-            if !plugin_dir.is_dir() {
-                continue;
-            }
-            let manifest_path = plugin_dir.join("manifest.json");
-            if !manifest_path.is_file() {
-                continue;
-            }
-            let manifest = read_json_file::<Value>(&manifest_path)?;
-            let plugin_id = manifest
-                .get("id")
-                .and_then(Value::as_str)
-                .unwrap_or(entry.file_name().to_string_lossy().as_ref())
-                .to_string();
-            let version = manifest
-                .get("version")
-                .and_then(Value::as_str)
-                .unwrap_or("0.0.0")
-                .to_string();
-            let record = record_map.remove(&plugin_id).unwrap_or_else(|| {
-                build_default_plugin_registry_record(&plugin_id, &version, &plugin_dir)
-            });
-            seen.insert(plugin_id.clone());
-            items.push(LocalPluginCatalogItem {
-                manifest,
-                registry: record,
-            });
-        }
-    }
-    for (plugin_id, record) in record_map {
-        if seen.contains(&plugin_id) {
-            continue;
-        }
-        let manifest_path = PathBuf::from(&record.install_dir).join("manifest.json");
-        if !manifest_path.is_file() {
-            continue;
-        }
-        let manifest = read_json_file::<Value>(&manifest_path)?;
-        items.push(LocalPluginCatalogItem {
-            manifest,
-            registry: record,
-        });
-    }
-    items.sort_by(|left, right| {
-        let left_name = left
-            .manifest
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or(&left.registry.plugin_id);
-        let right_name = right
-            .manifest
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or(&right.registry.plugin_id);
-        left_name.cmp(right_name)
-    });
-    Ok(json!({
-        "plugins": items.iter().map(|item| build_local_plugin_list_item(&item.manifest, &item.registry)).collect::<Vec<_>>(),
-        "pluginRootDir": x_file_data_dir().join("plugins").to_string_lossy().to_string(),
-        "bundledPluginRootDir": bundled_root_dir.as_ref().map(|path| path.to_string_lossy().to_string()),
-        "bundledPluginScanCandidates": candidates.iter().map(|path| path.to_string_lossy().to_string()).collect::<Vec<_>>(),
-    }))
-}
-
-fn set_local_plugin_enabled(
-    resource_dir: Option<&PathBuf>,
-    plugin_id: &str,
-    enabled: bool,
-) -> Result<Value, String> {
-    let plugin_id = plugin_id.trim();
-    if plugin_id.is_empty() {
-        return Err("插件 ID 不能为空".to_string());
-    }
-    let candidates = resolve_bundled_plugin_root_candidates(resource_dir);
-    let bundled_root_dir = candidates
-        .iter()
-        .find(|candidate| is_usable_bundled_plugin_root_dir(candidate))
-        .cloned();
-    let mut records = read_local_plugin_registry_records()?;
-    let mut catalog = vec![];
-    if let Some(items) = read_local_plugin_list(resource_dir)?
-        .get("plugins")
-        .and_then(Value::as_array)
-    {
-        catalog = items.clone();
-    }
-    let current = catalog
-        .into_iter()
-        .find(|item| {
-            item.get("registry")
-                .and_then(|value| value.get("pluginId"))
-                .and_then(Value::as_str)
-                == Some(plugin_id)
-        })
-        .ok_or_else(|| format!("插件未安装：{plugin_id}"))?;
-    let manifest = current
-        .get("manifest")
-        .cloned()
-        .ok_or_else(|| "插件 manifest 缺失".to_string())?;
-    let install_dir = current
-        .get("registry")
-        .and_then(|value| value.get("installDir"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| "插件安装目录缺失".to_string())?;
-    let version = manifest
-        .get("version")
-        .and_then(Value::as_str)
-        .unwrap_or("0.0.0");
-    let existing = records
-        .iter()
-        .find(|item| item.plugin_id == plugin_id)
-        .cloned();
-    let mut next_record = existing.unwrap_or_else(|| {
-        build_default_plugin_registry_record(plugin_id, version, &PathBuf::from(install_dir))
-    });
-    next_record.enabled = enabled;
-    next_record.updated_at = iso_now();
-    if enabled {
-        next_record.last_error = None;
-    }
-    records.retain(|item| item.plugin_id != plugin_id);
-    records.push(next_record.clone());
-    records.sort_by(|left, right| left.plugin_id.cmp(&right.plugin_id));
-    write_local_plugin_registry_records(&records)?;
-    Ok(json!({
-        "plugin": build_local_plugin_list_item(&manifest, &next_record),
-        "pluginRootDir": x_file_data_dir().join("plugins").to_string_lossy().to_string(),
-        "bundledPluginRootDir": bundled_root_dir.as_ref().map(|path| path.to_string_lossy().to_string()),
-        "bundledPluginScanCandidates": candidates.iter().map(|path| path.to_string_lossy().to_string()).collect::<Vec<_>>(),
-    }))
-}
-
 fn read_local_http_server_state(state: &mut DesktopState) -> Value {
     let file_path = resolve_local_http_server_state_path();
     let saved = read_optional_json_file::<Value>(&file_path)
@@ -6075,233 +5841,6 @@ fn clear_native_application_data(
     })
 }
 
-fn build_default_plugin_registry_record(
-    plugin_id: &str,
-    version: &str,
-    install_dir: &PathBuf,
-) -> LocalPluginRegistryRecord {
-    let now = iso_now();
-    LocalPluginRegistryRecord {
-        plugin_id: plugin_id.to_string(),
-        version: version.to_string(),
-        install_dir: install_dir.to_string_lossy().to_string(),
-        enabled: true,
-        installed_at: now.clone(),
-        updated_at: now,
-        last_health_status: "unknown".to_string(),
-        last_error: None,
-        runtime_install_dir: None,
-        granted_capabilities: vec![],
-    }
-}
-
-fn read_local_plugin_registry_records() -> Result<Vec<LocalPluginRegistryRecord>, String> {
-    let file_path = x_file_data_dir().join("plugin-registry.json");
-    let Some(payload) = read_optional_json_file::<LocalPluginRegistryFile>(&file_path)? else {
-        return Ok(vec![]);
-    };
-    Ok(payload.records)
-}
-
-fn write_local_plugin_registry_records(
-    records: &[LocalPluginRegistryRecord],
-) -> Result<(), String> {
-    write_json_file(
-        &x_file_data_dir().join("plugin-registry.json"),
-        &LocalPluginRegistryFile {
-            records: records.to_vec(),
-        },
-    )
-}
-
-fn resolve_bundled_plugin_root_candidates(resource_dir: Option<&PathBuf>) -> Vec<PathBuf> {
-    let mut candidates = vec![];
-    if let Ok(value) = env::var("X_FILE_BUNDLED_PLUGIN_DIR") {
-        let trimmed = value.trim();
-        if !trimmed.is_empty() {
-            candidates.push(PathBuf::from(trimmed));
-        }
-    }
-    if let Some(resource_dir) = resource_dir {
-        candidates.push(resource_dir.join("x-file-plugins"));
-    }
-    candidates.push(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("resources")
-            .join("x-file-plugins"),
-    );
-    candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../plugins"));
-    let mut deduped = vec![];
-    let mut seen = HashSet::new();
-    for candidate in candidates {
-        let key = candidate.to_string_lossy().to_string();
-        if seen.insert(key) {
-            deduped.push(candidate);
-        }
-    }
-    deduped
-}
-
-fn is_usable_bundled_plugin_root_dir(candidate: &PathBuf) -> bool {
-    if !candidate.is_dir() {
-        return false;
-    }
-    fs::read_dir(candidate)
-        .ok()
-        .map(|entries| {
-            entries
-                .filter_map(Result::ok)
-                .any(|entry| entry.path().join("manifest.json").is_file())
-        })
-        .unwrap_or(false)
-}
-
-fn build_local_plugin_list_item(manifest: &Value, registry: &LocalPluginRegistryRecord) -> Value {
-    json!({
-        "manifest": manifest,
-        "registry": registry,
-        "health": build_local_plugin_health(manifest, registry.enabled),
-    })
-}
-
-fn build_local_plugin_health(manifest: &Value, enabled: bool) -> Value {
-    let plugin_id = manifest
-        .get("id")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    if !enabled {
-        return json!({
-            "pluginId": plugin_id,
-            "enabled": false,
-            "status": "unknown",
-            "detail": "插件已禁用",
-            "commandReady": Value::Null,
-            "authReady": Value::Null,
-        });
-    }
-    let provider = manifest.get("provider");
-    if provider.is_none() {
-        return json!({
-            "pluginId": plugin_id,
-            "enabled": true,
-            "status": "healthy",
-            "detail": format!("{} 已启用", manifest.get("name").and_then(Value::as_str).unwrap_or(plugin_id)),
-            "commandReady": Value::Null,
-            "authReady": Value::Null,
-        });
-    }
-    let provider = provider.unwrap();
-    let provider_id = provider
-        .get("providerId")
-        .and_then(Value::as_str)
-        .unwrap_or(plugin_id);
-    let display_name = provider
-        .get("displayName")
-        .and_then(Value::as_str)
-        .unwrap_or(plugin_id);
-    let command = provider.get("command").and_then(Value::as_str);
-    let auth = provider.get("auth");
-    let auth_strategy = auth
-        .and_then(|value| value.get("strategy"))
-        .and_then(Value::as_str)
-        .unwrap_or("file_exists");
-    let auth_path = auth
-        .and_then(|value| value.get("path"))
-        .and_then(Value::as_str);
-    if auth_strategy == "custom" {
-        let command_ready = detect_local_command(command);
-        return json!({
-            "pluginId": plugin_id,
-            "enabled": true,
-            "status": if command_ready { "degraded" } else { "failed" },
-            "detail": format!("{} 需要插件自定义登录态探测，当前版本暂不支持自动校验", display_name),
-            "commandReady": command_ready,
-            "authReady": false,
-        });
-    }
-    let command_ready = detect_local_command(command);
-    if !command_ready {
-        return json!({
-            "pluginId": plugin_id,
-            "enabled": true,
-            "status": "failed",
-            "detail": format!("未检测到 {} 命令，请先安装 {} CLI", command.unwrap_or(display_name), display_name),
-            "commandReady": false,
-            "authReady": false,
-        });
-    }
-    let auth_ready = detect_local_auth(provider_id, auth_strategy, auth_path);
-    if !auth_ready {
-        return json!({
-            "pluginId": plugin_id,
-            "enabled": true,
-            "status": "degraded",
-            "detail": format!("未检测到 {} 登录态，请先在终端登录", display_name),
-            "commandReady": true,
-            "authReady": false,
-        });
-    }
-    json!({
-        "pluginId": plugin_id,
-        "enabled": true,
-        "status": "healthy",
-        "detail": Value::Null,
-        "commandReady": true,
-        "authReady": true,
-    })
-}
-
-fn detect_local_command(command: Option<&str>) -> bool {
-    let Some(command) = command.map(str::trim).filter(|value| !value.is_empty()) else {
-        return false;
-    };
-    let checker = if cfg!(target_os = "windows") {
-        "where"
-    } else {
-        "which"
-    };
-    Command::new(checker)
-        .arg(command)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
-}
-
-fn detect_local_auth(provider_id: &str, strategy: &str, explicit_path: Option<&str>) -> bool {
-    let source_path = explicit_path
-        .and_then(|value| {
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
-        })
-        .unwrap_or_else(|| match provider_id {
-            "codex" => "~/.codex/auth.json".to_string(),
-            "claude-code" => "~/.claude".to_string(),
-            _ => String::new(),
-        });
-    if source_path.is_empty() {
-        return false;
-    }
-    let resolved = expand_home_dir(&source_path);
-    match strategy {
-        "directory_exists" => resolved.is_dir(),
-        _ => resolved.is_file() || resolved.exists(),
-    }
-}
-
-fn expand_home_dir(value: &str) -> PathBuf {
-    if let Some(stripped) = value.strip_prefix("~/") {
-        return dirs_home_dir().join(stripped);
-    }
-    PathBuf::from(value)
-}
-
 fn normalize_optional_text(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
@@ -6428,7 +5967,7 @@ mod tests {
         )
         .expect("写入状态文件失败");
 
-        let envs = resolve_backend_extra_env(&temp_dir, &state_path);
+        let envs = resolve_backend_extra_env(&state_path);
         let env_map: HashMap<String, String> = envs.into_iter().collect();
 
         assert_eq!(
@@ -7732,9 +7271,6 @@ pub fn run() {
             native_get_onlyoffice_settings,
             native_save_onlyoffice_settings,
             native_get_onlyoffice_status,
-            native_list_plugins,
-            native_enable_plugin,
-            native_disable_plugin,
             native_get_http_server_state,
             native_save_http_server_state,
             http_service_hint,

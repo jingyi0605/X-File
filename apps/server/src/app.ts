@@ -4,10 +4,7 @@ import {
   HttpServerManager,
   type HttpServerRuntimeState,
 } from "./http-server-manager.js";
-import { AssistantController } from "./assistant/assistant-controller.js";
 import { registerLibraryEngineFeature } from "./library/library-engine-feature.js";
-import { registerAssistantRoutes } from "./routes/assistant-routes.js";
-import { LibraryBindingStore } from "./storage/library-binding-store.js";
 import { registerWebShellRoutes } from "./web-shell-routes.js";
 
 const APP_VERSION = "0.1.0";
@@ -17,7 +14,6 @@ export interface CreateServerOptions {
   httpServerRuntimeState?: HttpServerRuntimeState;
   httpServerManager?: HttpServerManager;
   manageHttpServerLifecycle?: boolean;
-  includeAssistant?: boolean;
   sidecarProfile?: "full" | "sidecar-only";
   forceWebDevProxy?: boolean;
 }
@@ -58,52 +54,15 @@ export function createServer(options: CreateServerOptions = {}) {
 
   // Node 入口现在只负责装配仍需 HTTP sidecar 的服务；
   // 文档库主读链与 refresh 宿主已经优先走桌面 native 路径。
-  const feature = registerLibraryEngineFeature(server, {
+  registerLibraryEngineFeature(server, {
     ...options,
     sidecarProfile: options.sidecarProfile ?? "sidecar-only",
   });
-  if (options.includeAssistant !== false) {
-    void registerAssistantRoutes(
-      server,
-      createLazyAssistantController(feature.libraryBindingStore, feature.pluginService),
-    );
-  }
   registerWebShellRoutes(server, {
     forceDevProxy: options.forceWebDevProxy === true
   });
 
   return server;
-}
-
-function createLazyAssistantController(
-  libraryBindingStore: LibraryBindingStore,
-  pluginService: ReturnType<typeof registerLibraryEngineFeature>["pluginService"]
-): AssistantController {
-  let controllerPromise: Promise<AssistantController> | null = null;
-
-  const resolveController = async (): Promise<AssistantController> => {
-    if (!controllerPromise) {
-      controllerPromise = import("./assistant/assistant-runtime-service.js").then(
-        ({ AssistantRuntimeService }) =>
-          new AssistantController(new AssistantRuntimeService(libraryBindingStore, pluginService)),
-      );
-    }
-    return controllerPromise;
-  };
-
-  return {
-    listProviders: async (request, reply) => (await resolveController()).listProviders(request, reply),
-    listSessions: async (request, reply) => (await resolveController()).listSessions(request, reply),
-    getSession: async (request, reply) => (await resolveController()).getSession(request, reply),
-    deleteSession: async (request, reply) => (await resolveController()).deleteSession(request, reply),
-    startSession: async (request, reply) => (await resolveController()).startSession(request, reply),
-    getMessages: async (request, reply) => (await resolveController()).getMessages(request, reply),
-    sendMessage: async (request, reply) => (await resolveController()).sendMessage(request, reply),
-    interrupt: async (request, reply) => (await resolveController()).interrupt(request, reply),
-    listPermissionRequests: async (request, reply) => (await resolveController()).listPermissionRequests(request, reply),
-    replyPermissionRequest: async (request, reply) => (await resolveController()).replyPermissionRequest(request, reply),
-    getAttachment: async (request, reply) => (await resolveController()).getAttachment(request, reply),
-  } as AssistantController;
 }
 
 function isAllowedLocalOrigin(origin: string): boolean {

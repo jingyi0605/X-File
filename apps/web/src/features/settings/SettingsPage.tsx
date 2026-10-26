@@ -8,21 +8,16 @@ import type {
   OnlyOfficeSettings,
   OnlyOfficeStatus,
   OnlyOfficeStatusState,
-  PluginListItem,
-  PluginListResult
 } from "@x-file/shared";
 
 import {
   browseHostDirectories,
-  disablePlugin,
-  enablePlugin,
   getHttpServerState,
   getLibraryBinding,
   getLibraryConfig,
   getLibrarySnapshot,
   getOnlyOfficeSettings,
   getOnlyOfficeStatus,
-  listPlugins,
   saveHttpServerState,
   saveLibraryBinding,
   saveLibraryConfig,
@@ -168,7 +163,6 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
   const [libraryIndexStatus, setLibraryIndexStatus] = useState<LibraryIndexStatus | null>(null);
   const [onlyOffice, setOnlyOffice] = useState<OnlyOfficeSettings | null>(null);
   const [onlyOfficeStatus, setOnlyOfficeStatus] = useState<OnlyOfficeStatus | null>(null);
-  const [pluginList, setPluginList] = useState<PluginListResult | null>(null);
   const [serverState, setServerState] = useState<HttpServerState | null>(null);
   const [runtimeForm, setRuntimeForm] = useState<RuntimeFormState>(() => {
     const config = getRuntimeConfigSnapshot().config;
@@ -269,12 +263,6 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
       const settings = await getOnlyOfficeSettings();
       applyOnlyOffice(settings);
       setOnlyOfficeStatus(await getOnlyOfficeStatus());
-    } catch (err) {
-      setError((current) => current ?? toApiErrorMessage(err));
-    }
-
-    try {
-      setPluginList(await listPlugins());
     } catch (err) {
       setError((current) => current ?? toApiErrorMessage(err));
     }
@@ -403,22 +391,6 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
       });
       applyServerState(saved);
       setMessage(t("settingsSaveSuccess"));
-    } catch (err) {
-      setError(toApiErrorMessage(err));
-    }
-  }
-
-  async function handlePluginToggle(plugin: PluginListItem): Promise<void> {
-    try {
-      setError(null);
-      const result = plugin.registry.enabled
-        ? await disablePlugin(plugin.registry.pluginId)
-        : await enablePlugin(plugin.registry.pluginId);
-      setPluginList((current) => ({
-        pluginRootDir: result.pluginRootDir,
-        plugins: mergePluginItem(current?.plugins ?? [], result.plugin),
-      }));
-      setMessage(plugin.registry.enabled ? t("settingsPluginDisableSuccess") : t("settingsPluginEnableSuccess"));
     } catch (err) {
       setError(toApiErrorMessage(err));
     }
@@ -811,21 +783,7 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
         </div>
 
         <div className="settings-integration-cards" role="list" aria-label={t("settingsIntegrationHubTitle")}>
-          <article className="settings-section settings-plugin-card settings-plugin-card-featured" role="listitem">
-            <div className="settings-heading-row">
-              <div>
-                <h3>{t("settingsPluginsTitle")}</h3>
-                <p className="settings-helper-text">{t("settingsPluginsDescription")}</p>
-              </div>
-            </div>
-            <div className="settings-current">
-              <span>{t("settingsBundledPluginListLabel")}</span>
-              <strong>{pluginList?.plugins.length ?? 0}</strong>
-            </div>
-            <p className="settings-helper-text">{t("settingsBundledPluginDescription")}</p>
-          </article>
-
-          <article className="settings-section settings-plugin-card settings-onlyoffice-card" role="listitem" data-health={onlyOfficeStatus?.state ?? "unknown"}>
+          <article className="settings-section settings-onlyoffice-card" role="listitem" data-health={onlyOfficeStatus?.state ?? "unknown"}>
             <div className="settings-heading-row">
               <div>
                 <h3>{t("settingsOnlyOfficeTitle")}</h3>
@@ -833,7 +791,7 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
             </div>
             <div className="settings-current">
               <span>{t("settingsOnlyOfficeEnabled")}</span>
-              <strong>{onlyOfficeForm.enabled ? t("settingsPluginEnabled") : t("settingsPluginDisabled")}</strong>
+              <strong>{onlyOfficeForm.enabled ? t("settingsIntegrationEnabled") : t("settingsIntegrationDisabled")}</strong>
             </div>
             <div className="settings-current">
               <span>{t("settingsOnlyOfficeInstance")}</span>
@@ -875,34 +833,6 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
             </div>
           </article>
 
-          {pluginList && pluginList.plugins.length > 0 ? pluginList.plugins.map((plugin) => (
-            <article
-              key={plugin.registry.pluginId}
-              className="settings-section settings-plugin-card settings-plugin-list-item"
-              role="listitem"
-              data-health={plugin.health.status}
-            >
-              <div className="settings-plugin-list-main">
-                <div className="settings-plugin-list-title">
-                  <h3>{plugin.manifest.name}</h3>
-                </div>
-                <div className="settings-plugin-list-meta" aria-label={plugin.manifest.name}>
-                  <span className="settings-runtime-badge">{renderPluginHealthLabel(plugin)}</span>
-                  <span className="settings-plugin-version">{plugin.registry.version}</span>
-                </div>
-              </div>
-              <div className="settings-plugin-list-toggle">
-                <span className="settings-plugin-toggle-state">
-                  {plugin.registry.enabled ? t("settingsPluginEnabled") : t("settingsPluginDisabled")}
-                </span>
-                <MacSwitch
-                  checked={plugin.registry.enabled}
-                  label={plugin.manifest.name}
-                  onChange={() => void handlePluginToggle(plugin)}
-                />
-              </div>
-            </article>
-          )) : null}
         </div>
       </section>
     ),
@@ -1829,26 +1759,6 @@ function buildOnlyOfficeStatusCards(status: OnlyOfficeStatus | null): OnlyOffice
   }
 
   return cards;
-}
-
-function renderPluginHealthLabel(plugin: PluginListItem): string {
-  switch (plugin.health.status) {
-    case "healthy":
-      return t("settingsPluginHealthHealthy");
-    case "degraded":
-      return t("settingsPluginHealthDegraded");
-    case "failed":
-      return t("settingsPluginHealthFailed");
-    default:
-      return t("settingsPluginHealthUnknown");
-  }
-}
-
-function mergePluginItem(items: PluginListItem[], nextItem: PluginListItem): PluginListItem[] {
-  const nextItems = items.filter((item) => item.registry.pluginId !== nextItem.registry.pluginId);
-  nextItems.push(nextItem);
-  nextItems.sort((left, right) => left.manifest.name.localeCompare(right.manifest.name, "en"));
-  return nextItems;
 }
 
 function normalizeOptionalText(value: string): string | null {

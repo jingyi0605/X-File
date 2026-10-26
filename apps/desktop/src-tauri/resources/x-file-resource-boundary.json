@@ -1,20 +1,6 @@
 {
-  "generatedAt": "2026-06-18T09:51:59Z",
-  "resources": {
-    "x-file-plugins": {
-      "requiredInMainBundle": true,
-      "purpose": [
-        "提供内置 Integration Plugin 资源目录"
-      ],
-      "entry": "x-file-plugins/*",
-      "mustKeepBecause": [
-        "插件默认启用和运行时安装仍依赖这份内置资源"
-      ],
-      "removableAfter": [
-        "改成外部安装或另一个明确的插件分发载体"
-      ]
-    }
-  },
+  "generatedAt": "2026-10-26T14:19:39.233Z",
+  "resources": {},
   "sidecarPolicy": {
     "bundledByDefault": false,
     "message": "正式包默认不再内置 Node sidecar；如需外部 sidecar，必须由调用方显式提供。"

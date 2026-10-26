@@ -11,7 +11,6 @@ import type {
   LibrarySnapshot,
   OnlyOfficeSettings,
   OnlyOfficeStatus,
-  PluginListResult,
   LibraryTagDetailWithRules,
   LibraryTagNode,
 } from "@x-file/shared";
@@ -21,8 +20,6 @@ export const libraryApiMock = {
   createLibraryTag: vi.fn(),
   deleteLibraryTag: vi.fn(),
   downloadLibraryFile: vi.fn(),
-  disablePlugin: vi.fn(),
-  enablePlugin: vi.fn(),
   getHttpServerState: vi.fn(),
   getLibraryBinding: vi.fn(),
   getLibraryConfig: vi.fn(),
@@ -33,8 +30,6 @@ export const libraryApiMock = {
   getLibraryTagRecomputeTask: vi.fn(),
   getOnlyOfficeSettings: vi.fn(),
   getOnlyOfficeStatus: vi.fn(),
-  installPlugin: vi.fn(),
-  listPlugins: vi.fn(),
   listLibraryDocuments: vi.fn(),
   listLibraryFiles: vi.fn(),
   listLibraryTagDetails: vi.fn(),
@@ -48,8 +43,6 @@ export const libraryApiMock = {
   saveLibraryBinding: vi.fn(),
   saveLibraryConfig: vi.fn(),
   saveOnlyOfficeSettings: vi.fn(),
-  uninstallPlugin: vi.fn(),
-  updatePlugin: vi.fn(),
   updateLibraryFavorites: vi.fn(),
   updateLibraryTag: vi.fn(),
 };
@@ -77,33 +70,6 @@ export function resetLibraryApiMock(): void {
   });
   libraryApiMock.getOnlyOfficeSettings.mockResolvedValue(createOnlyOfficeSettings());
   libraryApiMock.getOnlyOfficeStatus.mockResolvedValue(createOnlyOfficeStatus());
-  libraryApiMock.listPlugins.mockResolvedValue(createPluginListResult());
-  libraryApiMock.installPlugin.mockImplementation(async () => ({
-    plugin: createPluginListResult({
-      plugins: [createPluginListItem()],
-    }).plugins[0],
-    pluginRootDir: "/Users/test/.x-file/plugins",
-  }));
-  libraryApiMock.enablePlugin.mockImplementation(async () => ({
-    plugin: createPluginListItem(),
-    pluginRootDir: "/Users/test/.x-file/plugins",
-  }));
-  libraryApiMock.disablePlugin.mockImplementation(async () => ({
-    plugin: createPluginListItem({
-      registry: {
-        enabled: false,
-      },
-    }),
-    pluginRootDir: "/Users/test/.x-file/plugins",
-  }));
-  libraryApiMock.updatePlugin.mockImplementation(async () => ({
-    plugin: createPluginListItem({
-      manifest: { version: "0.2.0" },
-      registry: { version: "0.2.0" },
-    }),
-    pluginRootDir: "/Users/test/.x-file/plugins",
-  }));
-  libraryApiMock.uninstallPlugin.mockResolvedValue(createPluginListResult());
   libraryApiMock.listLibraryTags.mockResolvedValue([]);
   libraryApiMock.listLibraryDocuments.mockResolvedValue(createDocumentList());
   libraryApiMock.listLibraryFiles.mockResolvedValue(createFileList());
@@ -237,66 +203,6 @@ export function createOnlyOfficeStatus(
     checkedAt: "2026-06-09T00:00:00.000Z",
     checks: [],
     ...overrides,
-  };
-}
-
-export function createPluginListResult(
-  overrides: Partial<PluginListResult> = {},
-): PluginListResult {
-  return {
-    plugins: [],
-    pluginRootDir: "/Users/test/.x-file/plugins",
-    ...overrides,
-  };
-}
-
-export function createPluginListItem(
-  overrides: {
-    manifest?: Record<string, unknown>;
-    registry?: Record<string, unknown>;
-    health?: Record<string, unknown>;
-  } = {},
-) {
-  return {
-    manifest: {
-      id: "codex",
-      name: "Codex Integration",
-      version: "0.1.0",
-      pluginType: "integration" as const,
-      minAppVersion: "0.1.0",
-      entry: {
-        backend: "backend/index.js",
-        ui: "ui/index.js",
-      },
-      capabilities: ["provider.detect"],
-      provider: null,
-      signature: {
-        algorithm: "unsigned",
-        value: "development",
-      },
-      ...overrides.manifest,
-    },
-    registry: {
-      pluginId: "codex",
-      version: "0.1.0",
-      installDir: "/Users/test/.x-file/plugins/codex/0.1.0",
-      enabled: true,
-      installedAt: "2026-06-16T00:00:00.000Z",
-      updatedAt: "2026-06-16T00:00:00.000Z",
-      lastHealthStatus: "unknown" as const,
-      lastError: null,
-      grantedCapabilities: ["provider.detect"],
-      ...overrides.registry,
-    },
-    health: {
-      pluginId: "codex",
-      enabled: true,
-      status: "degraded" as const,
-      detail: "未检测到 Codex 登录态，请先在终端登录",
-      commandReady: true,
-      authReady: false,
-      ...overrides.health,
-    },
   };
 }
 

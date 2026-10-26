@@ -33,6 +33,15 @@ describe("LibraryPage 高风险交互", () => {
     resetLibraryApiMock();
   });
 
+  it("文档详情保留对象详情与预览，不再显示文件助手或会话入口", async () => {
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
+
+    expect(await screen.findByRole("tab", { name: "对象详情" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /助手|Assistant/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /新建会话|历史会话/ })).not.toBeInTheDocument();
+  });
+
   it("初始化页默认使用后端给出的用户主目录 X-File，并提示用户可改成常用文件路径", async () => {
     const defaultRootDir = "/Users/test/X-File";
     libraryApiMock.getLibrarySnapshot.mockResolvedValue(

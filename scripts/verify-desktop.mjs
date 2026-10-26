@@ -104,8 +104,14 @@ function checkBundledResourceMapping(config) {
     return;
   }
 
+  for (const source of Object.keys(resources)) {
+    if (source.includes("x-file-plugins")) {
+      failures.push("bundle.resources 不应再携带内置助手插件。");
+    }
+  }
+
   const requiredMappings = {
-    "resources/x-file-plugins": "x-file-plugins",
+    "resources/x-file-resource-boundary.json": "x-file-resource-boundary.json",
   };
 
   for (const [source, target] of Object.entries(requiredMappings)) {
@@ -126,8 +132,8 @@ function checkBundledResourceMapping(config) {
   try {
     const boundaryManifest = JSON.parse(readFileSync(boundaryManifestPath, "utf8"));
     const resourcesConfig = boundaryManifest.resources;
-    if (!resourcesConfig?.["x-file-plugins"]?.requiredInMainBundle) {
-      failures.push("x-file-resource-boundary.json 缺少 x-file-plugins 主包声明。");
+    if (resourcesConfig?.["x-file-plugins"]) {
+      failures.push("x-file-resource-boundary.json 不应再声明内置助手插件资源。");
     }
     if (resourcesConfig?.["x-file-server"] || resourcesConfig?.["x-file-runtime"]) {
       failures.push("x-file-resource-boundary.json 不应再把 x-file-server 或 x-file-runtime 作为正式包资源声明。");
@@ -151,14 +157,14 @@ function checkBundledResourceMapping(config) {
     if (hostConfig?.nodeSidecar?.explicitOptInEnv !== "X_FILE_EXTERNAL_NODE_SIDECAR") {
       failures.push("x-file-resource-boundary.json 的外部 sidecar 显式开关必须是 X_FILE_EXTERNAL_NODE_SIDECAR。");
     }
-    checkBundledResourceContents(resourcesConfig);
+    checkBundledResourceContents();
   } catch (error) {
     failures.push(`解析 x-file-resource-boundary.json 失败：${error instanceof Error ? error.message : String(error)}`);
     checkBundledResourceContents();
   }
 }
 
-function checkBundledResourceContents(resourcesConfig = undefined) {
+function checkBundledResourceContents() {
   const resourcesRoot = path.join(rootDir, "apps/desktop/src-tauri/resources");
   if (existsSync(path.join(resourcesRoot, "x-file-runtime"))) {
     warnings.push("正式包默认不再内置 x-file-runtime，但资源目录仍然存在。");
@@ -166,32 +172,8 @@ function checkBundledResourceContents(resourcesConfig = undefined) {
   if (existsSync(path.join(resourcesRoot, "x-file-server"))) {
     warnings.push("正式包默认不再内置 x-file-server，但资源目录仍然存在。");
   }
-  checkBundledPluginDescriptorOnlyBoundaries(path.join(resourcesRoot, "x-file-plugins"));
-}
-
-function checkBundledPluginDescriptorOnlyBoundaries(pluginRootDir) {
-  if (!existsSync(pluginRootDir)) {
-    failures.push(`缺少 bundled plugin 资源目录：${pluginRootDir}`);
-    return;
-  }
-
-  const pluginDirs = readdirSync(pluginRootDir, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => path.join(pluginRootDir, entry.name));
-
-  for (const pluginDir of pluginDirs) {
-    const manifestPath = path.join(pluginDir, "manifest.json");
-    if (!existsSync(manifestPath)) {
-      continue;
-    }
-    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-    const backendEntry = manifest?.entry?.backend;
-    const hasDescriptor = Boolean(manifest?.assistant?.descriptor);
-    const backendDir = path.join(pluginDir, "backend");
-    const backendEntries = existsSync(backendDir) ? readdirSync(backendDir) : [];
-    if (hasDescriptor && !backendEntry && backendEntries.length > 0) {
-      failures.push(`descriptor-only bundled plugin 不应继续携带 backend 目录：${path.relative(rootDir, backendDir)}`);
-    }
+  if (existsSync(path.join(resourcesRoot, "x-file-plugins"))) {
+    failures.push("资源目录仍然包含已移除的内置助手插件，请先运行 prepare:bundled-server。");
   }
 }
 
