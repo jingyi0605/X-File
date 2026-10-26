@@ -169,8 +169,9 @@
   --workbench-sidebar-icon-inset: 18px;
   --workbench-sidebar-icon-slot-size: 18px;
   --workbench-sidebar-item-padding-end: 8px;
-  --tag-tree-row-height: var(--control-height-md);
-  --tag-tree-row-gap: calc(var(--space-1) / 2);
+  --tag-tree-row-height: var(--control-height-sm);
+  --tag-tree-row-gap: calc(var(--space-1) / 4);
+  --tag-tree-column-gap: calc(var(--space-1) / 2);
   --tag-tree-row-inset: calc(var(--workbench-sidebar-icon-inset) - var(--space-2));
   --tag-tree-branch-inset: var(--space-2);
   --tag-tree-radius: var(--app-button-radius);
@@ -5324,7 +5325,7 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
 }
 
 .affairs-tag-tree-list {
-  gap: var(--space-3);
+  gap: var(--space-1);
   padding-block: var(--space-1);
 }
 
@@ -5392,7 +5393,7 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
   grid-template-columns: var(--workbench-sidebar-icon-slot-size) minmax(0, 1fr);
   align-items: center;
   min-height: var(--tag-tree-row-height);
-  column-gap: var(--tag-tree-row-gap);
+  column-gap: var(--tag-tree-column-gap);
   padding-left: var(--tag-tree-row-inset);
 }
 
@@ -5400,7 +5401,7 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
   display: inline-flex;
   width: var(--workbench-sidebar-icon-slot-size);
   min-width: var(--workbench-sidebar-icon-slot-size);
-  height: var(--control-height-sm);
+  height: var(--tag-tree-row-height);
   align-items: center;
   justify-content: center;
   border: 0;
@@ -5515,7 +5516,7 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
   position: relative;
   align-self: stretch;
   min-height: var(--tag-tree-row-height);
-  padding: 0 var(--space-3) 0 calc(var(--tag-tree-branch-inset) + var(--workbench-sidebar-icon-slot-size) + var(--tag-tree-row-gap));
+  padding: 0 var(--space-3) 0 calc(var(--tag-tree-branch-inset) + var(--workbench-sidebar-icon-slot-size) + var(--tag-tree-column-gap));
   border: 0;
   border-radius: var(--tag-tree-radius);
   background: transparent;
