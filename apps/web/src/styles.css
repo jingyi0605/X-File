@@ -1341,6 +1341,13 @@ p {
   justify-content: center;
 }
 
+.affairs-doc-title,
+.affairs-finder-name {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
 .affairs-doc-title {
   display: -webkit-box;
   width: 100%;
