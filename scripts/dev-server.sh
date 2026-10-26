@@ -14,4 +14,8 @@ echo "启动 X-File 后端：http://${X_FILE_SERVER_HOST}:${X_FILE_SERVER_PORT}"
 echo "后端状态文件：${X_FILE_SERVER_STATE_PATH}"
 echo "Node sidecar profile：${X_FILE_NODE_SIDECAR_PROFILE}"
 
+if [[ "${X_FILE_DEV_WATCH:-1}" == "0" ]]; then
+  exec pnpm --filter @x-file/server exec node --import tsx src/main.ts
+fi
+
 exec pnpm --filter @x-file/server dev

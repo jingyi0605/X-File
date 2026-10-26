@@ -55,10 +55,12 @@ run_workspace_script_if_exists "@x-file/shared" build
 run_workspace_script_if_exists "@x-file/indexer" build
 run_workspace_script_if_exists "@x-file/library-engine" build
 
-echo "启动共享包监听编译"
-start_workspace_script_if_exists "@x-file/shared" dev
-start_workspace_script_if_exists "@x-file/indexer" dev
-start_workspace_script_if_exists "@x-file/library-engine" dev
+if [[ "${X_FILE_DEV_WATCH:-1}" != "0" ]]; then
+  echo "启动共享包监听编译"
+  start_workspace_script_if_exists "@x-file/shared" dev
+  start_workspace_script_if_exists "@x-file/indexer" dev
+  start_workspace_script_if_exists "@x-file/library-engine" dev
+fi
 
 bash scripts/dev-server.sh &
 children+=("$!")

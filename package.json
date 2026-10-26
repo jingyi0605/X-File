@@ -11,6 +11,7 @@
     "dev:web": "bash scripts/dev-web.sh",
     "dev:server": "bash scripts/dev-server.sh",
     "dev:desktop": "pnpm --filter @x-file/desktop tauri:dev",
+    "dev:desktop:frontend": "bash scripts/dev-desktop-frontend.sh",
     "start:server": "pnpm --filter @x-file/server start",
     "verify:desktop": "node scripts/verify-desktop.mjs",
     "package:desktop": "bash scripts/package-desktop.sh",
