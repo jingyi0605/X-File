@@ -142,12 +142,6 @@ function checkBundledResourceMapping(config) {
       failures.push("x-file-resource-boundary.json 必须保留正式包不内置 Node sidecar 的中文说明。");
     }
     const hostConfig = boundaryManifest.desktopHost;
-    if (hostConfig?.nodeWorkerFallback?.allowHostNodeFallbackByDefault !== false) {
-      failures.push("x-file-resource-boundary.json 必须显式声明桌面宿主默认不允许 host Node worker fallback。");
-    }
-    if (hostConfig?.nodeWorkerFallback?.explicitOptInEnv !== "X_FILE_ENABLE_HOST_NODE_WORKER_FALLBACK") {
-      failures.push("x-file-resource-boundary.json 的 host Node worker fallback 显式开关必须是 X_FILE_ENABLE_HOST_NODE_WORKER_FALLBACK。");
-    }
     if (hostConfig?.nodeSidecar?.profileInMainBundle !== "none") {
       failures.push("x-file-resource-boundary.json 必须显式声明正式包默认不内置 Node sidecar。");
     }

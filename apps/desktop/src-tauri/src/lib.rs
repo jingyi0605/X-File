@@ -7,12 +7,8 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use hmac::{Hmac, Mac};
 use jwt::SignWithKey;
 use mime_guess::from_path;
-use native_core::export_core::{run_native_library_export_core, NativeLibraryExportCoreRequest};
-use native_core::index_core::{run_native_library_index_core, NativeLibraryIndexCoreRequest};
-use native_core::search_core::{run_native_library_search_core, NativeLibrarySearchCoreRequest};
-use native_core::state_store::{
-    active_file_state_snapshot_path, priority_hints_path, summary_backfill_state_path,
-};
+use native_core::scheduler::{lock_root, RootScheduler};
+use native_core::state_store::priority_hints_path;
 use native_core::tag_core::{
     count_local_tags, create_native_library_tag, delete_native_library_tag,
     expand_local_tag_ancestor_paths, get_native_document_tag_details,
@@ -23,13 +19,8 @@ use native_core::tag_core::{
     NativeSaveDocumentTagsRequest, NativeSaveFolderTagsRequest,
     NativeSaveLibraryTagDefinitionRequest,
 };
-use native_export::{
-    run_native_export_worker, run_native_search_worker, NativeExportRequest, NativeSearchRequest,
-};
-use native_index::{
-    is_native_library_path_visible, run_native_index_worker, run_native_parser,
-    run_native_summary_backfill_worker, NativeIndexRequest, NativeParserRequest,
-};
+use native_export::{run_native_export_worker, NativeExportRequest};
+use native_index::{is_native_library_path_visible, run_native_index_worker, NativeIndexRequest};
 use notify::{Config as NotifyConfig, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -639,43 +630,12 @@ struct OnlyOfficeCallbackTokenPayload {
 #[serde(rename_all = "camelCase")]
 struct ResourceBoundaryManifest {
     resources: Option<HashMap<String, ResourceBoundaryResource>>,
-    #[allow(dead_code)]
-    desktop_host: Option<ResourceBoundaryDesktopHost>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct ResourceBoundaryResource {
     required_in_main_bundle: Option<bool>,
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-struct ResourceBoundaryDesktopHost {
-    #[allow(dead_code)]
-    node_worker_fallback: Option<ResourceBoundaryNodeWorkerFallback>,
-    #[allow(dead_code)]
-    node_sidecar: Option<ResourceBoundaryNodeSidecar>,
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-struct ResourceBoundaryNodeWorkerFallback {
-    #[allow(dead_code)]
-    allow_host_node_fallback_by_default: Option<bool>,
-    #[allow(dead_code)]
-    explicit_opt_in_env: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-struct ResourceBoundaryNodeSidecar {
-    #[allow(dead_code)]
-    profile_in_main_bundle: Option<String>,
-    #[allow(dead_code)]
-    library_core_http_routes_served_by_default: Option<bool>,
-    #[allow(dead_code)]
-    explicit_opt_in_env: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -727,6 +687,8 @@ struct NativeLibraryWatcherRequest {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NativeLibraryRefreshRequest {
+    #[serde(default)]
+    target_paths: Vec<String>,
     reason: Option<String>,
     target_path: Option<String>,
     mode: Option<String>,
@@ -737,14 +699,15 @@ struct NativeLibraryRefreshRequest {
 struct NativeLibraryWorkerCliPayload {
     root_dir: String,
     target_path: Option<String>,
+    #[serde(default)]
+    target_paths: Vec<String>,
     allowed_extensions: Option<Vec<String>>,
     included_hidden_paths: Option<Vec<String>>,
     hide_dot_files: Option<bool>,
     hide_system_folders: Option<bool>,
     reason: Option<String>,
     dirty_scope: Option<Value>,
-    file_path: Option<String>,
-    extension: Option<String>,
+    tag_store: Option<LocalStoredLibraryTags>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1320,18 +1283,6 @@ struct LocalRuntimeExportCatalogSnapshot {
     documents: Vec<LocalRuntimeSnapshotDocument>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LocalRuntimeActiveFileStateSnapshot {
-    files: Vec<LocalRuntimeIndexedDocumentState>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LocalRuntimeSummaryBackfillStateSnapshot {
-    files: Vec<LocalRuntimeIndexedDocumentState>,
-}
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LocalLibrarySnapshot {
@@ -1457,7 +1408,6 @@ struct NativeWatcherRuntime {
     last_refresh_requested_at: Option<String>,
     last_refresh_reason: Option<String>,
     last_error: Option<String>,
-    last_event_unix_ms: Option<i64>,
 }
 
 impl NativeWatcherRuntime {
@@ -1467,7 +1417,6 @@ impl NativeWatcherRuntime {
             last_refresh_requested_at: None,
             last_refresh_reason: None,
             last_error: None,
-            last_event_unix_ms: None,
         }
     }
 }
@@ -1532,20 +1481,109 @@ impl NativeLibraryState {
     }
 }
 
-fn summary_backfill_spawn_registry() -> &'static Mutex<HashSet<String>> {
-    static REGISTRY: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-    REGISTRY.get_or_init(|| Mutex::new(HashSet::new()))
+#[derive(Clone)]
+struct LibraryWork {
+    app: Option<AppHandle>,
+    mode: String,
+    payload: NativeLibraryWorkerCliPayload,
 }
 
-#[cfg(not(test))]
-fn resolve_library_worker_cli_path() -> Result<PathBuf, String> {
-    if let Ok(explicit) = env::var("X_FILE_DESKTOP_CLI_PATH") {
-        let trimmed = explicit.trim();
-        if !trimmed.is_empty() {
-            return Ok(PathBuf::from(trimmed));
+fn library_scheduler() -> &'static RootScheduler<LibraryWork> {
+    static SCHEDULER: OnceLock<RootScheduler<LibraryWork>> = OnceLock::new();
+    SCHEDULER.get_or_init(RootScheduler::new)
+}
+
+fn merge_library_work(pending: &mut LibraryWork, next: LibraryWork) {
+    if pending.mode != next.mode {
+        pending.mode = "full".to_string();
+    }
+    let paths = |payload: &NativeLibraryWorkerCliPayload| {
+        if payload.target_paths.is_empty() {
+            payload.target_path.iter().cloned().collect::<Vec<_>>()
+        } else {
+            payload.target_paths.clone()
+        }
+    };
+    let left = paths(&pending.payload);
+    let right = paths(&next.payload);
+    let mut targets = if left.is_empty() || right.is_empty() {
+        Vec::new()
+    } else {
+        left.into_iter().chain(right).collect::<Vec<_>>()
+    };
+    targets.sort();
+    targets.dedup();
+    let mut minimal = Vec::new();
+    let mut accepted = HashSet::new();
+    for target in targets {
+        if !target
+            .rmatch_indices('/')
+            .any(|(index, _)| accepted.contains(&target[..index]))
+        {
+            accepted.insert(target.clone());
+            minimal.push(target);
         }
     }
-    env::current_exe().map_err(|error| format!("解析 library worker helper 路径失败：{error}"))
+    pending.payload.target_path = if minimal.len() == 1 {
+        minimal.pop()
+    } else {
+        None
+    };
+    pending.payload.target_paths = minimal;
+    pending.app = next.app.or_else(|| pending.app.clone());
+    pending.payload.reason = next.payload.reason;
+    pending.payload.allowed_extensions = next.payload.allowed_extensions;
+    pending.payload.included_hidden_paths = next.payload.included_hidden_paths;
+    pending.payload.hide_dot_files = next.payload.hide_dot_files;
+    pending.payload.hide_system_folders = next.payload.hide_system_folders;
+}
+
+fn schedule_library_work(
+    mode: &str,
+    payload: NativeLibraryWorkerCliPayload,
+    app: Option<AppHandle>,
+) -> bool {
+    let root = payload.root_dir.clone();
+    let start = library_scheduler().submit(
+        &root,
+        LibraryWork {
+            app,
+            mode: mode.to_string(),
+            payload,
+        },
+        merge_library_work,
+    );
+    if start {
+        thread::spawn(move || loop {
+            let Some(work) = library_scheduler().next(&root) else {
+                break;
+            };
+            let started = std::time::Instant::now();
+            let started_at_ms = epoch_millis();
+            let target = work.payload.target_path.clone();
+            let target_count = work.payload.target_paths.len();
+            let reason = work.payload.reason.clone();
+            let result = run_native_library_worker_mode(&work.mode, work.payload);
+            let metrics = match &result {
+                Ok(value) => json!({ "rootDir": root, "mode": work.mode, "reason": reason,
+                    "startedAtMs": started_at_ms, "completedAtMs": epoch_millis(),
+                    "targetPath": target, "targetPathCount": target_count,
+                    "durationMs": started.elapsed().as_secs_f64() * 1000.0,
+                    "index": { "scannedCount": value["index"]["scannedCount"],
+                        "indexedCount": value["index"]["indexedCount"],
+                        "unchangedCount": value["index"]["unchangedCount"],
+                        "deletedCount": value["index"]["deletedCount"],
+                        "timingsMs": value["index"]["timingsMs"] },
+                    "filesWrittenCount": value["exportResult"]["filesWritten"].as_array().map_or(0, Vec::len) }),
+                Err(error) => json!({ "rootDir": root, "error": error }),
+            };
+            println!("[x-file native] task.complete {}", metrics);
+            if let Some(app) = work.app {
+                let _ = app.emit("x-file-library-updated", json!({ "rootDir": root }));
+            }
+        });
+    }
+    !start
 }
 
 fn normalize_library_worker_reason(reason: Option<&str>, fallback: &str) -> String {
@@ -1572,76 +1610,14 @@ fn build_native_library_worker_payload(
     NativeLibraryWorkerCliPayload {
         root_dir: binding.root_dir.clone(),
         target_path,
+        target_paths: Vec::new(),
         allowed_extensions: Some(binding.allowed_extensions.clone()),
         included_hidden_paths: Some(binding.included_hidden_paths.clone()),
         hide_dot_files: Some(binding.hide_dot_files),
         hide_system_folders: Some(binding.hide_system_folders),
         reason: Some(reason),
         dirty_scope,
-        file_path: None,
-        extension: None,
-    }
-}
-
-fn run_native_summary_backfill_followed_by_search(
-    request: NativeIndexRequest,
-) -> Result<Value, String> {
-    println!(
-        "[x-file native] summary-backfill.start reason={} targetPath={}",
-        request.reason,
-        request.target_path.as_deref().unwrap_or("<root>")
-    );
-    let result = run_native_summary_backfill_worker(request.clone());
-    match result {
-        Ok(value) => {
-            println!("[x-file native] summary-backfill.done result={value}");
-            let changed_paths = value
-                .get("changedPaths")
-                .and_then(Value::as_array)
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            if changed_paths.is_empty() {
-                return Ok(value);
-            }
-            let dirty_scope = json!({
-                "trigger": "summary_backfill",
-                "changedPaths": changed_paths,
-                "deletedPaths": [],
-                "dirtyDirectories": [],
-                "dirtyTagPaths": [],
-                "dirtyMetaShards": [],
-                "dirtyDetailShards": [],
-                "dirtyPostingBuckets": [],
-                "dirtyRelations": [],
-            });
-            match run_native_search_worker(NativeSearchRequest {
-                root_dir: request.root_dir.clone(),
-                reason: "summary_backfill".to_string(),
-                target_path: request.target_path.clone(),
-                dirty_scope: Some(dirty_scope),
-            }) {
-                Ok(search_result) => {
-                    println!(
-                        "[x-file native] summary-backfill.search-only.done result={search_result}"
-                    );
-                    Ok(value)
-                }
-                Err(error) => {
-                    eprintln!("[x-file native] summary-backfill.search-only.failed: {error}");
-                    Err(error)
-                }
-            }
-        }
-        Err(error) => {
-            eprintln!("[x-file native] summary-backfill.failed: {error}");
-            Err(error)
-        }
+        tag_store: None,
     }
 }
 
@@ -1649,41 +1625,33 @@ fn run_native_library_worker_mode(
     mode: &str,
     payload: NativeLibraryWorkerCliPayload,
 ) -> Result<Value, String> {
-    let reason = normalize_library_worker_reason(payload.reason.as_deref(), "desktop_native_worker_cli");
+    let _root_lock = lock_root(&payload.root_dir)?;
+    let reason =
+        normalize_library_worker_reason(payload.reason.as_deref(), "desktop_native_worker_cli");
     let target_path = normalize_library_worker_target_path(payload.target_path.as_deref());
 
     match mode {
-        "parse-file" => {
-            let file_path = payload
-                .file_path
-                .clone()
-                .or_else(|| payload.target_path.clone())
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| payload.root_dir.clone());
-            let extension = payload
-                .extension
-                .clone()
-                .filter(|value| !value.trim().is_empty())
-                .or_else(|| {
-                    payload
-                        .allowed_extensions
-                        .as_ref()
-                        .and_then(|items| items.first().cloned())
-                })
-                .or_else(|| {
-                    Some(file_path.as_str())
-                        .and_then(|value| {
-                            std::path::Path::new(value)
-                                .extension()
-                                .and_then(|ext| ext.to_str())
-                        })
-                        .map(|ext| format!(".{ext}"))
-                })
-                .unwrap_or_default();
-            run_native_parser(NativeParserRequest {
-                file_path,
-                extension,
-            })
+        "tags-only" => {
+            let mut binding = default_local_library_binding();
+            binding.root_dir = payload.root_dir;
+            let store = payload
+                .tag_store
+                .ok_or_else(|| "标签任务缺少 tagStore".to_string())?;
+            let snapshot = native_core::tag_core::build_local_tag_snapshot_core(&binding, &store)?;
+            let count = snapshot.documents.len();
+            write_runtime_export_catalog_snapshot(&binding.root_dir, &snapshot)?;
+            let export = run_native_export_worker(NativeExportRequest {
+                root_dir: binding.root_dir,
+                reason,
+                target_path: None,
+                dirty_scope: json!({ "trigger": "full", "changedPaths": [], "deletedPaths": [],
+                    "dirtyDirectories": [], "dirtyTagPaths": [], "dirtyMetaShards": [],
+                    "dirtyDetailShards": [], "dirtyPostingBuckets": [], "dirtyRelations": [] }),
+            })?;
+            Ok(json!({ "scannedCount": count, "updatedCount": count,
+                "directAssignedCount": snapshot.documents.iter().map(|doc| doc.tags.len()).sum::<usize>(),
+                "derivedAssignedCount": snapshot.documents.iter().map(|doc| doc.derived_tags.len()).sum::<usize>(),
+                "exportedAt": export["exportedAt"] }))
         }
         "index-only" => {
             let allowed_extensions = payload.allowed_extensions.unwrap_or_default();
@@ -1696,9 +1664,9 @@ fn run_native_library_worker_mode(
                 included_hidden_paths,
                 hide_dot_files,
                 hide_system_folders,
-                config_relative_path: ".ai-index/doc-semantic-index.config.json".to_string(),
                 reason,
                 target_path,
+                target_paths: payload.target_paths,
             })
         }
         "export-only" => {
@@ -1712,28 +1680,6 @@ fn run_native_library_worker_mode(
                 dirty_scope,
             })
         }
-        "search-only" => run_native_search_worker(NativeSearchRequest {
-            root_dir: payload.root_dir,
-            reason,
-            target_path,
-            dirty_scope: payload.dirty_scope,
-        }),
-        "summary-backfill" => {
-            let allowed_extensions = payload.allowed_extensions.unwrap_or_default();
-            let included_hidden_paths = payload.included_hidden_paths.unwrap_or_default();
-            let hide_dot_files = payload.hide_dot_files.unwrap_or(true);
-            let hide_system_folders = payload.hide_system_folders.unwrap_or(true);
-            run_native_summary_backfill_followed_by_search(NativeIndexRequest {
-                root_dir: payload.root_dir,
-                allowed_extensions,
-                included_hidden_paths,
-                hide_dot_files,
-                hide_system_folders,
-                config_relative_path: ".ai-index/doc-semantic-index.config.json".to_string(),
-                reason,
-                target_path,
-            })
-        }
         "full" => {
             let allowed_extensions = payload.allowed_extensions.unwrap_or_default();
             let included_hidden_paths = payload.included_hidden_paths.unwrap_or_default();
@@ -1745,100 +1691,24 @@ fn run_native_library_worker_mode(
                 included_hidden_paths,
                 hide_dot_files,
                 hide_system_folders,
-                config_relative_path: ".ai-index/doc-semantic-index.config.json".to_string(),
                 reason: reason.clone(),
                 target_path: target_path.clone(),
+                target_paths: payload.target_paths,
             };
             let index_result = run_native_index_worker(index_request.clone())?;
-            let dirty_scope = index_result.get("dirtyScope").cloned().ok_or_else(|| {
-                "index-only worker 未返回 dirtyScope，无法继续执行 export-only".to_string()
-            })?;
-            if dirty_scope.is_null() {
-                return Err("index-only worker 返回了空 dirtyScope，宿主不会继续触发 export-only".to_string());
-            }
+            let dirty_scope = index_result["dirtyScope"].clone();
             let export_result = run_native_export_worker(NativeExportRequest {
                 root_dir: payload.root_dir.clone(),
                 reason: reason.clone(),
                 target_path: target_path.clone(),
                 dirty_scope: dirty_scope.clone(),
             })?;
-            run_native_search_worker(NativeSearchRequest {
-                root_dir: payload.root_dir,
-                reason,
-                target_path,
-                dirty_scope: Some(dirty_scope),
-            })?;
-            run_native_summary_backfill_followed_by_search(index_request)?;
-            Ok(export_result)
+            Ok(
+                json!({ "index": index_result["index"], "exportResult": export_result,
+                "status": read_local_runtime_status(&index_request.root_dir)? }),
+            )
         }
         other => Err(format!("library worker CLI 不支持的 mode：{other}")),
-    }
-}
-
-fn spawn_native_library_worker_process(
-    mode: &str,
-    payload: NativeLibraryWorkerCliPayload,
-    registry_root_dir: Option<String>,
-) -> Result<(), String> {
-    #[cfg(test)]
-    {
-        let mode = mode.to_string();
-        thread::spawn(move || {
-            let result = run_native_library_worker_mode(&mode, payload);
-            if let Some(root_dir) = registry_root_dir {
-                if let Ok(mut guard) = summary_backfill_spawn_registry().lock() {
-                    guard.remove(&root_dir);
-                }
-            }
-            if let Err(error) = result {
-                eprintln!("[x-file native] worker mode={mode} failed: {error}");
-            }
-        });
-        return Ok(());
-    }
-
-    #[cfg(not(test))]
-    {
-        let helper_path = resolve_library_worker_cli_path()?;
-        let raw_payload = serde_json::to_string(&payload)
-            .map_err(|error| format!("序列化 library worker payload 失败：{error}"))?;
-        let mut child = Command::new(&helper_path)
-            .arg("library-worker")
-            .arg(mode)
-            .arg(raw_payload)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(|error| {
-                format!(
-                    "启动 library worker helper 失败 mode={} path={}: {error}",
-                    mode,
-                    helper_path.display()
-                )
-            })?;
-        let mode_label = mode.to_string();
-        thread::spawn(move || {
-            let wait_result = child.wait();
-            if let Some(root_dir) = registry_root_dir {
-                if let Ok(mut guard) = summary_backfill_spawn_registry().lock() {
-                    guard.remove(&root_dir);
-                }
-            }
-            match wait_result {
-                Ok(status) if status.success() => {}
-                Ok(status) => eprintln!(
-                    "[x-file native] worker helper exited abnormally mode={} code={:?}",
-                    mode_label,
-                    status.code()
-                ),
-                Err(error) => eprintln!(
-                    "[x-file native] worker helper wait failed mode={}: {error}",
-                    mode_label
-                ),
-            }
-        });
-        Ok(())
     }
 }
 
@@ -1955,6 +1825,7 @@ fn stop_native_library_watcher(
 
 #[tauri::command]
 fn start_native_library_watcher(
+    app: AppHandle,
     state: tauri::State<'_, Mutex<DesktopState>>,
     request: NativeLibraryWatcherRequest,
 ) -> Result<NativeLibraryWatcherStatus, String> {
@@ -1982,46 +1853,45 @@ fn start_native_library_watcher(
         "[x-file native] watcher.start rootDir={} transport=native",
         root_dir_string
     );
-    let watcher_resource_dir = {
-        let state = lock_desktop_state(&state);
-        state.resource_dir.clone()
-    };
     let runtime = Arc::new(Mutex::new(NativeWatcherRuntime::new()));
     let runtime_for_callback = Arc::clone(&runtime);
     let canonical_root_for_callback = canonical_root.clone();
+    let (events, receiver) = std::sync::mpsc::channel::<Vec<String>>();
+    thread::spawn(move || {
+        while let Ok(first) = receiver.recv() {
+            let mut paths = first.into_iter().collect::<std::collections::BTreeSet<_>>();
+            let started = std::time::Instant::now();
+            while let Some(remaining) = Duration::from_millis(150).checked_sub(started.elapsed()) {
+                match receiver.recv_timeout(remaining) {
+                    Ok(next) => paths.extend(next),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+                }
+            }
+            let _ = schedule_native_library_refresh(
+                NativeLibraryRefreshRequest {
+                    reason: Some("native_watcher_change".to_string()),
+                    target_path: None,
+                    target_paths: paths.into_iter().collect(),
+                    mode: None,
+                },
+                Some(app.clone()),
+            );
+        }
+    });
     let mut watcher = RecommendedWatcher::new(
         move |result: Result<Event, notify::Error>| match result {
             Ok(event) => {
                 if !should_handle_native_watcher_event(&canonical_root_for_callback, &event) {
                     return;
                 }
-                let now_ms = chrono::Utc::now().timestamp_millis();
-                if let Ok(mut runtime) = runtime_for_callback.lock() {
-                    if runtime
-                        .last_event_unix_ms
-                        .is_some_and(|last_ms| now_ms.saturating_sub(last_ms) < 1200)
-                    {
-                        return;
-                    }
-                    runtime.last_event_unix_ms = Some(now_ms);
-                }
-                println!(
-                    "[x-file native] watcher.event reason=native_watcher_change transport=native"
-                );
                 if let Ok(mut runtime) = runtime_for_callback.lock() {
                     runtime.last_event_at = Some(iso_now());
                     runtime.last_refresh_requested_at = Some(iso_now());
                     runtime.last_refresh_reason = Some("native_watcher_change".to_string());
                     runtime.last_error = None;
                 }
-                let _ = run_native_library_index_worker_detached(
-                    watcher_resource_dir.clone(),
-                    NativeLibraryRefreshRequest {
-                        reason: Some("native_watcher_change".to_string()),
-                        target_path: None,
-                        mode: None,
-                    },
-                );
+                let _ = events.send(native_watcher_targets(&canonical_root_for_callback, &event));
             }
             Err(error) => {
                 if let Ok(mut runtime) = runtime_for_callback.lock() {
@@ -2051,10 +1921,25 @@ fn start_native_library_watcher(
 }
 
 fn should_handle_native_watcher_event(root_dir: &Path, event: &Event) -> bool {
+    (event.need_rescan()
+        || event.kind.is_modify()
+        || event.kind.is_create()
+        || event.kind.is_remove())
+        && ((event.need_rescan() && event.paths.is_empty())
+            || event
+                .paths
+                .iter()
+                .any(|path| !is_native_runtime_artifact_path(root_dir, path)))
+}
+
+fn native_watcher_targets(root: &Path, event: &Event) -> Vec<String> {
     event
         .paths
         .iter()
-        .any(|path| !is_native_runtime_artifact_path(root_dir, path))
+        .filter(|path| !is_native_runtime_artifact_path(root, path))
+        .filter_map(|path| path.strip_prefix(root).ok())
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+        .collect()
 }
 
 fn is_native_runtime_artifact_path(root_dir: &Path, path: &Path) -> bool {
@@ -2072,6 +1957,7 @@ fn is_native_runtime_artifact_path(root_dir: &Path, path: &Path) -> bool {
 
 #[tauri::command]
 fn native_request_library_refresh(
+    app: AppHandle,
     state: tauri::State<'_, Mutex<DesktopState>>,
     request: NativeLibraryRefreshRequest,
 ) -> Result<NativeLibraryRefreshResponse, String> {
@@ -2095,82 +1981,31 @@ fn native_request_library_refresh(
     );
     let binding = read_local_library_binding()?
         .ok_or_else(|| "文档库绑定不存在，无法执行索引 worker".to_string())?;
-    let current_status = read_local_runtime_status(&binding.root_dir)?;
-    if current_status
-        .as_ref()
-        .is_some_and(|status| matches!(status.state.as_str(), "queued" | "running"))
     {
-        let watcher = {
-            let state = lock_desktop_state(&state);
-            state.native_library.snapshot()
-        };
-        return Ok(NativeLibraryRefreshResponse {
-            watcher,
-            backend_response: json!({
-                "accepted": true,
-                "deduped": true,
-                "scheduled": true,
-                "reason": reason,
-                "targetPath": request.target_path,
-                "taskId": Value::Null,
-                "status": current_status.unwrap_or_else(|| empty_local_status("running", None)),
-                "directoryStatus": Value::Null,
-            }),
-        });
-    }
-
-    let resource_dir = {
         let mut state = lock_desktop_state(&state);
         state.native_library.last_refresh_requested_at = Some(iso_now());
         state.native_library.last_refresh_reason = Some(reason.clone());
         state.native_library.last_error = None;
-        state.resource_dir.clone()
-    };
+    }
 
-    let request_for_worker = request.clone();
-    thread::spawn(move || {
-        let result = run_native_library_index_worker_detached(resource_dir, request_for_worker);
-        if let Err(error) = result {
-            eprintln!("[x-file native] refresh.worker failed: {error}");
-        }
-    });
+    let deduped = schedule_native_library_refresh(request.clone(), Some(app))?;
 
     let watcher = {
         let state = lock_desktop_state(&state);
         state.native_library.snapshot()
     };
-    let status =
-        read_local_runtime_status(&binding.root_dir)?.unwrap_or_else(|| LocalLibraryIndexStatus {
-            state: "queued".to_string(),
-            dirty_reasons: vec![reason.clone()],
-            last_requested_at: Some(iso_now()),
-            last_started_at: None,
-            last_completed_at: None,
-            last_failed_at: None,
-            next_allowed_at: None,
-            running_task_id: None,
-            running_stage: Some("index_text".to_string()),
-            error_summary: None,
-            worker_health: None,
-            progress: Some(LocalLibraryIndexProgress {
-                scanned_count: 0,
-                indexed_count: 0,
-                skipped_count: 0,
-                failed_count: 0,
-                unchanged_count: 0,
-                total_count: None,
-                max_concurrency: Some(1),
-                active_task_count: 0,
-                pending_task_count: 0,
-                completed_task_count: 0,
-            }),
-            runtime_index_state: None,
-        });
+    let mut status = read_local_runtime_status(&binding.root_dir)?
+        .unwrap_or_else(|| empty_local_status("queued", None));
+    status.state = "queued".to_string();
+    status.last_requested_at = Some(iso_now());
+    status.next_allowed_at = None;
+    status.error_summary = None;
+    status.dirty_reasons = vec![reason.clone()];
     Ok(NativeLibraryRefreshResponse {
         watcher,
         backend_response: json!({
             "accepted": true,
-            "deduped": false,
+            "deduped": deduped,
             "scheduled": true,
             "reason": reason,
             "targetPath": request.target_path,
@@ -2222,21 +2057,6 @@ fn native_get_library_snapshot(
     let snapshot = serde_json::to_value(read_local_library_snapshot(&watcher)?)
         .map_err(|error| format!("序列化本地 snapshot 失败：{error}"))?;
     Ok(NativeLibrarySnapshotResponse { watcher, snapshot })
-}
-
-#[tauri::command]
-fn native_get_library_status() -> Result<Value, String> {
-    let Some(binding) = read_local_library_binding()? else {
-        return serde_json::to_value(empty_local_status("fresh", None))
-            .map_err(|error| format!("序列化本地 status 失败：{error}"));
-    };
-    if !binding.initialized {
-        return serde_json::to_value(empty_local_status("fresh", None))
-            .map_err(|error| format!("序列化本地 status 失败：{error}"));
-    }
-    let status = read_local_runtime_status(&binding.root_dir)?
-        .unwrap_or_else(|| empty_local_status("fresh", None));
-    serde_json::to_value(status).map_err(|error| format!("序列化本地 status 失败：{error}"))
 }
 
 #[tauri::command]
@@ -2832,9 +2652,9 @@ fn resolve_post_initialization_workbench_geometry(
         }
     }
 
-    current_geometry
-        .or(restore_geometry)
-        .map(|geometry| scale_main_window_geometry_from_center(geometry, POST_INITIALIZATION_WORKBENCH_SCALE))
+    current_geometry.or(restore_geometry).map(|geometry| {
+        scale_main_window_geometry_from_center(geometry, POST_INITIALIZATION_WORKBENCH_SCALE)
+    })
 }
 
 fn resolve_monitor_for_geometry(
@@ -2924,8 +2744,7 @@ fn animate_main_window_geometry_transition(
         for step in 1..=POST_INITIALIZATION_RESIZE_ANIMATION_STEPS {
             let linear_progress = step as f64 / POST_INITIALIZATION_RESIZE_ANIMATION_STEPS as f64;
             let eased_progress = 1.0 - (1.0 - linear_progress).powi(3);
-            let frame_geometry =
-                interpolate_main_window_geometry(from, to, eased_progress);
+            let frame_geometry = interpolate_main_window_geometry(from, to, eased_progress);
             apply_main_window_geometry(&window, frame_geometry);
             thread::sleep(Duration::from_millis(
                 POST_INITIALIZATION_RESIZE_ANIMATION_FRAME_MS,
@@ -3004,8 +2823,7 @@ fn set_main_window_initialization_mode(
         let restore_geometry = capture_main_window_geometry_from_webview(window)
             .or(desktop_state.main_window_geometry);
         let restore_maximized = window.is_maximized().unwrap_or(false);
-        desktop_state.initialization_window_restore_geometry =
-            restore_geometry;
+        desktop_state.initialization_window_restore_geometry = restore_geometry;
         desktop_state.initialization_window_restore_maximized = restore_maximized;
         // 先标记为初始化态，避免下面的原生缩放事件把初始化尺寸错误持久化。
         desktop_state.initialization_window_active = true;
@@ -3084,11 +2902,9 @@ fn set_main_window_initialization_mode(
             .map_err(|error| format!("恢复工作台最大化状态失败：{error}"))?;
     } else {
         let current_geometry = capture_main_window_geometry_from_webview(window);
-        let target_geometry = resolve_post_initialization_workbench_geometry(
-            current_geometry,
-            restore_geometry,
-        )
-        .map(|geometry| clamp_main_window_geometry_to_monitor(window, geometry));
+        let target_geometry =
+            resolve_post_initialization_workbench_geometry(current_geometry, restore_geometry)
+                .map(|geometry| clamp_main_window_geometry_to_monitor(window, geometry));
 
         if let Some(geometry) = target_geometry {
             if let Some(current) = current_geometry {
@@ -3283,140 +3099,13 @@ fn configure_backend_process(app: &tauri::App) {
     }
 }
 
-fn run_native_library_index_worker(
-    state: &mut DesktopState,
-    request: NativeLibraryRefreshRequest,
-) -> Result<Value, String> {
-    let native_library = &mut state.native_library;
-    let binding = read_local_library_binding()?
-        .ok_or_else(|| "文档库绑定不存在，无法执行索引 worker".to_string())?;
-    let reason = request
-        .reason
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("native_manual_refresh")
-        .to_string();
-    let target_path = request
-        .target_path
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string);
-    let mode = request
-        .mode
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("full")
-        .to_string();
-
-    native_library.last_refresh_requested_at = Some(iso_now());
-    native_library.last_refresh_reason = Some(reason.clone());
-    native_library.last_error = None;
-
-    println!(
-        "[x-file native] refresh.forward transport=worker mode={} reason={} targetPath={}",
-        mode,
-        reason,
-        target_path.as_deref().unwrap_or("<root>")
-    );
-    if mode == "full" {
-        let index_result = run_native_library_index_worker_once(
-            state,
-            &binding,
-            &reason,
-            target_path.clone(),
-            "index-only",
-            None,
-        )?;
-        let dirty_scope = index_result.get("dirtyScope").cloned().ok_or_else(|| {
-            "index-only worker 未返回 dirtyScope，无法继续执行 export-only".to_string()
-        })?;
-        if dirty_scope.is_null() {
-            return Err(
-                "index-only worker 返回了空 dirtyScope，宿主不会继续触发 export-only".to_string(),
-            );
-        }
-        let export_result = run_native_library_index_worker_once(
-            state,
-            &binding,
-            &reason,
-            target_path.clone(),
-            "export-only",
-            Some(dirty_scope.clone()),
-        )?;
-        run_native_library_index_worker_once(
-            state,
-            &binding,
-            &reason,
-            target_path.clone(),
-            "search-only",
-            Some(dirty_scope),
-        )?;
-        spawn_native_summary_backfill_worker(binding.clone(), reason.clone(), target_path);
-        return Ok(export_result);
-    }
-
-    run_native_library_index_worker_once(state, &binding, &reason, target_path, &mode, None)
-}
-
-fn spawn_native_summary_backfill_worker(
-    binding: LocalLibraryBinding,
-    reason: String,
-    target_path: Option<String>,
-) {
-    let root_dir = binding.root_dir.clone();
-    let payload = build_native_library_worker_payload(&binding, reason, target_path, None);
-    if let Err(error) = spawn_native_library_worker_process(
-        "summary-backfill",
-        payload,
-        Some(root_dir.clone()),
-    ) {
-        if let Ok(mut guard) = summary_backfill_spawn_registry().lock() {
-            guard.remove(&root_dir);
-        }
-        eprintln!("[x-file native] summary-backfill.spawn failed: {error}");
-    }
-}
-
-fn run_native_library_index_worker_once(
-    state: &mut DesktopState,
-    binding: &LocalLibraryBinding,
-    reason: &str,
-    target_path: Option<String>,
-    mode: &str,
-    dirty_scope: Option<Value>,
-) -> Result<Value, String> {
-    let native_library = &mut state.native_library;
-    if mode == "export-only" {
-        let payload = dirty_scope
-            .ok_or_else(|| "export-only 缺少 dirtyScope，无法执行 Rust 原生导出".to_string())?;
-        return run_native_library_export_once(binding, reason, target_path, payload);
-    }
-    if mode == "search-only" {
-        return run_native_library_search_once(binding, reason, target_path, dirty_scope);
-    }
-    if mode == "index-only" {
-        println!(
-            "[x-file native] index-only force rust core executor for extensions={} targetPath={}",
-            binding.allowed_extensions.join(","),
-            target_path.as_deref().unwrap_or("<root>")
-        );
-        return run_native_library_index_once(binding, reason, target_path);
-    }
-    let message = format!("未知的桌面原生 library 模式：{mode}");
-    native_library.last_error = Some(message.clone());
-    Err(message)
-}
-
 fn run_native_library_export_once(
     binding: &LocalLibraryBinding,
     reason: &str,
     target_path: Option<String>,
     dirty_scope: Value,
 ) -> Result<Value, String> {
-    run_native_library_export_core(NativeLibraryExportCoreRequest {
+    run_native_export_worker(NativeExportRequest {
         root_dir: binding.root_dir.clone(),
         reason: reason.to_string(),
         target_path,
@@ -3424,41 +3113,10 @@ fn run_native_library_export_once(
     })
 }
 
-fn run_native_library_search_once(
-    binding: &LocalLibraryBinding,
-    reason: &str,
-    target_path: Option<String>,
-    dirty_scope: Option<Value>,
-) -> Result<Value, String> {
-    run_native_library_search_core(NativeLibrarySearchCoreRequest {
-        root_dir: binding.root_dir.clone(),
-        reason: reason.to_string(),
-        target_path,
-        dirty_scope,
-    })
-}
-
-fn run_native_library_index_once(
-    binding: &LocalLibraryBinding,
-    reason: &str,
-    target_path: Option<String>,
-) -> Result<Value, String> {
-    run_native_library_index_core(NativeLibraryIndexCoreRequest {
-        root_dir: binding.root_dir.clone(),
-        allowed_extensions: binding.allowed_extensions.clone(),
-        included_hidden_paths: binding.included_hidden_paths.clone(),
-        hide_dot_files: binding.hide_dot_files,
-        hide_system_folders: binding.hide_system_folders,
-        config_relative_path: binding.config_relative_path.clone(),
-        reason: reason.to_string(),
-        target_path,
-    })
-}
-
-fn run_native_library_index_worker_detached(
-    _resource_dir: Option<PathBuf>,
+fn schedule_native_library_refresh(
     request: NativeLibraryRefreshRequest,
-) -> Result<(), String> {
+    app: Option<AppHandle>,
+) -> Result<bool, String> {
     let binding = read_local_library_binding()?
         .ok_or_else(|| "文档库绑定不存在，无法执行索引 worker".to_string())?;
     let reason =
@@ -3471,8 +3129,9 @@ fn run_native_library_index_worker_detached(
         .filter(|value| !value.is_empty())
         .unwrap_or("full")
         .to_string();
-    let payload = build_native_library_worker_payload(&binding, reason, target_path, None);
-    spawn_native_library_worker_process(&mode, payload, None)
+    let mut payload = build_native_library_worker_payload(&binding, reason, target_path, None);
+    payload.target_paths = request.target_paths;
+    Ok(schedule_library_work(&mode, payload, app))
 }
 
 fn read_local_library_snapshot(
@@ -3516,7 +3175,6 @@ fn read_local_library_snapshot(
         });
     }
 
-    ensure_summary_backfill_running(&binding)?;
     let runtime_status = read_local_runtime_status(&binding.root_dir)?;
     let export_payload = read_local_library_export_payload(&binding.root_dir)?;
     let Some(export_payload) = export_payload else {
@@ -3550,9 +3208,9 @@ fn read_local_library_snapshot(
         requires_initialization: false,
         initialization_redirect_path: "/init".to_string(),
         status: status.clone(),
-        tags: export_payload.tags,
+        tags: export_payload.tags.clone(),
         favorites,
-        folders: export_payload.folders,
+        folders: export_payload.folders.clone(),
         document_count,
         last_error: status.error_summary,
     })
@@ -3562,19 +3220,7 @@ fn read_local_library_documents(
     request: NativeListDocumentsRequest,
 ) -> Result<LocalLibraryDocumentList, String> {
     let binding = read_local_library_binding()?.ok_or_else(|| "当前未绑定文档库".to_string())?;
-    ensure_summary_backfill_running(&binding)?;
     let runtime_status = read_local_runtime_status(&binding.root_dir)?;
-    if request.browse_mode == "folder"
-        && runtime_status
-            .as_ref()
-            .and_then(|status| status.running_stage.as_deref())
-            .is_some_and(is_summary_backfill_stage)
-    {
-        return read_local_library_documents_lightweight_for_backfill(
-            &request,
-            runtime_status,
-        );
-    }
     let favorites = read_local_library_favorites(&binding)?;
     record_native_directory_priority_hint(
         &binding.root_dir,
@@ -3595,7 +3241,19 @@ fn read_local_library_documents(
             return Err("文档库读取失败：索引快照尚未生成，请先等待本地索引完成".to_string());
         }
     };
-    let documents = export_payload.documents;
+    let documents = if request.browse_mode == "folder" {
+        let directory =
+            normalize_folder_path(request.selected_folder_path.as_deref().unwrap_or("."));
+        export_payload
+            .by_directory
+            .get(&directory)
+            .into_iter()
+            .flatten()
+            .map(|index| &export_payload.documents[*index])
+            .collect::<Vec<_>>()
+    } else {
+        export_payload.documents.iter().collect::<Vec<_>>()
+    };
     let keyword = request.keyword.unwrap_or_default().trim().to_lowercase();
     let offset = request.offset.unwrap_or(0);
     let limit = request.limit.unwrap_or(50);
@@ -3672,27 +3330,23 @@ fn read_local_library_documents(
             }
         }
 
-        let absolute_path = PathBuf::from(&binding.root_dir).join(&normalized_path);
-        let metadata = fs::metadata(&absolute_path).ok();
         let is_favorite = favorites.iter().any(|favorite| {
             favorite.kind != "folder"
                 && document_matches_favorite(&tags, &derived_tags, &document_dir, favorite)
         });
 
         items.push(LocalLibraryDocumentRecord {
-            document_id: document.document_id,
+            document_id: document.document_id.clone(),
             path: normalized_path,
             title,
             summary,
             updated_at: document
                 .mtime
+                .clone()
                 .or_else(|| export_payload.generated_at.clone())
                 .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
-            created_at: metadata
-                .as_ref()
-                .and_then(|meta| meta.created().ok())
-                .map(system_time_to_rfc3339),
-            size_bytes: metadata.as_ref().map(|meta| meta.len()),
+            created_at: None,
+            size_bytes: None,
             tags,
             derived_tags,
             is_favorite,
@@ -3701,11 +3355,17 @@ fn read_local_library_documents(
 
     items.sort_by(|left, right| left.path.cmp(&right.path));
     let total = items.len();
-    let paged_items = items
+    let mut paged_items = items
         .into_iter()
         .skip(offset)
         .take(limit)
         .collect::<Vec<_>>();
+    for item in &mut paged_items {
+        if let Ok(metadata) = fs::metadata(Path::new(&binding.root_dir).join(&item.path)) {
+            item.created_at = metadata.created().ok().map(system_time_to_rfc3339);
+            item.size_bytes = Some(metadata.len());
+        }
+    }
     let tag_facet_counts = count_document_tag_facets(&paged_items);
 
     Ok(LocalLibraryDocumentList {
@@ -3727,188 +3387,11 @@ fn read_local_library_documents(
             last_failed_at: None,
             running_task_id: None,
             error_summary: None,
-            generated_at: export_payload.generated_at,
+            generated_at: export_payload.generated_at.clone(),
             filesystem_observed_at: None,
             stale_reason: None,
         }),
     })
-}
-
-fn read_local_library_documents_lightweight_for_backfill(
-    request: &NativeListDocumentsRequest,
-    runtime_status: Option<LocalLibraryIndexStatus>,
-) -> Result<LocalLibraryDocumentList, String> {
-    let selected_folder = normalize_folder_path(request.selected_folder_path.as_deref().unwrap_or("."));
-    let file_list = read_local_library_files(
-        if selected_folder == "." {
-            None
-        } else {
-            Some(selected_folder.clone())
-        },
-        Some(200),
-    )?;
-    let keyword = request
-        .keyword
-        .as_deref()
-        .unwrap_or_default()
-        .trim()
-        .to_lowercase();
-    let offset = request.offset.unwrap_or(0);
-    let limit = request.limit.unwrap_or(50);
-
-    let mut items = Vec::new();
-    for file in file_list.items.into_iter().filter(|item| item.kind == "file") {
-        if !keyword.is_empty() {
-            let haystack = format!(
-                "{}\n{}",
-                file.name.to_lowercase(),
-                file.path.to_lowercase(),
-            );
-            if !keyword
-                .split_whitespace()
-                .all(|token| haystack.contains(token))
-            {
-                continue;
-            }
-        }
-        items.push(LocalLibraryDocumentRecord {
-            document_id: file.path.clone(),
-            path: file.path.clone(),
-            title: if file.name.trim().is_empty() {
-                file_name_from_path(&file.path)
-            } else {
-                file.name.clone()
-            },
-            summary: String::new(),
-            updated_at: file
-                .updated_at
-                .clone()
-                .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
-            created_at: None,
-            size_bytes: file.size,
-            tags: vec![],
-            derived_tags: vec![],
-            is_favorite: false,
-        });
-    }
-
-    items.sort_by(|left, right| left.path.cmp(&right.path));
-    let total = items.len();
-    let paged_items = items
-        .into_iter()
-        .skip(offset)
-        .take(limit)
-        .collect::<Vec<_>>();
-
-    Ok(LocalLibraryDocumentList {
-        total,
-        visible_entry_total: total + file_list.total.saturating_sub(total),
-        offset,
-        limit,
-        items: paged_items,
-        tag_facet_counts: HashMap::new(),
-        directory_status: Some(LocalLibraryDirectoryStatus {
-            path: selected_folder,
-            state: "running".to_string(),
-            source: "mixed".to_string(),
-            last_requested_at: runtime_status
-                .as_ref()
-                .and_then(|status| status.last_requested_at.clone()),
-            last_completed_at: runtime_status
-                .as_ref()
-                .and_then(|status| status.last_completed_at.clone()),
-            last_failed_at: runtime_status
-                .as_ref()
-                .and_then(|status| status.last_failed_at.clone()),
-            running_task_id: None,
-            error_summary: None,
-            generated_at: None,
-            filesystem_observed_at: Some(chrono::Utc::now().to_rfc3339()),
-            stale_reason: Some("后台补摘要期间，当前目录文档列表切换为轻量文件系统视图，避免整库快照读取拖慢界面。".to_string()),
-        }),
-    })
-}
-
-fn ensure_summary_backfill_running(binding: &LocalLibraryBinding) -> Result<(), String> {
-    let Some(runtime_status) = read_local_runtime_status(&binding.root_dir)? else {
-        return Ok(());
-    };
-    if matches!(runtime_status.state.as_str(), "queued" | "running") {
-        return Ok(());
-    }
-    if !has_pending_summary_backfill_work(&binding.root_dir)? {
-        return Ok(());
-    }
-
-    let registry = summary_backfill_spawn_registry();
-    {
-        let mut guard = registry.lock().map_err(|_| "summary backfill 注册表锁被污染".to_string())?;
-        if !guard.insert(binding.root_dir.clone()) {
-            return Ok(());
-        }
-    }
-
-    spawn_native_summary_backfill_worker(
-        binding.clone(),
-        "auto_summary_backfill".to_string(),
-        None,
-    );
-    Ok(())
-}
-
-fn has_pending_summary_backfill_work(root_dir: &str) -> Result<bool, String> {
-    let snapshot_path = resolve_runtime_export_catalog_snapshot_path(root_dir);
-    let Some(snapshot) =
-        read_optional_json_file::<LocalRuntimeExportCatalogSnapshot>(&snapshot_path)?
-    else {
-        return Ok(false);
-    };
-    if snapshot.documents.is_empty() {
-        return Ok(false);
-    }
-
-    let active_state = read_optional_json_file::<LocalRuntimeActiveFileStateSnapshot>(
-        &active_file_state_snapshot_path(root_dir),
-    )?
-    .unwrap_or(LocalRuntimeActiveFileStateSnapshot { files: vec![] });
-    let active_map = active_state
-        .files
-        .into_iter()
-        .map(|item| (item.path.clone(), item))
-        .collect::<HashMap<_, _>>();
-    if active_map.is_empty() {
-        return Ok(false);
-    }
-
-    let completed_state = read_optional_json_file::<LocalRuntimeSummaryBackfillStateSnapshot>(
-        &summary_backfill_state_path(root_dir),
-    )?
-    .unwrap_or(LocalRuntimeSummaryBackfillStateSnapshot { files: vec![] });
-    let completed_map = completed_state
-        .files
-        .into_iter()
-        .map(|item| (item.path.clone(), item))
-        .collect::<HashMap<_, _>>();
-
-    Ok(snapshot.documents.iter().any(|document| {
-        let Some(active) = active_map.get(&document.path) else {
-            return false;
-        };
-        if active.index_status != "indexed" {
-            return false;
-        }
-        let already_completed = completed_map.get(&document.path).is_some_and(|completed| {
-            completed.path == active.path
-                && completed.extension == active.extension
-                && completed.size == active.size
-                && completed.mtime == active.mtime
-                && completed.index_status == active.index_status
-        });
-        if already_completed {
-            return false;
-        }
-        document.summary.trim().is_empty()
-    }))
 }
 
 fn record_native_directory_priority_hint(
@@ -3987,9 +3470,58 @@ struct LocalLibraryExportPayload {
     documents: Vec<MetaDocument>,
     tags: Vec<LocalLibraryTagNode>,
     folders: Vec<LocalLibraryFolderNode>,
+    by_directory: HashMap<String, Vec<usize>>,
 }
 
+type ExportReadCache =
+    HashMap<PathBuf, ((Option<SystemTime>, u64), Arc<LocalLibraryExportPayload>)>;
+
 fn read_local_library_export_payload(
+    root_dir: &str,
+) -> Result<Option<Arc<LocalLibraryExportPayload>>, String> {
+    static CACHE: OnceLock<Mutex<ExportReadCache>> = OnceLock::new();
+    let snapshot = resolve_runtime_export_catalog_snapshot_path(root_dir);
+    let path = if snapshot.is_file() {
+        snapshot
+    } else {
+        PathBuf::from(root_dir).join(".ai-index/exports/manifest.json")
+    };
+    let metadata = match fs::metadata(&path) {
+        Ok(value) => value,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    let stamp = (metadata.modified().ok(), metadata.len());
+    let mut cache = CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap();
+    if let Some((cached_stamp, payload)) = cache.get(&path) {
+        if cached_stamp == &stamp {
+            return Ok(Some(Arc::clone(payload)));
+        }
+    }
+    let Some(mut payload) = load_local_library_export_payload(root_dir)? else {
+        return Ok(None);
+    };
+    for (index, document) in payload.documents.iter().enumerate() {
+        let directory = Path::new(&document.path)
+            .parent()
+            .map(|value| value.to_string_lossy().replace('\\', "/"))
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| ".".to_string());
+        payload
+            .by_directory
+            .entry(directory)
+            .or_default()
+            .push(index);
+    }
+    let payload = Arc::new(payload);
+    cache.insert(path, (stamp, Arc::clone(&payload)));
+    Ok(Some(payload))
+}
+
+fn load_local_library_export_payload(
     root_dir: &str,
 ) -> Result<Option<LocalLibraryExportPayload>, String> {
     if let Some(payload) = read_local_library_runtime_snapshot_payload(root_dir)? {
@@ -4031,6 +3563,7 @@ fn read_local_library_export_manifest_payload(
         documents,
         tags,
         folders,
+        by_directory: HashMap::new(),
     })
 }
 
@@ -4068,6 +3601,7 @@ fn read_local_library_runtime_snapshot_payload(
         documents,
         tags,
         folders,
+        by_directory: HashMap::new(),
     }))
 }
 
@@ -4508,7 +4042,10 @@ fn read_local_library_config() -> Result<LocalLibraryConfig, String> {
             .as_ref()
             .map(|item| item.included_hidden_paths.clone())
             .unwrap_or_default(),
-        hide_dot_files: binding.as_ref().map(|item| item.hide_dot_files).unwrap_or(true),
+        hide_dot_files: binding
+            .as_ref()
+            .map(|item| item.hide_dot_files)
+            .unwrap_or(true),
         hide_system_folders: binding
             .as_ref()
             .map(|item| item.hide_system_folders)
@@ -4717,11 +4254,11 @@ fn map_legacy_runtime_status_state(
     stage: Option<&str>,
     command: Option<&str>,
 ) -> Option<String> {
-    let normalized_status = status
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
+    let normalized_status = status.map(str::trim).filter(|value| !value.is_empty());
     match normalized_status {
-        Some("fresh" | "stale" | "queued" | "running" | "queue_timeout" | "cooldown" | "failed") => {
+        Some(
+            "fresh" | "stale" | "queued" | "running" | "queue_timeout" | "cooldown" | "failed",
+        ) => {
             return normalized_status.map(ToString::to_string);
         }
         Some("finished" | "success") => return Some("fresh".to_string()),
@@ -4748,11 +4285,8 @@ fn resolve_runtime_status_stale_timeout_ms(state: &str, running_stage: Option<&s
         return 2 * 60_000;
     }
     match running_stage.unwrap_or_default() {
-        "export_snapshot" | "search_index" | "export_search" | "summary_backfill_search" => {
-            15 * 60_000
-        }
+        "export_snapshot" | "search_index" | "export_search" => 15 * 60_000,
         "count_files" | "index" | "index_text" | "init_catalog" => 5 * 60_000,
-        "summary_backfill" => 15 * 60_000,
         _ => 5 * 60_000,
     }
 }
@@ -5780,13 +5314,14 @@ fn handle_onlyoffice_callback_request(
             format!("写回 ONLYOFFICE 文件失败：{error}"),
         )
     })?;
-    let refresh_result = run_native_library_index_worker_detached(
-        None,
+    let refresh_result = schedule_native_library_refresh(
         NativeLibraryRefreshRequest {
+            target_paths: Vec::new(),
             reason: Some("onlyoffice_callback".to_string()),
             target_path: Some(payload.file_path.clone()),
             mode: None,
         },
+        None,
     );
     if let Err(error) = &refresh_result {
         eprintln!("onlyoffice callback refresh failed: {error}");
@@ -6437,18 +5972,18 @@ fn remove_path_if_exists(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn clear_native_application_data(app: &AppHandle) -> Result<NativeResetApplicationDataResult, String> {
+fn clear_native_application_data(
+    app: &AppHandle,
+) -> Result<NativeResetApplicationDataResult, String> {
     let binding = read_local_library_binding()?;
-    let cleared_library_index_dir = binding
-        .as_ref()
-        .and_then(|item| {
-            let candidate = PathBuf::from(&item.root_dir).join(".ai-index");
-            if candidate.exists() {
-                Some(candidate)
-            } else {
-                None
-            }
-        });
+    let cleared_library_index_dir = binding.as_ref().and_then(|item| {
+        let candidate = PathBuf::from(&item.root_dir).join(".ai-index");
+        if candidate.exists() {
+            Some(candidate)
+        } else {
+            None
+        }
+    });
     if let Some(index_dir) = cleared_library_index_dir.as_ref() {
         remove_path_if_exists(index_dir)?;
     }
@@ -6768,10 +6303,6 @@ fn is_loopback_url(value: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn is_summary_backfill_stage(stage: &str) -> bool {
-    matches!(stage, "summary_backfill" | "summary_backfill_search")
-}
-
 fn write_json_file<T>(path: &PathBuf, value: &T) -> Result<(), String>
 where
     T: Serialize,
@@ -7087,8 +6618,14 @@ mod tests {
         )
         .expect("应恢复自定义工作台尺寸");
 
-        assert_eq!(next_geometry.position_x, customized_workbench_geometry.position_x);
-        assert_eq!(next_geometry.position_y, customized_workbench_geometry.position_y);
+        assert_eq!(
+            next_geometry.position_x,
+            customized_workbench_geometry.position_x
+        );
+        assert_eq!(
+            next_geometry.position_y,
+            customized_workbench_geometry.position_y
+        );
         assert_eq!(next_geometry.width, customized_workbench_geometry.width);
         assert_eq!(next_geometry.height, customized_workbench_geometry.height);
     }
@@ -7130,7 +6667,10 @@ mod tests {
         fs::remove_dir_all(&root_dir).ok();
 
         assert_eq!(status.state, "fresh");
-        assert_eq!(status.last_completed_at.as_deref(), Some("2026-07-06T09:56:22.640Z"));
+        assert_eq!(
+            status.last_completed_at.as_deref(),
+            Some("2026-07-06T09:56:22.640Z")
+        );
         assert_eq!(status.running_stage, None);
         assert_eq!(
             status
@@ -7138,156 +6678,6 @@ mod tests {
                 .as_ref()
                 .and_then(|progress| progress.total_count),
             Some(17320)
-        );
-    }
-
-    #[test]
-    fn native_读取快照时会自动续跑_summary_backfill() {
-        let _guard = test_env_lock().lock().expect("测试环境锁被污染");
-        let nonce = epoch_millis();
-        let temp_root = env::temp_dir().join(format!("x-file-native-auto-summary-backfill-{nonce}"));
-        let data_dir = temp_root.join(".x-file-data");
-        let library_root = temp_root.join("library-root");
-        let runtime_dir = library_root.join(".ai-index").join("runtime");
-        let ai_index_dir = library_root.join(".ai-index");
-
-        fs::create_dir_all(&runtime_dir).expect("创建 runtime 目录失败");
-        fs::create_dir_all(&data_dir).expect("创建数据目录失败");
-        fs::write(library_root.join("docs.md"), "# 文档\n\n这里应该自动补摘要").expect("写入测试文档失败");
-
-        write_json_file(
-            &data_dir.join("library-binding.json"),
-            &json!({
-                "libraryId": "default",
-                "rootDir": library_root.to_string_lossy(),
-                "enabled": true,
-                "allowedExtensions": [".md"],
-                "includedHiddenPaths": [],
-                "folderOpenBehavior": "double_click",
-                "configRelativePath": ".ai-index/doc-semantic-index.config.json",
-                "exportMode": "v2",
-                "initialized": true,
-                "initializedAt": "2026-06-30T10:00:00Z",
-                "updatedAt": "2026-06-30T10:00:00Z"
-            }),
-        )
-        .expect("写入 binding 失败");
-
-        write_json_file(
-            &runtime_dir.join("export-catalog-snapshot.json"),
-            &json!({
-                "version": 1,
-                "generatedAt": "2026-06-30T10:01:00Z",
-                "tags": [],
-                "documents": [
-                    {
-                        "documentId": "doc_1",
-                        "path": "docs.md",
-                        "title": "docs",
-                        "summary": "",
-                        "tags": [],
-                        "derivedTags": [],
-                        "mtime": "2026-06-30T10:01:00Z"
-                    }
-                ]
-            }),
-        )
-        .expect("写入 runtime snapshot 失败");
-
-        write_json_file(
-            &runtime_dir.join("active-file-state-snapshot.json"),
-            &json!({
-                "version": 1,
-                "generatedAt": "2026-06-30T10:01:00Z",
-                "files": [
-                    {
-                        "path": "docs.md",
-                        "extension": ".md",
-                        "size": 32,
-                        "mtime": "2026-06-30T10:01:00Z",
-                        "indexStatus": "indexed"
-                    }
-                ]
-            }),
-        )
-        .expect("写入 active state 失败");
-
-        write_json_file(
-            &ai_index_dir.join("runtime-status.json"),
-            &json!({
-                "state": "cooldown",
-                "lastRequestedAt": "2026-06-30T10:00:00Z",
-                "lastStartedAt": "2026-06-30T10:00:00Z",
-                "lastCompletedAt": "2026-06-30T10:01:00Z",
-                "nextAllowedAt": "2026-06-30T10:01:01Z",
-                "progressUpdatedAt": chrono::Utc::now().to_rfc3339(),
-                "runningStage": null,
-                "errorSummary": null,
-                "progress": {
-                    "scannedCount": 1,
-                    "indexedCount": 0,
-                    "skippedCount": 0,
-                    "failedCount": 0,
-                    "unchangedCount": 1,
-                    "totalCount": 1,
-                    "maxConcurrency": 1,
-                    "activeTaskCount": 0,
-                    "pendingTaskCount": 0,
-                    "completedTaskCount": 1
-                }
-            }),
-        )
-        .expect("写入 runtime-status 失败");
-
-        let previous_data_dir = env::var("X_FILE_DATA_DIR").ok();
-        unsafe {
-            env::set_var("X_FILE_DATA_DIR", data_dir.to_string_lossy().to_string());
-        }
-
-        let watcher = NativeLibraryWatcherStatus {
-            active: true,
-            root_dir: Some(library_root.to_string_lossy().to_string()),
-            started_at: Some("2026-06-30T10:00:00Z".to_string()),
-            last_event_at: None,
-            last_refresh_requested_at: None,
-            last_refresh_reason: None,
-            last_error: None,
-        };
-        let _snapshot = read_local_library_snapshot(&watcher).expect("读取 snapshot 失败");
-
-        let mut auto_backfill_observed = false;
-        for _ in 0..40 {
-            let status = read_local_runtime_status(&library_root.to_string_lossy())
-                .expect("读取 runtime status 失败")
-                .expect("runtime status 不应为空");
-            if status.running_stage.as_deref() == Some("summary_backfill")
-                || status.running_stage.as_deref() == Some("summary_backfill_search")
-                || status
-                    .progress
-                    .as_ref()
-                    .is_some_and(|progress| {
-                        progress.indexed_count > 0 && progress.total_count == Some(1)
-                    })
-            {
-                auto_backfill_observed = true;
-                break;
-            }
-            thread::sleep(std::time::Duration::from_millis(100));
-        }
-
-        match previous_data_dir {
-            Some(value) => unsafe {
-                env::set_var("X_FILE_DATA_DIR", value);
-            },
-            None => unsafe {
-                env::remove_var("X_FILE_DATA_DIR");
-            },
-        }
-        fs::remove_dir_all(&temp_root).ok();
-
-        assert!(
-            auto_backfill_observed,
-            "读取 snapshot 后应自动续跑 summary backfill，并写回可见进度"
         );
     }
 
@@ -7466,7 +6856,10 @@ fn iso_now() -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn set_macos_window_background_mode(window: &WebviewWindow, transparent: bool) -> Result<(), String> {
+fn set_macos_window_background_mode(
+    window: &WebviewWindow,
+    transparent: bool,
+) -> Result<(), String> {
     let native_window = window.clone();
     window
         .run_on_main_thread(move || unsafe {
@@ -8045,11 +7438,16 @@ fn try_run_library_worker_cli_from_args(args: &[String]) -> Result<String, Strin
         .get(2)
         .map(String::as_str)
         .ok_or_else(|| "library worker CLI 缺少 mode 参数".to_string())?;
-    let raw_payload = args
-        .get(3)
-        .map(String::as_str)
-        .ok_or_else(|| "library worker CLI 缺少 payload 参数".to_string())?;
-    let payload: NativeLibraryWorkerCliPayload = serde_json::from_str(raw_payload)
+    let raw_payload = match args.get(3) {
+        Some(payload) => payload.clone(),
+        None => {
+            let mut payload = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut payload)
+                .map_err(|error| error.to_string())?;
+            payload
+        }
+    };
+    let payload: NativeLibraryWorkerCliPayload = serde_json::from_str(&raw_payload)
         .map_err(|error| format!("library worker CLI payload 无法解析：{error}"))?;
     let result = run_native_library_worker_mode(mode, payload)?;
 
@@ -8098,7 +7496,6 @@ pub fn run() {
             native_save_library_config,
             native_browse_host_directories,
             native_get_library_snapshot,
-            native_get_library_status,
             native_list_library_tag_details,
             native_get_library_tag_detail,
             native_create_library_tag,
@@ -8166,4 +7563,77 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("启动 X-File 桌面壳失败");
+}
+
+#[cfg(test)]
+mod library_read_cache_tests {
+    use super::*;
+
+    #[test]
+    fn 同版本复用读取视图且快照替换后失效() {
+        let root = env::temp_dir().join(format!("x-file-read-cache-{}", epoch_millis()));
+        let path = resolve_runtime_export_catalog_snapshot_path(root.to_str().unwrap());
+        let mut snapshot = json!({ "version": 1, "generatedAt": iso_now(), "tags": [], "documents": [{
+            "documentId": "a", "path": "docs/a.md", "title": "a", "summary": "first",
+            "tags": [], "derivedTags": [], "mtime": iso_now()
+        }] });
+        write_json_file(&path, &snapshot).unwrap();
+        let first = read_local_library_export_payload(root.to_str().unwrap())
+            .unwrap()
+            .unwrap();
+        let second = read_local_library_export_payload(root.to_str().unwrap())
+            .unwrap()
+            .unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(first.by_directory["docs"], vec![0]);
+        snapshot["documents"][0]["summary"] = json!("updated summary");
+        write_json_file(&path, &snapshot).unwrap();
+        let updated = read_local_library_export_payload(root.to_str().unwrap())
+            .unwrap()
+            .unwrap();
+        assert!(!Arc::ptr_eq(&first, &updated));
+        assert_eq!(
+            updated.documents[0].summary.as_deref(),
+            Some("updated summary")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn 文件系统重扫通知会进入调度且运行产物仍被忽略() {
+        let root = PathBuf::from("/tmp/library");
+        let event = Event::new(notify::EventKind::Other)
+            .set_flag(notify::event::Flag::Rescan)
+            .add_path(root.clone());
+        assert!(should_handle_native_watcher_event(&root, &event));
+        let overflow = Event::new(notify::EventKind::Other).set_flag(notify::event::Flag::Rescan);
+        assert!(should_handle_native_watcher_event(&root, &overflow));
+        assert_eq!(native_watcher_targets(&root, &event), vec![""]);
+        let internal = Event::new(notify::EventKind::Other)
+            .set_flag(notify::event::Flag::Rescan)
+            .add_path(root.join(".ai-index/exports"));
+        assert!(!should_handle_native_watcher_event(&root, &internal));
+    }
+
+    #[test]
+    fn 同根目录请求合并范围() {
+        let binding = default_local_library_binding();
+        let work = |mode: &str, target: Option<&str>| LibraryWork {
+            app: None,
+            mode: mode.to_string(),
+            payload: build_native_library_worker_payload(
+                &binding,
+                "test".to_string(),
+                target.map(str::to_string),
+                None,
+            ),
+        };
+        let mut pending = work("full", Some("docs/a.md"));
+        merge_library_work(&mut pending, work("full", Some("docs/b.md")));
+        assert_eq!(pending.payload.target_path, None);
+        assert_eq!(pending.payload.target_paths, vec!["docs/a.md", "docs/b.md"]);
+        merge_library_work(&mut pending, work("full", None));
+        assert_eq!(pending.payload.target_path, None);
+        assert!(pending.payload.target_paths.is_empty());
+    }
 }

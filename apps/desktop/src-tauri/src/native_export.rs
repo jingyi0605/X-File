@@ -1,3 +1,7 @@
+use crate::native_core::catalog::{
+    read_catalog, ExportCatalogSnapshot, SnapshotDocument, SnapshotTag,
+};
+use crate::native_core::state_store::write_compact_json;
 use crate::native_core::state_store::{
     export_catalog_snapshot_path, export_dir as native_export_dir, runtime_status_path,
     SEARCH_MANIFEST_RELATIVE_PATH,
@@ -7,12 +11,11 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
-use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 const INDEX_COOLDOWN_MS: i64 = 1500;
-const META_SHARD_TARGET_DOCUMENTS: usize = 64;
 const RELATION_MAX_POSTING: usize = 128;
+const SEARCH_PARTITION_COUNT: u8 = 16;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -21,15 +24,6 @@ pub struct NativeExportRequest {
     pub reason: String,
     pub target_path: Option<String>,
     pub dirty_scope: Value,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NativeSearchRequest {
-    pub root_dir: String,
-    pub reason: String,
-    pub target_path: Option<String>,
-    pub dirty_scope: Option<Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -47,38 +41,6 @@ struct DirtyScope {
     dirty_relations: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ExportCatalogSnapshot {
-    version: u32,
-    generated_at: Option<String>,
-    generated_at_legacy: Option<String>,
-    tags: Vec<SnapshotTag>,
-    documents: Vec<SnapshotDocument>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SnapshotTag {
-    path: String,
-    name: String,
-    root_type: String,
-    parent_path: Option<String>,
-    depth: usize,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SnapshotDocument {
-    document_id: String,
-    path: String,
-    title: String,
-    summary: String,
-    tags: Vec<String>,
-    derived_tags: Vec<String>,
-    mtime: String,
-}
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PersistedRuntimeStatus {
@@ -94,7 +56,7 @@ struct PersistedRuntimeStatus {
     progress: Option<Value>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ExportBuildResult {
     manifest_path: String,
     output_dir: String,
@@ -107,7 +69,7 @@ struct ExportBuildResult {
     files_written: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct MetaShardManifestEntry {
     id: String,
     directory: String,
@@ -116,7 +78,7 @@ struct MetaShardManifestEntry {
     document_count: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct DetailShardManifestEntry {
     id: String,
     document_id: String,
@@ -124,7 +86,7 @@ struct DetailShardManifestEntry {
     path: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct TagShardManifestEntry {
     id: String,
     root_type: String,
@@ -133,7 +95,7 @@ struct TagShardManifestEntry {
     posting_path: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct RelationShardManifestEntry {
     id: String,
     path: String,
@@ -147,7 +109,7 @@ struct SearchBucketManifestEntry {
     term_count: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct FolderBootstrapNode {
     path: String,
     name: String,
@@ -156,7 +118,7 @@ struct FolderBootstrapNode {
     document_count: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct RelationPair {
     document_id: String,
     related_document_id: String,
@@ -165,35 +127,49 @@ struct RelationPair {
     shared_tags: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct SearchDocumentEntry {
     document_id: String,
     path: String,
-    title: String,
-    summary: String,
-    mtime: String,
-    tags: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct SearchTermEntry {
     term: String,
     document_count: usize,
     document_ids: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DocumentSearchState {
+    document_id: String,
+    buckets: Vec<String>,
+    terms_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct SearchManifestFile {
+    #[serde(default)]
+    partition_count: u8,
+    #[serde(default)]
+    document_index: BTreeMap<String, DocumentSearchState>,
     version: u32,
     format: String,
     generated_at: String,
     buckets: Vec<SearchBucketManifestEntry>,
 }
 
-#[derive(Debug, Clone)]
-struct IncrementalSearchPlan {
-    previous_manifest: SearchManifestFile,
-    target_buckets: BTreeSet<String>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ExportManifest {
+    #[serde(default)]
+    layout: String,
+    generated_at: String,
+    entries: Value,
+    meta_shards: Vec<MetaShardManifestEntry>,
+    detail_shards: Vec<DetailShardManifestEntry>,
+    tag_shards: Vec<TagShardManifestEntry>,
+    relation_shards: Vec<RelationShardManifestEntry>,
+    search_buckets: Vec<SearchBucketManifestEntry>,
 }
 
 pub fn run_native_export_worker(request: NativeExportRequest) -> Result<Value, String> {
@@ -204,14 +180,7 @@ pub fn run_native_export_worker(request: NativeExportRequest) -> Result<Value, S
 
     let dirty_scope: DirtyScope = serde_json::from_value(request.dirty_scope.clone())
         .map_err(|error| format!("export worker dirtyScope 无效：{error}"))?;
-    let snapshot_path = resolve_export_catalog_snapshot_path(&root_dir);
-    if !snapshot_path.is_file() {
-        return Err(format!(
-            "export worker 缺少 snapshot 主路径输入：{}；请先执行 index-only，或仅在调试/应急场景下显式改用 sqlite",
-            snapshot_path.display()
-        ));
-    }
-
+    let snapshot_path = export_catalog_snapshot_path(&root_dir);
     let inherited_progress = read_existing_runtime_progress(&root_dir)?;
     let last_requested_at = iso_now();
     let last_started_at = iso_now();
@@ -232,7 +201,7 @@ pub fn run_native_export_worker(request: NativeExportRequest) -> Result<Value, S
     )?;
 
     let result = (|| -> Result<ExportBuildResult, String> {
-        let snapshot = read_snapshot(&snapshot_path)?;
+        let snapshot = read_catalog(&root_dir)?.ok_or_else(|| "文档目录快照不存在".to_string())?;
         build_native_export(&root_dir, &snapshot, &dirty_scope)
     })();
 
@@ -287,6 +256,8 @@ pub fn run_native_export_worker(request: NativeExportRequest) -> Result<Value, S
                 "exportFallbackToSqlite": false,
                 "worker": "native-rust",
                 "manifestPath": export_result.manifest_path,
+                "filesWritten": export_result.files_written,
+                "exportedAt": export_result.exported_at,
             }))
         }
         Err(error) => {
@@ -310,381 +281,339 @@ pub fn run_native_export_worker(request: NativeExportRequest) -> Result<Value, S
     }
 }
 
-pub fn run_native_search_worker(request: NativeSearchRequest) -> Result<Value, String> {
-    let root_dir = request.root_dir.trim().to_string();
-    if root_dir.is_empty() {
-        return Err("search worker 缺少 rootDir".to_string());
-    }
-
-    let dirty_scope = match request.dirty_scope.clone() {
-        Some(value) => Some(
-            serde_json::from_value::<DirtyScope>(value)
-                .map_err(|error| format!("search worker dirtyScope 无效：{error}"))?,
-        ),
-        None => None,
-    };
-    let snapshot_path = resolve_export_catalog_snapshot_path(&root_dir);
-    if !snapshot_path.is_file() {
-        return Err(format!(
-            "search worker 缺少 snapshot 主路径输入：{}；请先执行 index-only / export-only",
-            snapshot_path.display()
-        ));
-    }
-
-    let running_stage = if request.reason == "summary_backfill" {
-        "summary_backfill_search"
-    } else {
-        "search_index"
-    };
-    let inherited_progress = read_existing_runtime_progress(&root_dir)?;
-    let last_requested_at = iso_now();
-    let last_started_at = iso_now();
-    write_runtime_status(
-        &root_dir,
-        PersistedRuntimeStatus {
-            state: "running".to_string(),
-            last_requested_at: Some(last_requested_at.clone()),
-            last_started_at: Some(last_started_at.clone()),
-            last_completed_at: None,
-            last_failed_at: None,
-            next_allowed_at: None,
-            progress_updated_at: Some(last_started_at.clone()),
-            running_stage: Some(running_stage.to_string()),
-            error_summary: None,
-            progress: inherited_progress.clone(),
-        },
-    )?;
-
-    let mut last_heartbeat_at = std::time::Instant::now();
-    let mut heartbeat = || {
-        if last_heartbeat_at.elapsed() < std::time::Duration::from_secs(1) {
-            return Ok(());
-        }
-        last_heartbeat_at = std::time::Instant::now();
-        write_runtime_status(
-            &root_dir,
-            PersistedRuntimeStatus {
-                state: "running".to_string(),
-                last_requested_at: Some(last_requested_at.clone()),
-                last_started_at: Some(last_started_at.clone()),
-                last_completed_at: None,
-                last_failed_at: None,
-                next_allowed_at: None,
-                progress_updated_at: Some(iso_now()),
-                running_stage: Some(running_stage.to_string()),
-                error_summary: None,
-                progress: inherited_progress.clone(),
-            },
-        )
-    };
-    let mut heartbeat_callback: Option<&mut dyn FnMut() -> Result<(), String>> =
-        Some(&mut heartbeat);
-
-    let result = (|| -> Result<ExportBuildResult, String> {
-        let snapshot = read_snapshot(&snapshot_path)?;
-        let export_dir = PathBuf::from(&root_dir).join(".ai-index").join("exports");
-        let (search_buckets, files_written) = build_search_index_with_progress(
-            &export_dir,
-            &iso_now(),
-            &snapshot.documents,
-            dirty_scope.as_ref(),
-            &mut heartbeat_callback,
-        )?;
-        Ok(ExportBuildResult {
-            manifest_path: export_dir
-                .join("search")
-                .join("manifest.json")
-                .to_string_lossy()
-                .to_string(),
-            output_dir: export_dir.to_string_lossy().to_string(),
-            exported_at: iso_now(),
-            meta_shard_count: 0,
-            detail_shard_count: 0,
-            tag_shard_count: 0,
-            relation_group_count: 0,
-            search_bucket_count: search_buckets.len(),
-            files_written,
-        })
-    })();
-
-    match result {
-        Ok(search_result) => {
-            let completed_at = iso_now();
-            let next_allowed_at =
-                iso_after_ms(INDEX_COOLDOWN_MS).unwrap_or_else(|| completed_at.clone());
-            write_runtime_status(
-                &root_dir,
-                PersistedRuntimeStatus {
-                    state: "cooldown".to_string(),
-                    last_requested_at: Some(last_requested_at.clone()),
-                    last_started_at: Some(last_started_at.clone()),
-                    last_completed_at: Some(completed_at),
-                    last_failed_at: None,
-                    next_allowed_at: Some(next_allowed_at),
-                    progress_updated_at: Some(iso_now()),
-                    running_stage: None,
-                    error_summary: None,
-                    progress: inherited_progress.clone(),
-                },
-            )?;
-            Ok(json!({
-                "accepted": true,
-                "mode": "search-only",
-                "reason": request.reason,
-                "targetPath": request.target_path,
-                "taskId": Value::Null,
-                "deduped": false,
-                "status": {
-                    "state": "cooldown",
-                    "lastRequestedAt": last_requested_at,
-                    "lastStartedAt": last_started_at,
-                    "lastCompletedAt": search_result.exported_at,
-                    "nextAllowedAt": iso_after_ms(INDEX_COOLDOWN_MS),
-                    "runningStage": Value::Null,
-                    "errorSummary": Value::Null,
-                    "progress": inherited_progress
-                },
-                "dirtyScope": dirty_scope,
-                "dirtyScopeSummary": {
-                    "trigger": json_summary_optional_trigger(request.dirty_scope.as_ref()),
-                    "changedPathCount": json_summary_optional_len(request.dirty_scope.as_ref(), "changedPaths"),
-                    "deletedPathCount": json_summary_optional_len(request.dirty_scope.as_ref(), "deletedPaths"),
-                    "dirtyDirectoryCount": json_summary_optional_len(request.dirty_scope.as_ref(), "dirtyDirectories"),
-                },
-                "searchBucketCount": search_result.search_bucket_count,
-                "searchManifestPath": search_result.manifest_path,
-                "filesWritten": search_result.files_written,
-                "exportedAt": search_result.exported_at,
-                "worker": "native-rust",
-            }))
-        }
-        Err(error) => {
-            write_runtime_status(
-                &root_dir,
-                PersistedRuntimeStatus {
-                    state: "failed".to_string(),
-                    last_requested_at: Some(last_requested_at),
-                    last_started_at: Some(last_started_at),
-                    last_completed_at: None,
-                    last_failed_at: Some(iso_now()),
-                    next_allowed_at: None,
-                    progress_updated_at: Some(iso_now()),
-                    running_stage: Some(running_stage.to_string()),
-                    error_summary: Some(error.clone()),
-                    progress: inherited_progress.clone(),
-                },
-            )?;
-            Err(error)
-        }
-    }
-}
-
 fn build_native_export(
     root_dir: &str,
     snapshot: &ExportCatalogSnapshot,
     dirty_scope: &DirtyScope,
 ) -> Result<ExportBuildResult, String> {
     let export_dir = native_export_dir(root_dir);
-    fs::remove_dir_all(&export_dir).ok();
-    fs::create_dir_all(&export_dir)
-        .map_err(|error| format!("创建导出目录失败 {}: {error}", export_dir.display()))?;
-
+    fs::create_dir_all(&export_dir).map_err(|error| error.to_string())?;
+    let manifest_path = export_dir.join("manifest.json");
+    let previous = read_optional_json_file::<ExportManifest>(&manifest_path)?;
+    let full = dirty_scope.trigger == "full"
+        || previous
+            .as_ref()
+            .map_or(true, |m| m.layout != "directory-v2");
+    let changed = dirty_scope
+        .changed_paths
+        .iter()
+        .chain(&dirty_scope.deleted_paths)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if !full && changed.is_empty() {
+        let manifest = previous.unwrap();
+        return Ok(ExportBuildResult {
+            manifest_path: manifest_path.to_string_lossy().to_string(),
+            output_dir: export_dir.to_string_lossy().to_string(),
+            exported_at: manifest.generated_at,
+            meta_shard_count: manifest.meta_shards.len(),
+            detail_shard_count: manifest.detail_shards.len(),
+            tag_shard_count: manifest.tag_shards.len(),
+            relation_group_count: manifest.relation_shards.len(),
+            search_bucket_count: manifest.search_buckets.len(),
+            files_written: Vec::new(),
+        });
+    }
     let exported_at = iso_now();
     let mut files_written = Vec::new();
-    let mut documents = snapshot.documents.clone();
-    documents.sort_by(|left, right| left.path.cmp(&right.path));
-    let mut tags = snapshot.tags.clone();
-    tags.sort_by(|left, right| left.path.cmp(&right.path));
-
-    let mut folder_map = BTreeMap::<String, FolderBootstrapNode>::new();
+    let dirty_directories = changed
+        .iter()
+        .map(|path| normalize_directory(path))
+        .collect::<BTreeSet<_>>();
+    let mut dirty_tags = BTreeSet::new();
+    let mut dirty_relation_tags = BTreeSet::new();
+    let mut relation_targets = BTreeSet::new();
+    let mut stale_paths = BTreeSet::new();
+    let current_by_path = snapshot
+        .documents
+        .iter()
+        .map(|document| (document.path.as_str(), document))
+        .collect::<HashMap<_, _>>();
+    let previous_by_path = previous
+        .as_ref()
+        .into_iter()
+        .flat_map(|manifest| &manifest.detail_shards)
+        .map(|detail| (detail.document_path.as_str(), detail))
+        .collect::<HashMap<_, _>>();
+    let mut structure_changed = full;
+    if !full {
+        for path in &changed {
+            let old_ref = previous_by_path.get(path.as_str());
+            let new = current_by_path.get(path.as_str());
+            structure_changed |= old_ref.is_none() != new.is_none();
+            let old = match old_ref {
+                Some(detail) => read_optional_json_file::<Value>(&export_dir.join(&detail.path))?,
+                None => None,
+            };
+            let old_document = old.as_ref().map(|payload| &payload["document"]);
+            let tags_changed = match (old_document, new) {
+                (Some(old), Some(new)) => {
+                    old["direct_tags"] != json!(new.tags)
+                        || old["derived_tags"] != json!(new.derived_tags)
+                        || old["title"] != json!(new.title)
+                }
+                _ => true,
+            };
+            let relations_changed = match (old_document, new) {
+                (Some(old), Some(new)) => old["direct_tags"] != json!(new.tags),
+                _ => true,
+            };
+            if let Some(old) = old_document {
+                if tags_changed {
+                    dirty_tags.extend(
+                        old["direct_tags"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .chain(old["derived_tags"].as_array().into_iter().flatten())
+                            .filter_map(Value::as_str)
+                            .map(str::to_string),
+                    );
+                }
+                if relations_changed {
+                    dirty_relation_tags.extend(
+                        old["direct_tags"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string),
+                    );
+                    relation_targets.insert(old["document_id"].as_str().unwrap().to_string());
+                }
+            }
+            if let Some(new) = new {
+                if tags_changed {
+                    dirty_tags.extend(new.tags.iter().chain(&new.derived_tags).cloned());
+                }
+                if relations_changed {
+                    dirty_relation_tags.extend(new.tags.iter().cloned());
+                    relation_targets.insert(new.document_id.clone());
+                }
+            }
+        }
+    }
+    for detail in previous
+        .as_ref()
+        .into_iter()
+        .flat_map(|manifest| &manifest.detail_shards)
+    {
+        if full || changed.contains(&detail.document_path) {
+            stale_paths.insert(detail.path.clone());
+        }
+    }
+    for document in &snapshot.documents {
+        if document
+            .tags
+            .iter()
+            .any(|tag| dirty_relation_tags.contains(tag))
+        {
+            relation_targets.insert(document.document_id.clone());
+        }
+    }
+    let dirty_roots = dirty_tags
+        .iter()
+        .map(|tag| infer_root_type(tag))
+        .collect::<BTreeSet<_>>();
     let mut meta_shards = Vec::new();
     let mut detail_shards = Vec::new();
-    let mut current_meta_root: Option<String> = None;
-    let mut current_meta_documents = Vec::<Value>::new();
-    let mut current_meta_directories = Vec::<String>::new();
-    let mut current_meta_dir_set = HashSet::<String>::new();
-    let mut meta_root_counters = HashMap::<String, usize>::new();
-
-    for document in &documents {
+    let mut tag_shards = Vec::new();
+    let mut relation_shards = Vec::new();
+    if let Some(previous) = &previous {
+        for meta in &previous.meta_shards {
+            if full || dirty_directories.contains(&meta.directory) {
+                stale_paths.insert(meta.path.clone());
+            } else {
+                meta_shards.push(meta.clone());
+            }
+        }
+        detail_shards.extend(
+            previous
+                .detail_shards
+                .iter()
+                .filter(|d| !full && !changed.contains(&d.document_path))
+                .cloned(),
+        );
+        for tag in &previous.tag_shards {
+            if full || dirty_roots.contains(&tag.root_type) {
+                stale_paths.insert(tag.path.clone());
+                stale_paths.insert(tag.posting_path.clone());
+            } else {
+                tag_shards.push(tag.clone());
+            }
+        }
+        for relation in &previous.relation_shards {
+            let document_id = relation
+                .path
+                .trim_start_matches("relations/")
+                .trim_end_matches(".json");
+            if full || relation_targets.contains(document_id) {
+                stale_paths.insert(relation.path.clone());
+            } else {
+                relation_shards.push(relation.clone());
+            }
+        }
+    }
+    let mut folders = BTreeMap::new();
+    let mut by_directory = BTreeMap::<String, Vec<&SnapshotDocument>>::new();
+    for document in &snapshot.documents {
         let directory = normalize_directory(&document.path);
-        bump_folder_counts(&mut folder_map, &directory);
-        let meta_root = top_level_directory(&directory);
-        let should_flush_root = current_meta_root
-            .as_ref()
-            .map(|value| value != &meta_root)
-            .unwrap_or(false);
-        let should_flush_size = current_meta_documents.len() >= META_SHARD_TARGET_DOCUMENTS
-            && !current_meta_dir_set.contains(&directory);
-        if should_flush_root || should_flush_size {
-            flush_meta_shard(
-                &export_dir,
-                &exported_at,
-                &mut meta_shards,
-                &mut files_written,
-                &mut current_meta_root,
-                &mut current_meta_documents,
-                &mut current_meta_directories,
-                &mut current_meta_dir_set,
-                &mut meta_root_counters,
-            )?;
+        bump_folder_counts(&mut folders, &directory);
+        if full || dirty_directories.contains(&directory) {
+            by_directory
+                .entry(directory.clone())
+                .or_default()
+                .push(document);
         }
-        if current_meta_root.is_none() {
-            current_meta_root = Some(meta_root.clone());
+        if !full && !changed.contains(&document.path) {
+            continue;
         }
-        if current_meta_dir_set.insert(directory.clone()) {
-            current_meta_directories.push(directory.clone());
-        }
-        current_meta_documents.push(json!({
-            "document_id": document.document_id,
-            "path": document.path,
-            "title": document.title,
-            "summary": document.summary,
-            "mtime": document.mtime,
-            "direct_tags": document.tags,
-            "derived_tags": document.derived_tags,
-            "detail_ref": format!("detail/{}.json", document.document_id),
-        }));
-
-        let detail_relative_path = format!("detail/{}.json", document.document_id);
+        let relative = format!("detail/{}.json", document.document_id);
+        let path = export_dir.join(&relative);
+        write_json_file(
+            &path,
+            &json!({
+                "version": 2, "shard_type": "detail", "exported_at": exported_at,
+                "document": { "document_id": document.document_id, "path": document.path,
+                    "title": document.title, "summary": document.summary, "mtime": document.mtime,
+                    "direct_tags": document.tags, "derived_tags": document.derived_tags, "directory": directory }
+            }),
+        )?;
+        files_written.push(path.to_string_lossy().to_string());
+        stale_paths.remove(&relative);
         detail_shards.push(DetailShardManifestEntry {
             id: stable_id("detail", &document.path),
             document_id: document.document_id.clone(),
             document_path: document.path.clone(),
-            path: detail_relative_path.clone(),
+            path: relative,
         });
-        let detail_path = export_dir.join(&detail_relative_path);
-        write_json_file(
-            &detail_path,
-            &json!({
-                "version": 2,
-                "shard_type": "detail",
-                "exported_at": exported_at,
-                "document": {
-                    "document_id": document.document_id,
-                    "path": document.path,
-                    "title": document.title,
-                    "summary": document.summary,
-                    "direct_tags": document.tags,
-                    "derived_tags": document.derived_tags,
-                    "mtime": document.mtime,
-                    "directory": directory,
-                }
-            }),
-        )?;
-        files_written.push(detail_path.to_string_lossy().to_string());
     }
-
-    flush_meta_shard(
+    for (directory, mut documents) in by_directory {
+        documents.sort_by(|a, b| a.path.cmp(&b.path));
+        let id = stable_id("meta", &directory);
+        let relative = format!("meta/{id}.json");
+        let path = export_dir.join(&relative);
+        let payload = documents.iter().map(|document| json!({
+            "document_id": document.document_id, "path": document.path, "title": document.title,
+            "summary": document.summary, "mtime": document.mtime, "direct_tags": document.tags,
+            "derived_tags": document.derived_tags, "detail_ref": format!("detail/{}.json", document.document_id)
+        })).collect::<Vec<_>>();
+        write_json_file(
+            &path,
+            &json!({ "version": 2, "shard_type": "meta", "exported_at": exported_at,
+            "directory": directory, "directories": [&directory], "documents": payload }),
+        )?;
+        files_written.push(path.to_string_lossy().to_string());
+        stale_paths.remove(&relative);
+        meta_shards.push(MetaShardManifestEntry {
+            id,
+            directory: directory.clone(),
+            directories: vec![directory],
+            path: relative,
+            document_count: documents.len(),
+        });
+    }
+    let (new_tags, tag_files) = build_tag_shards(
         &export_dir,
         &exported_at,
-        &mut meta_shards,
-        &mut files_written,
-        &mut current_meta_root,
-        &mut current_meta_documents,
-        &mut current_meta_directories,
-        &mut current_meta_dir_set,
-        &mut meta_root_counters,
+        &snapshot.documents,
+        &snapshot.tags,
+        if full { None } else { Some(&dirty_roots) },
     )?;
-
-    let taxonomy = build_taxonomy(&tags);
-    let (tag_shards, tag_files) = build_tag_shards(&export_dir, &exported_at, &documents, &tags)?;
+    for tag in &new_tags {
+        stale_paths.remove(&tag.path);
+        stale_paths.remove(&tag.posting_path);
+    }
+    tag_shards.extend(new_tags);
     files_written.extend(tag_files);
-    let (relation_shards, relation_files) =
-        build_relation_shards(&export_dir, &exported_at, &documents)?;
+    let (new_relations, relation_files) = build_relation_shards(
+        &export_dir,
+        &exported_at,
+        &snapshot.documents,
+        if full { None } else { Some(&relation_targets) },
+    )?;
+    for relation in &new_relations {
+        stale_paths.remove(&relation.path);
+    }
+    relation_shards.extend(new_relations);
     files_written.extend(relation_files);
-    let (search_buckets, search_files) =
-        build_search_index(&export_dir, &exported_at, &documents, Some(dirty_scope))?;
+    let (search_buckets, search_files) = build_search_index(
+        &export_dir,
+        &exported_at,
+        &snapshot.documents,
+        if full { None } else { Some(dirty_scope) },
+    )?;
     files_written.extend(search_files);
-
-    let status_path = export_dir.join("status.json");
-    write_json_file(
-        &status_path,
-        &json!({
-            "version": 2,
-            "format": "static-v2",
-            "exported_at": exported_at,
-            "document_count": detail_shards.len(),
-            "meta_shard_count": meta_shards.len(),
-            "detail_shard_count": detail_shards.len(),
-            "tag_shard_count": tag_shards.len(),
-            "relation_group_count": relation_shards.len(),
-            "search_bucket_count": search_buckets.len(),
-            "dirty_scope": dirty_scope,
-        }),
-    )?;
-    files_written.push(status_path.to_string_lossy().to_string());
-
-    let taxonomy_path = export_dir.join("taxonomy.json");
-    write_json_file(
-        &taxonomy_path,
-        &json!({
-            "version": 2,
-            "format": "static-v2",
-            "exported_at": exported_at,
-            "root_types": taxonomy.0,
-            "nodes": taxonomy.1,
-            "tree": taxonomy.2,
-        }),
-    )?;
-    files_written.push(taxonomy_path.to_string_lossy().to_string());
-
-    let relations_path = export_dir.join("relations.json");
-    write_json_file(
-        &relations_path,
-        &json!({
-            "version": 2,
-            "format": "static-v2",
-            "exported_at": exported_at,
-            "groups": relation_shards,
-        }),
-    )?;
-    files_written.push(relations_path.to_string_lossy().to_string());
-
-    let bootstrap_path = export_dir.join("bootstrap.json");
-    let folders: Vec<FolderBootstrapNode> = folder_map.into_values().collect();
-    write_json_file(
-        &bootstrap_path,
-        &json!({
-            "version": 2,
-            "format": "static-v2-bootstrap",
-            "exported_at": exported_at,
-            "folders": folders,
-        }),
-    )?;
-    files_written.push(bootstrap_path.to_string_lossy().to_string());
-
-    let manifest_path = export_dir.join("manifest.json");
-    write_json_file(
-        &manifest_path,
-        &json!({
-            "version": 2,
-            "format": "static-v2",
-            "generated_at": exported_at,
-            "entries": {
-                "status": "status.json",
-                "taxonomy": "taxonomy.json",
-                "relations": "relations.json",
-                "bootstrap": "bootstrap.json",
-                "search_manifest": SEARCH_MANIFEST_RELATIVE_PATH,
-            },
-            "meta_shards": meta_shards,
-            "detail_shards": detail_shards,
-            "tag_shards": tag_shards,
-            "relation_shards": relation_shards,
-            "search_buckets": search_buckets,
-        }),
-    )?;
+    meta_shards.sort_by(|a, b| a.path.cmp(&b.path));
+    detail_shards.sort_by(|a, b| a.document_path.cmp(&b.document_path));
+    tag_shards.sort_by(|a, b| a.root_type.cmp(&b.root_type));
+    relation_shards.sort_by(|a, b| a.path.cmp(&b.path));
+    let taxonomy = build_taxonomy(&snapshot.tags);
+    for (name, payload) in [
+        (
+            "status.json",
+            json!({ "version": 2, "format": "static-v2", "exported_at": exported_at,
+            "document_count": detail_shards.len(), "meta_shard_count": meta_shards.len(),
+            "detail_shard_count": detail_shards.len(), "tag_shard_count": tag_shards.len(),
+            "relation_group_count": relation_shards.len(), "search_bucket_count": search_buckets.len(), "dirty_scope": dirty_scope }),
+        ),
+        (
+            "taxonomy.json",
+            json!({ "version": 2, "format": "static-v2", "exported_at": exported_at,
+            "root_types": taxonomy.0, "nodes": taxonomy.1, "tree": taxonomy.2 }),
+        ),
+        (
+            "relations.json",
+            json!({ "version": 2, "format": "static-v2", "exported_at": exported_at, "groups": relation_shards }),
+        ),
+        (
+            "bootstrap.json",
+            json!({ "version": 2, "format": "static-v2-bootstrap", "exported_at": exported_at,
+            "folders": folders.into_values().collect::<Vec<_>>() }),
+        ),
+    ] {
+        if !full
+            && ((name == "bootstrap.json" && !structure_changed)
+                || (name == "taxonomy.json" && dirty_roots.is_empty())
+                || (name == "relations.json" && relation_targets.is_empty()))
+        {
+            continue;
+        }
+        let path = export_dir.join(name);
+        write_json_file(&path, &payload)?;
+        files_written.push(path.to_string_lossy().to_string());
+    }
+    let manifest = ExportManifest {
+        layout: "directory-v2".to_string(),
+        generated_at: exported_at.clone(),
+        entries: json!({ "status": "status.json", "taxonomy": "taxonomy.json", "relations": "relations.json",
+            "bootstrap": "bootstrap.json", "search_manifest": SEARCH_MANIFEST_RELATIVE_PATH }),
+        meta_shards,
+        detail_shards,
+        tag_shards,
+        relation_shards,
+        search_buckets,
+    };
+    let mut manifest_json = serde_json::to_value(&manifest).map_err(|error| error.to_string())?;
+    manifest_json["version"] = json!(2);
+    manifest_json["format"] = json!("static-v2");
+    write_json_file(&manifest_path, &manifest_json)?;
     files_written.push(manifest_path.to_string_lossy().to_string());
-
+    for relative in stale_paths {
+        let path = export_dir.join(relative);
+        if path.is_file() {
+            fs::remove_file(path).map_err(|error| error.to_string())?;
+        }
+    }
     Ok(ExportBuildResult {
         manifest_path: manifest_path.to_string_lossy().to_string(),
         output_dir: export_dir.to_string_lossy().to_string(),
         exported_at,
-        meta_shard_count: meta_shards.len(),
-        detail_shard_count: detail_shards.len(),
-        tag_shard_count: tag_shards.len(),
-        relation_group_count: relation_shards.len(),
-        search_bucket_count: search_buckets.len(),
+        meta_shard_count: manifest.meta_shards.len(),
+        detail_shard_count: manifest.detail_shards.len(),
+        tag_shard_count: manifest.tag_shards.len(),
+        relation_group_count: manifest.relation_shards.len(),
+        search_bucket_count: manifest.search_buckets.len(),
         files_written: unique_sorted(files_written),
     })
 }
@@ -753,7 +682,11 @@ fn build_tag_shards(
     exported_at: &str,
     documents: &[SnapshotDocument],
     tags: &[SnapshotTag],
+    target_roots: Option<&BTreeSet<String>>,
 ) -> Result<(Vec<TagShardManifestEntry>, Vec<String>), String> {
+    if target_roots.is_some_and(BTreeSet::is_empty) {
+        return Ok((Vec::new(), Vec::new()));
+    }
     let tag_map: HashMap<String, SnapshotTag> = tags
         .iter()
         .cloned()
@@ -761,6 +694,9 @@ fn build_tag_shards(
         .collect();
     let mut tags_by_root = BTreeMap::<String, Vec<SnapshotTag>>::new();
     for tag in tags {
+        if target_roots.is_some_and(|roots| !roots.contains(&tag.root_type)) {
+            continue;
+        }
         tags_by_root
             .entry(tag.root_type.clone())
             .or_default()
@@ -779,6 +715,9 @@ fn build_tag_shards(
                 .get(&tag_path)
                 .map(|tag| tag.root_type.clone())
                 .unwrap_or_else(|| infer_root_type(&tag_path));
+            if target_roots.is_some_and(|roots| !roots.contains(&root_type)) {
+                continue;
+            }
             postings_by_root
                 .entry(root_type)
                 .or_default()
@@ -853,7 +792,11 @@ fn build_relation_shards(
     export_dir: &Path,
     exported_at: &str,
     documents: &[SnapshotDocument],
+    target_documents: Option<&BTreeSet<String>>,
 ) -> Result<(Vec<RelationShardManifestEntry>, Vec<String>), String> {
+    if target_documents.is_some_and(BTreeSet::is_empty) {
+        return Ok((Vec::new(), Vec::new()));
+    }
     let mut by_direct_tag = BTreeMap::<String, Vec<&SnapshotDocument>>::new();
     for document in documents {
         for tag_path in &document.tags {
@@ -876,8 +819,12 @@ fn build_relation_shards(
             for other_index in (index + 1)..tagged_docs.len() {
                 let left = tagged_docs[index];
                 let right = tagged_docs[other_index];
-                merge_relation_pair(&mut relation_map, left, right, &tag_path);
-                merge_relation_pair(&mut relation_map, right, left, &tag_path);
+                if target_documents.map_or(true, |ids| ids.contains(&left.document_id)) {
+                    merge_relation_pair(&mut relation_map, left, right, &tag_path);
+                }
+                if target_documents.map_or(true, |ids| ids.contains(&right.document_id)) {
+                    merge_relation_pair(&mut relation_map, right, left, &tag_path);
+                }
             }
         }
     }
@@ -957,137 +904,213 @@ fn build_search_index_with_progress(
     heartbeat: &mut Option<&mut dyn FnMut() -> Result<(), String>>,
 ) -> Result<(Vec<SearchBucketManifestEntry>, Vec<String>), String> {
     let search_dir = export_dir.join("search");
-    fs::create_dir_all(&search_dir)
-        .map_err(|error| format!("创建搜索导出目录失败 {}: {error}", search_dir.display()))?;
-    let incremental_plan = build_incremental_search_plan(export_dir, documents, dirty_scope);
-    let mut bucket_documents = BTreeMap::<String, BTreeMap<String, SearchDocumentEntry>>::new();
-    let mut bucket_terms = BTreeMap::<String, BTreeMap<String, Vec<String>>>::new();
-
-    for (document_index, document) in documents.iter().enumerate() {
+    fs::create_dir_all(&search_dir).map_err(|error| error.to_string())?;
+    let previous =
+        read_optional_json_file::<SearchManifestFile>(&search_dir.join("manifest.json"))?;
+    let incremental = dirty_scope.is_some_and(|scope| scope.trigger != "full")
+        && previous.as_ref().is_some_and(|manifest| {
+            manifest.format == "search-v2" && manifest.partition_count == SEARCH_PARTITION_COUNT
+        });
+    let changed = dirty_scope
+        .map(|scope| {
+            scope
+                .changed_paths
+                .iter()
+                .chain(&scope.deleted_paths)
+                .cloned()
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    if incremental && changed.is_empty() {
+        return Ok((previous.unwrap().buckets, Vec::new()));
+    }
+    let mut document_index = if incremental {
+        previous.as_ref().unwrap().document_index.clone()
+    } else {
+        BTreeMap::new()
+    };
+    let mut target_buckets = BTreeSet::new();
+    let mut replaced_paths = BTreeSet::new();
+    let mut present_paths = BTreeSet::new();
+    let mut additions = BTreeMap::<String, Vec<(SearchDocumentEntry, Vec<String>)>>::new();
+    for (index, document) in documents.iter().enumerate() {
+        if incremental && !changed.contains(&document.path) {
+            continue;
+        }
+        present_paths.insert(document.path.clone());
+        let mut tokens = tokenize_document(document).into_iter().collect::<Vec<_>>();
+        tokens.sort();
+        let terms_hash = format!("{:x}", Sha256::digest(tokens.join("\0").as_bytes()));
+        if incremental
+            && document_index.get(&document.path).is_some_and(|old| {
+                old.document_id == document.document_id && old.terms_hash == terms_hash
+            })
+        {
+            continue;
+        }
+        replaced_paths.insert(document.path.clone());
+        if let Some(old) = document_index.remove(&document.path) {
+            target_buckets.extend(old.buckets);
+        }
+        let partition = Sha256::digest(document.document_id.as_bytes())[0] % SEARCH_PARTITION_COUNT;
+        let mut by_bucket = BTreeMap::<String, Vec<String>>::new();
+        for term in tokens {
+            by_bucket
+                .entry(format!("{}-{partition:02x}", build_bucket_name(&term)))
+                .or_default()
+                .push(term);
+        }
+        document_index.insert(
+            document.path.clone(),
+            DocumentSearchState {
+                document_id: document.document_id.clone(),
+                buckets: by_bucket.keys().cloned().collect(),
+                terms_hash,
+            },
+        );
         let entry = SearchDocumentEntry {
             document_id: document.document_id.clone(),
             path: document.path.clone(),
-            title: document.title.clone(),
-            summary: document.summary.clone(),
-            mtime: document.mtime.clone(),
-            tags: document
-                .tags
-                .iter()
-                .chain(document.derived_tags.iter())
-                .cloned()
-                .collect(),
         };
-        let mut bucket_term_map = BTreeMap::<String, Vec<String>>::new();
-        for term in tokenize_document(document) {
-            let bucket = build_bucket_name(&term);
-            bucket_term_map.entry(bucket).or_default().push(term);
-        }
-        for (bucket, terms) in bucket_term_map {
-            if incremental_plan
-                .as_ref()
-                .map(|plan| !plan.target_buckets.contains(&bucket))
-                .unwrap_or(false)
-            {
-                continue;
-            }
-            bucket_documents
-                .entry(bucket.clone())
+        for (bucket, terms) in by_bucket {
+            target_buckets.insert(bucket.clone());
+            additions
+                .entry(bucket)
                 .or_default()
-                .insert(entry.document_id.clone(), entry.clone());
-            let term_map = bucket_terms.entry(bucket).or_default();
-            for term in terms.into_iter().collect::<HashSet<_>>() {
-                let posting = term_map.entry(term).or_default();
-                if posting.last() != Some(&entry.document_id) {
-                    posting.push(entry.document_id.clone());
-                }
-            }
+                .push((entry.clone(), terms));
         }
-        if document_index % 128 == 0 {
+        if index % 128 == 0 {
             if let Some(callback) = heartbeat.as_deref_mut() {
                 callback()?;
             }
         }
     }
-
-    let mut manifest = Vec::new();
-    let mut files_written = Vec::new();
-    for (bucket, documents_by_id) in bucket_documents {
-        let file_path = search_dir.join(format!("{bucket}.json"));
-        let terms = bucket_terms.get(&bucket).cloned().unwrap_or_default();
-        let mut docs = documents_by_id.into_values().collect::<Vec<_>>();
-        docs.sort_by(|left, right| left.path.cmp(&right.path));
-        let mut term_entries = terms
-            .into_iter()
-            .map(|(term, document_ids)| SearchTermEntry {
-                document_count: document_ids.len(),
-                term,
-                document_ids,
-            })
-            .collect::<Vec<_>>();
-        term_entries.sort_by(|left, right| left.term.cmp(&right.term));
-        write_search_bucket_file(
-            &file_path,
-            exported_at,
-            &bucket,
-            &docs,
-            &term_entries,
-            heartbeat,
-        )?;
-        if let Some(callback) = heartbeat.as_deref_mut() {
-            callback()?;
+    if incremental {
+        for path in changed.difference(&present_paths) {
+            if let Some(old) = document_index.remove(path) {
+                target_buckets.extend(old.buckets);
+                replaced_paths.insert(path.clone());
+            }
         }
-        manifest.push(SearchBucketManifestEntry {
-            bucket: bucket.clone(),
-            path: format!("search/{bucket}.json"),
-            term_count: term_entries.len(),
-        });
-        files_written.push(file_path.to_string_lossy().to_string());
+        if replaced_paths.is_empty() {
+            return Ok((previous.unwrap().buckets, Vec::new()));
+        }
     }
-
-    if let Some(plan) = incremental_plan {
-        let rebuilt_by_bucket = manifest
+    let mut manifest = if incremental {
+        previous
+            .as_ref()
+            .unwrap()
+            .buckets
             .iter()
             .cloned()
             .map(|bucket| (bucket.bucket.clone(), bucket))
-            .collect::<BTreeMap<_, _>>();
-        let mut merged_manifest = Vec::new();
-        for previous_bucket in plan.previous_manifest.buckets {
-            if !plan.target_buckets.contains(&previous_bucket.bucket) {
-                merged_manifest.push(previous_bucket);
-                continue;
-            }
-            if let Some(rebuilt) = rebuilt_by_bucket.get(&previous_bucket.bucket) {
-                merged_manifest.push(rebuilt.clone());
-                continue;
-            }
-            let stale_bucket_path = export_dir.join(&previous_bucket.path);
-            fs::remove_file(&stale_bucket_path).ok();
-        }
-        for bucket in manifest {
-            if !merged_manifest
+            .collect::<BTreeMap<_, _>>()
+    } else {
+        BTreeMap::new()
+    };
+    let mut files_written = Vec::new();
+    for bucket in target_buckets {
+        let path = search_dir.join(format!("{bucket}.json"));
+        let old = if incremental {
+            read_optional_json_file::<SearchBucketFile>(&path)?
+        } else {
+            None
+        };
+        let mut docs = BTreeMap::new();
+        let mut terms = BTreeMap::<String, BTreeSet<String>>::new();
+        if let Some(old) = old {
+            let removed = old
+                .documents
                 .iter()
-                .any(|item| item.bucket == bucket.bucket)
-            {
-                merged_manifest.push(bucket);
+                .filter(|doc| replaced_paths.contains(&doc.path))
+                .map(|doc| doc.document_id.clone())
+                .collect::<BTreeSet<_>>();
+            for document in old.documents {
+                if !removed.contains(&document.document_id) {
+                    docs.insert(document.document_id.clone(), document);
+                }
+            }
+            for term in old.terms {
+                let posting = term
+                    .document_ids
+                    .into_iter()
+                    .filter(|id| !removed.contains(id))
+                    .collect::<BTreeSet<_>>();
+                if !posting.is_empty() {
+                    terms.insert(term.term, posting);
+                }
             }
         }
-        manifest = merged_manifest;
-        manifest.sort_by(|left, right| left.bucket.cmp(&right.bucket));
+        for (document, tokens) in additions.remove(&bucket).unwrap_or_default() {
+            for token in tokens {
+                terms
+                    .entry(token)
+                    .or_default()
+                    .insert(document.document_id.clone());
+            }
+            docs.insert(document.document_id.clone(), document);
+        }
+        if docs.is_empty() {
+            manifest.remove(&bucket);
+            if path.is_file() {
+                fs::remove_file(&path).map_err(|error| error.to_string())?;
+            }
+            continue;
+        }
+        let mut docs = docs.into_values().collect::<Vec<_>>();
+        docs.sort_by(|a, b| a.path.cmp(&b.path));
+        let terms = terms
+            .into_iter()
+            .map(|(term, posting)| SearchTermEntry {
+                term,
+                document_count: posting.len(),
+                document_ids: posting.into_iter().collect(),
+            })
+            .collect::<Vec<_>>();
+        write_search_bucket_file(&path, exported_at, &bucket, &docs, &terms, heartbeat)?;
+        manifest.insert(
+            bucket.clone(),
+            SearchBucketManifestEntry {
+                bucket: bucket.clone(),
+                path: format!("search/{bucket}.json"),
+                term_count: terms.len(),
+            },
+        );
+        files_written.push(path.to_string_lossy().to_string());
     }
-
+    if !incremental {
+        if let Some(previous) = previous {
+            for old in previous.buckets {
+                if !manifest.contains_key(&old.bucket) {
+                    let path = export_dir.join(old.path);
+                    if path.is_file() {
+                        fs::remove_file(path).map_err(|error| error.to_string())?;
+                    }
+                }
+            }
+        }
+    }
+    let buckets = manifest.into_values().collect::<Vec<_>>();
     let manifest_path = search_dir.join("manifest.json");
     write_json_file(
         &manifest_path,
-        &json!({
-            "version": 1,
-            "format": "search-v1",
-            "generated_at": exported_at,
-            "buckets": manifest,
-        }),
+        &SearchManifestFile {
+            partition_count: SEARCH_PARTITION_COUNT,
+            version: 2,
+            format: "search-v2".to_string(),
+            generated_at: exported_at.to_string(),
+            buckets: buckets.clone(),
+            document_index,
+        },
     )?;
     files_written.push(manifest_path.to_string_lossy().to_string());
+    Ok((buckets, files_written))
+}
 
-    Ok((manifest, files_written))
+#[derive(Deserialize)]
+struct SearchBucketFile {
+    documents: Vec<SearchDocumentEntry>,
+    terms: Vec<SearchTermEntry>,
 }
 
 fn write_search_bucket_file(
@@ -1098,136 +1121,29 @@ fn write_search_bucket_file(
     terms: &[SearchTermEntry],
     heartbeat: &mut Option<&mut dyn FnMut() -> Result<(), String>>,
 ) -> Result<(), String> {
-    // 中文分桶可能包含数十万词项，逐项写入可避免构造巨大的 serde_json::Value。
-    let Some(parent) = path.parent() else {
-        return Err(format!("搜索分桶路径没有父目录：{}", path.display()));
-    };
-    fs::create_dir_all(parent)
-        .map_err(|error| format!("创建搜索分桶目录失败 {}: {error}", parent.display()))?;
-    let temp_path = path.with_extension("json.tmp");
-    let result = (|| -> Result<(), String> {
-        let file = fs::File::create(&temp_path)
-            .map_err(|error| format!("创建搜索分桶临时文件失败 {}: {error}", temp_path.display()))?;
-        let mut writer = BufWriter::new(file);
-        writer
-            .write_all(b"{\n  \"version\": 1,\n  \"format\": \"search-bucket-v1\",\n  \"generated_at\": ")
-            .map_err(|error| format!("写入搜索分桶头失败 {}: {error}", temp_path.display()))?;
-        serde_json::to_writer(&mut writer, exported_at)
-            .map_err(|error| format!("序列化搜索分桶时间失败 {}: {error}", temp_path.display()))?;
-        writer
-            .write_all(b",\n  \"bucket\": ")
-            .map_err(|error| format!("写入搜索分桶名称失败 {}: {error}", temp_path.display()))?;
-        serde_json::to_writer(&mut writer, bucket)
-            .map_err(|error| format!("序列化搜索分桶名称失败 {}: {error}", temp_path.display()))?;
-        writer
-            .write_all(b",\n  \"documents\": [")
-            .map_err(|error| format!("写入搜索分桶文档头失败 {}: {error}", temp_path.display()))?;
-        for (index, document) in documents.iter().enumerate() {
-            writer
-                .write_all(if index == 0 { b"\n    " } else { b",\n    " })
-                .map_err(|error| format!("写入搜索分桶文档失败 {}: {error}", temp_path.display()))?;
-            serde_json::to_writer(&mut writer, document)
-                .map_err(|error| format!("序列化搜索分桶文档失败 {}: {error}", temp_path.display()))?;
-            if index % 128 == 0 {
-                if let Some(callback) = heartbeat.as_deref_mut() {
-                    callback()?;
-                }
-            }
-        }
-        writer
-            .write_all(b"\n  ],\n  \"terms\": [")
-            .map_err(|error| format!("写入搜索分桶词项头失败 {}: {error}", temp_path.display()))?;
-        for (index, term) in terms.iter().enumerate() {
-            writer
-                .write_all(if index == 0 { b"\n    " } else { b",\n    " })
-                .map_err(|error| format!("写入搜索分桶词项失败 {}: {error}", temp_path.display()))?;
-            serde_json::to_writer(&mut writer, term)
-                .map_err(|error| format!("序列化搜索分桶词项失败 {}: {error}", temp_path.display()))?;
-            if index % 128 == 0 {
-                if let Some(callback) = heartbeat.as_deref_mut() {
-                    callback()?;
-                }
-            }
-        }
-        writer
-            .write_all(b"\n  ]\n}\n")
-            .map_err(|error| format!("写入搜索分桶尾失败 {}: {error}", temp_path.display()))?;
-        writer
-            .flush()
-            .map_err(|error| format!("刷新搜索分桶失败 {}: {error}", temp_path.display()))?;
-        Ok(())
-    })();
-    if let Err(error) = result {
-        fs::remove_file(&temp_path).ok();
-        return Err(error);
+    #[derive(Serialize)]
+    struct Bucket<'a> {
+        version: u32,
+        format: &'a str,
+        generated_at: &'a str,
+        bucket: &'a str,
+        documents: &'a [SearchDocumentEntry],
+        terms: &'a [SearchTermEntry],
     }
-    if let Err(error) = fs::rename(&temp_path, path) {
-        fs::remove_file(&temp_path).ok();
-        return Err(format!("替换搜索分桶失败 {}: {error}", path.display()));
+    if let Some(callback) = heartbeat.as_deref_mut() {
+        callback()?;
     }
-    Ok(())
-}
-
-fn build_incremental_search_plan(
-    export_dir: &Path,
-    documents: &[SnapshotDocument],
-    dirty_scope: Option<&DirtyScope>,
-) -> Option<IncrementalSearchPlan> {
-    let dirty_scope = dirty_scope?;
-    if dirty_scope.trigger == "full" {
-        return None;
-    }
-    let changed_paths = dirty_scope
-        .changed_paths
-        .iter()
-        .map(|item| item.trim().to_string())
-        .filter(|item| !item.is_empty())
-        .collect::<BTreeSet<_>>();
-    if changed_paths.is_empty() {
-        return None;
-    }
-    let manifest_path = export_dir.join("search").join("manifest.json");
-    let previous_manifest = read_json_file::<SearchManifestFile>(&manifest_path).ok()?;
-    if previous_manifest.buckets.is_empty() {
-        return None;
-    }
-
-    let mut target_buckets = BTreeSet::new();
-    for document in documents {
-        if !changed_paths.contains(&document.path) {
-            continue;
-        }
-        for term in tokenize_document(document) {
-            target_buckets.insert(build_bucket_name(&term));
-        }
-    }
-
-    for previous_bucket in &previous_manifest.buckets {
-        if target_buckets.contains(&previous_bucket.bucket) {
-            continue;
-        }
-        let bucket_path = export_dir.join(&previous_bucket.path);
-        if bucket_contains_any_path(&bucket_path, &changed_paths) {
-            target_buckets.insert(previous_bucket.bucket.clone());
-        }
-    }
-
-    Some(IncrementalSearchPlan {
-        previous_manifest,
-        target_buckets,
-    })
-}
-
-fn bucket_contains_any_path(path: &PathBuf, changed_paths: &BTreeSet<String>) -> bool {
-    if !path.is_file() || changed_paths.is_empty() {
-        return false;
-    }
-    let Ok(raw) = fs::read_to_string(path) else {
-        return false;
-    };
-    changed_paths
-        .iter()
-        .any(|changed_path| raw.contains(&format!("\"path\": \"{}\"", changed_path)))
+    write_compact_json(
+        path,
+        &Bucket {
+            version: 2,
+            format: "search-bucket-v2",
+            generated_at: exported_at,
+            bucket,
+            documents,
+            terms,
+        },
+    )
 }
 
 fn tokenize_document(document: &SnapshotDocument) -> HashSet<String> {
@@ -1295,60 +1211,6 @@ fn is_han(ch: char) -> bool {
     ('\u{4e00}'..='\u{9fff}').contains(&ch)
 }
 
-fn flush_meta_shard(
-    export_dir: &Path,
-    exported_at: &str,
-    meta_shards: &mut Vec<MetaShardManifestEntry>,
-    files_written: &mut Vec<String>,
-    current_meta_root: &mut Option<String>,
-    current_meta_documents: &mut Vec<Value>,
-    current_meta_directories: &mut Vec<String>,
-    current_meta_dir_set: &mut HashSet<String>,
-    meta_root_counters: &mut HashMap<String, usize>,
-) -> Result<(), String> {
-    let Some(meta_root) = current_meta_root.clone() else {
-        return Ok(());
-    };
-    if current_meta_documents.is_empty() {
-        *current_meta_root = None;
-        current_meta_directories.clear();
-        current_meta_dir_set.clear();
-        return Ok(());
-    }
-    let counter = meta_root_counters.entry(meta_root.clone()).or_insert(0);
-    let shard_index = *counter;
-    *counter += 1;
-    let directories = unique_sorted(current_meta_directories.clone());
-    let shard_directory = common_directory(&directories);
-    let shard_id = stable_id("meta", &format!("{meta_root}::{shard_index}"));
-    let relative_path = format!("meta/{shard_id}.json");
-    let absolute_path = export_dir.join(&relative_path);
-    write_json_file(
-        &absolute_path,
-        &json!({
-            "version": 2,
-            "shard_type": "meta",
-            "directory": shard_directory,
-            "directories": directories,
-            "exported_at": exported_at,
-            "documents": current_meta_documents,
-        }),
-    )?;
-    meta_shards.push(MetaShardManifestEntry {
-        id: shard_id,
-        directory: shard_directory,
-        directories,
-        path: relative_path,
-        document_count: current_meta_documents.len(),
-    });
-    files_written.push(absolute_path.to_string_lossy().to_string());
-    *current_meta_root = None;
-    current_meta_documents.clear();
-    current_meta_directories.clear();
-    current_meta_dir_set.clear();
-    Ok(())
-}
-
 fn bump_folder_counts(folder_map: &mut BTreeMap<String, FolderBootstrapNode>, directory: &str) {
     let normalized = if directory.is_empty() { "." } else { directory };
     {
@@ -1379,21 +1241,6 @@ fn bump_folder_counts(folder_map: &mut BTreeMap<String, FolderBootstrapNode>, di
         node.document_count += 1;
         current = parent_directory(&path);
     }
-}
-
-fn resolve_export_catalog_snapshot_path(root_dir: &str) -> PathBuf {
-    export_catalog_snapshot_path(root_dir)
-}
-
-fn read_snapshot(path: &PathBuf) -> Result<ExportCatalogSnapshot, String> {
-    let snapshot = read_json_file::<ExportCatalogSnapshot>(path)?;
-    if snapshot.version != 1 {
-        return Err(format!(
-            "export catalog snapshot 版本不支持：{}",
-            snapshot.version
-        ));
-    }
-    Ok(snapshot)
 }
 
 fn write_runtime_status(root_dir: &str, payload: PersistedRuntimeStatus) -> Result<(), String> {
@@ -1434,14 +1281,6 @@ fn normalize_directory(file_path: &str) -> String {
     }
 }
 
-fn top_level_directory(directory: &str) -> String {
-    if directory == "." || directory.is_empty() {
-        ".".to_string()
-    } else {
-        directory.split('/').next().unwrap_or(".").to_string()
-    }
-}
-
 fn directory_name(directory: &str) -> String {
     if directory == "." || directory.is_empty() {
         "资料库".to_string()
@@ -1469,45 +1308,6 @@ fn parent_directory(directory: &str) -> Option<String> {
         }
     } else {
         Some(".".to_string())
-    }
-}
-
-fn common_directory(directories: &[String]) -> String {
-    if directories.is_empty() {
-        return ".".to_string();
-    }
-    let parts_list = directories
-        .iter()
-        .map(|item| {
-            if item == "." {
-                Vec::<String>::new()
-            } else {
-                item.split('/')
-                    .filter(|part| !part.is_empty())
-                    .map(ToString::to_string)
-                    .collect()
-            }
-        })
-        .collect::<Vec<_>>();
-    let min_len = parts_list.iter().map(Vec::len).min().unwrap_or(0);
-    let mut shared = Vec::<String>::new();
-    for index in 0..min_len {
-        let Some(current) = parts_list[0].get(index) else {
-            break;
-        };
-        if parts_list
-            .iter()
-            .all(|parts| parts.get(index) == Some(current))
-        {
-            shared.push(current.clone());
-        } else {
-            break;
-        }
-    }
-    if shared.is_empty() {
-        ".".to_string()
-    } else {
-        shared.join("/")
     }
 }
 
@@ -1547,18 +1347,8 @@ where
     read_json_file(path).map(Some)
 }
 
-fn write_json_file<T>(path: &PathBuf, value: &T) -> Result<(), String>
-where
-    T: Serialize,
-{
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("创建目录失败 {}: {error}", parent.display()))?;
-    }
-    let mut buffer = serde_json::to_vec_pretty(value)
-        .map_err(|error| format!("序列化 JSON 失败 {}: {error}", path.display()))?;
-    buffer.push(b'\n');
-    fs::write(path, buffer).map_err(|error| format!("写入文件失败 {}: {error}", path.display()))
+fn write_json_file<T: Serialize>(path: &PathBuf, value: &T) -> Result<(), String> {
+    write_compact_json(path, value)
 }
 
 fn iso_now() -> String {
@@ -1586,14 +1376,6 @@ fn json_summary_len(value: &Value, key: &str) -> usize {
         .unwrap_or(0)
 }
 
-fn json_summary_optional_trigger(value: Option<&Value>) -> Option<String> {
-    value.and_then(json_summary_trigger)
-}
-
-fn json_summary_optional_len(value: Option<&Value>, key: &str) -> usize {
-    value.map(|item| json_summary_len(item, key)).unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1601,14 +1383,19 @@ mod tests {
         write_runtime_status, DirtyScope, ExportCatalogSnapshot, PersistedRuntimeStatus,
         SearchManifestFile, SnapshotDocument, SnapshotTag,
     };
-    use crate::native_core::state_store::{
-        export_manifest_path, runtime_status_path, search_manifest_path,
-        SEARCH_MANIFEST_RELATIVE_PATH,
-    };
+    use crate::native_core::state_store::{runtime_status_path, SEARCH_MANIFEST_RELATIVE_PATH};
     use serde_json::Value;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn bucket_path(export: &std::path::Path, prefix: &str, document_id: &str) -> PathBuf {
+        use sha2::{Digest, Sha256};
+        export.join(format!(
+            "search/{prefix}-{:02x}.json",
+            Sha256::digest(document_id.as_bytes())[0] % 16
+        ))
+    }
 
     #[test]
     fn streaming_search_bucket_keeps_contract_and_reports_heartbeat() {
@@ -1649,26 +1436,21 @@ mod tests {
             .expect("build streaming search index");
         }
 
-        let bucket_path = export_dir.join("search").join("han.json");
-        let bucket = read_json_file::<Value>(&bucket_path).expect("read han search bucket");
-        assert_eq!(
-            bucket.get("format").and_then(Value::as_str),
-            Some("search-bucket-v1")
-        );
-        assert_eq!(
-            bucket
-                .get("documents")
-                .and_then(Value::as_array)
-                .map(Vec::len),
-            Some(260)
-        );
-        assert!(bucket
-            .get("terms")
-            .and_then(Value::as_array)
-            .is_some_and(|terms| !terms.is_empty()));
+        let manifest: SearchManifestFile =
+            read_json_file(&export_dir.join("search/manifest.json")).unwrap();
+        let mut count = 0;
+        for entry in manifest
+            .buckets
+            .iter()
+            .filter(|entry| entry.bucket.starts_with("han-"))
+        {
+            let bucket: Value = read_json_file(&export_dir.join(&entry.path)).unwrap();
+            assert_eq!(bucket["format"], "search-bucket-v2");
+            count += bucket["documents"].as_array().unwrap().len();
+            assert!(!bucket["terms"].as_array().unwrap().is_empty());
+        }
+        assert_eq!(count, 260);
         assert!(heartbeat_count >= 6);
-        assert!(!export_dir.join("search").join("han.json.tmp").exists());
-
         fs::remove_dir_all(&temp_root).ok();
     }
 
@@ -1714,7 +1496,7 @@ mod tests {
         )
         .expect("build initial search index");
 
-        let banana_bucket_path = export_dir.join("search").join("b.json");
+        let banana_bucket_path = bucket_path(&export_dir, "b", "doc_b");
         let before_banana_bucket = fs::read_to_string(&banana_bucket_path)
             .expect("read unchanged bucket before incremental rebuild");
         assert!(before_banana_bucket.contains("\"doc_b\""));
@@ -1766,19 +1548,19 @@ mod tests {
             .iter()
             .map(|entry| entry.bucket.clone())
             .collect::<Vec<_>>();
-        assert!(buckets.contains(&"b".to_string()));
-        assert!(buckets.contains(&"c".to_string()));
+        assert!(buckets.iter().any(|bucket| bucket.starts_with("b-")));
+        assert!(buckets.iter().any(|bucket| bucket.starts_with("c-")));
 
         let after_banana_bucket = fs::read_to_string(&banana_bucket_path)
             .expect("read unchanged bucket after incremental rebuild");
         assert_eq!(after_banana_bucket, before_banana_bucket);
 
-        let cherry_bucket_path = export_dir.join("search").join("c.json");
+        let cherry_bucket_path = bucket_path(&export_dir, "c", "doc_a");
         let cherry_bucket =
             fs::read_to_string(&cherry_bucket_path).expect("read rebuilt dirty bucket");
         assert!(cherry_bucket.contains("\"doc_a\""));
 
-        let rebuilt_alpha_bucket_path = export_dir.join("search").join("a.json");
+        let rebuilt_alpha_bucket_path = bucket_path(&export_dir, "a", "doc_a");
         let rebuilt_alpha_bucket =
             fs::read_to_string(&rebuilt_alpha_bucket_path).expect("read rebuilt alpha bucket");
         assert!(rebuilt_alpha_bucket.contains("\"doc_a\""));
@@ -1788,13 +1570,13 @@ mod tests {
     }
 
     #[test]
-    fn incremental_search_rebuilds_summary_terms_after_backfill() {
+    fn incremental_search_rebuilds_summary_terms_after_document_change() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time before unix epoch")
             .as_nanos();
         let temp_root =
-            std::env::temp_dir().join(format!("x-file-native-search-summary-backfill-{nonce}"));
+            std::env::temp_dir().join(format!("x-file-native-search-document-change-{nonce}"));
         if temp_root.exists() {
             fs::remove_dir_all(&temp_root).ok();
         }
@@ -1828,7 +1610,7 @@ mod tests {
             mtime: "2026-06-17T00:00:00Z".to_string(),
         }];
         let dirty_scope = DirtyScope {
-            trigger: "summary_backfill".to_string(),
+            trigger: "incremental".to_string(),
             changed_paths: vec!["docs/a.md".to_string()],
             deleted_paths: Vec::new(),
             dirty_directories: vec!["docs".to_string()],
@@ -1844,15 +1626,57 @@ mod tests {
             &updated_documents,
             Some(&dirty_scope),
         )
-        .expect("build summary-backfill incremental search index");
+        .expect("build incremental search index");
 
-        let gamma_bucket_path = export_dir.join("search").join("g.json");
+        let gamma_bucket_path = bucket_path(&export_dir, "g", "doc_a");
         let gamma_bucket = fs::read_to_string(&gamma_bucket_path)
-            .expect("read rebuilt gamma bucket after summary backfill");
+            .expect("read rebuilt gamma bucket after document change");
         fs::remove_dir_all(&temp_root).ok();
 
         assert!(gamma_bucket.contains("\"gamma\""));
         assert!(gamma_bucket.contains("\"doc_a\""));
+    }
+
+    #[test]
+    fn 旧前缀搜索桶迁移为文档分片且删除旧文件() {
+        let root =
+            std::env::temp_dir().join(format!("x-file-search-migrate-{}", crate::epoch_millis()));
+        let export = root.join(".ai-index/exports");
+        fs::create_dir_all(export.join("search")).unwrap();
+        crate::write_json_file(&export.join("search/manifest.json"), &serde_json::json!({
+            "version": 2, "format": "search-v2", "generated_at": "old",
+            "document_index": {}, "buckets": [{"bucket":"a", "path":"search/a.json", "term_count":1}]
+        })).unwrap();
+        fs::write(export.join("search/a.json"), "{}").unwrap();
+        let document = SnapshotDocument {
+            document_id: "doc_a".to_string(),
+            path: "a.md".to_string(),
+            title: "alpha".to_string(),
+            summary: "newterm".to_string(),
+            tags: vec![],
+            derived_tags: vec![],
+            mtime: "now".to_string(),
+        };
+        let dirty = DirtyScope {
+            trigger: "incremental".to_string(),
+            changed_paths: vec!["a.md".to_string()],
+            deleted_paths: vec![],
+            dirty_directories: vec![],
+            dirty_tag_paths: vec![],
+            dirty_meta_shards: vec![],
+            dirty_detail_shards: vec![],
+            dirty_posting_buckets: vec![],
+            dirty_relations: vec![],
+        };
+        build_search_index(&export, "now", &[document], Some(&dirty)).unwrap();
+        let manifest: SearchManifestFile =
+            read_json_file(&export.join("search/manifest.json")).unwrap();
+        assert_eq!(manifest.partition_count, 16);
+        assert!(!export.join("search/a.json").exists());
+        assert!(fs::read_to_string(bucket_path(&export, "n", "doc_a"))
+            .unwrap()
+            .contains("newterm"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1866,8 +1690,7 @@ mod tests {
 
         let snapshot = ExportCatalogSnapshot {
             version: 1,
-            generated_at: Some("2026-06-18T10:00:00Z".to_string()),
-            generated_at_legacy: None,
+            generated_at: Some("2026-10-26T00:00:00Z".to_string()),
             tags: vec![SnapshotTag {
                 path: "主题/示例".to_string(),
                 name: "示例".to_string(),
@@ -1899,7 +1722,7 @@ mod tests {
 
         let result = build_native_export(&root_dir.to_string_lossy(), &snapshot, &dirty_scope)
             .expect("build export");
-        let manifest_path = export_manifest_path(&root_dir.to_string_lossy());
+        let manifest_path = root_dir.join(".ai-index/exports/manifest.json");
         assert!(result
             .files_written
             .iter()
@@ -1933,7 +1756,9 @@ mod tests {
                 .map(Vec::len),
             Some(1),
         );
-        assert!(search_manifest_path(&root_dir.to_string_lossy()).is_file());
+        assert!(root_dir
+            .join(".ai-index/exports/search/manifest.json")
+            .is_file());
     }
 
     #[test]
@@ -1973,5 +1798,94 @@ mod tests {
             Some("2026-06-18T10:00:00Z"),
         );
         assert!(status.get("progress").is_some());
+    }
+}
+
+#[cfg(test)]
+mod incremental_export_tests {
+    use super::*;
+
+    #[test]
+    fn 局部删除清理关系且保留未受影响的分片() {
+        let root =
+            std::env::temp_dir().join(format!("x-file-export-delta-{}", crate::epoch_millis()));
+        let make_document = |id: &str, path: &str, tags: Vec<String>| SnapshotDocument {
+            document_id: id.to_string(),
+            path: path.to_string(),
+            title: id.to_string(),
+            summary: "alpha".to_string(),
+            tags,
+            derived_tags: Vec::new(),
+            mtime: iso_now(),
+        };
+        let tag = SnapshotTag {
+            path: "项目/测试".to_string(),
+            name: "测试".to_string(),
+            root_type: "项目".to_string(),
+            parent_path: Some("项目".to_string()),
+            depth: 1,
+        };
+        let mut snapshot = ExportCatalogSnapshot {
+            version: 1,
+            generated_at: Some("2026-10-26T00:00:00Z".to_string()),
+            tags: vec![tag],
+            documents: vec![
+                make_document("a", "docs/a.md", vec!["项目/测试".to_string()]),
+                make_document("b", "docs/b.md", vec!["项目/测试".to_string()]),
+                make_document("c", "other/c.md", Vec::new()),
+            ],
+        };
+        let mut scope = DirtyScope {
+            trigger: "full".to_string(),
+            changed_paths: Vec::new(),
+            deleted_paths: Vec::new(),
+            dirty_directories: Vec::new(),
+            dirty_tag_paths: Vec::new(),
+            dirty_meta_shards: Vec::new(),
+            dirty_detail_shards: Vec::new(),
+            dirty_posting_buckets: Vec::new(),
+            dirty_relations: Vec::new(),
+        };
+        let initial = build_native_export(root.to_str().unwrap(), &snapshot, &scope).unwrap();
+        let directory = native_export_dir(root.to_str().unwrap());
+        let manifest: ExportManifest =
+            read_json_file(&PathBuf::from(initial.manifest_path)).unwrap();
+        let untouched = directory.join(
+            &manifest
+                .meta_shards
+                .iter()
+                .find(|shard| shard.directory == "other")
+                .unwrap()
+                .path,
+        );
+        let before = fs::read(&untouched).unwrap();
+        assert!(directory.join("relations/a.json").exists());
+        assert!(directory.join("relations/b.json").exists());
+        snapshot.documents.remove(0);
+        scope.trigger = "incremental".to_string();
+        scope.deleted_paths = vec!["docs/a.md".to_string()];
+        let result = build_native_export(root.to_str().unwrap(), &snapshot, &scope).unwrap();
+        assert_eq!(fs::read(&untouched).unwrap(), before);
+        assert!(!result
+            .files_written
+            .contains(&untouched.to_string_lossy().to_string()));
+        assert!(!directory.join("detail/a.json").exists());
+        assert!(!directory.join("relations/a.json").exists());
+        assert!(!directory.join("relations/b.json").exists());
+        let search: SearchManifestFile =
+            read_json_file(&directory.join("search/manifest.json")).unwrap();
+        assert!(!search.document_index.contains_key("docs/a.md"));
+        for bucket in search.buckets {
+            let payload: SearchBucketFile = read_json_file(&directory.join(bucket.path)).unwrap();
+            assert!(payload
+                .documents
+                .iter()
+                .all(|document| document.document_id != "a"));
+            assert!(payload
+                .terms
+                .iter()
+                .all(|term| !term.document_ids.iter().any(|id| id == "a")));
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 }

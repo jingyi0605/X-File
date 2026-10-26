@@ -1,4 +1,33 @@
 use std::path::PathBuf;
+use std::{
+    fs,
+    io::{BufWriter, Write},
+    path::Path,
+    time::SystemTime,
+};
+
+pub type FileVersion = Option<(SystemTime, u64)>;
+
+pub fn file_version(path: &Path) -> FileVersion {
+    fs::metadata(path).ok().and_then(|metadata| {
+        metadata
+            .modified()
+            .ok()
+            .map(|modified| (modified, metadata.len()))
+    })
+}
+
+pub fn write_compact_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    fs::create_dir_all(path.parent().unwrap()).map_err(|error| error.to_string())?;
+    let temporary = path.with_extension("json.tmp");
+    let mut writer =
+        BufWriter::new(fs::File::create(&temporary).map_err(|error| error.to_string())?);
+    serde_json::to_writer(&mut writer, value).map_err(|error| error.to_string())?;
+    writer.write_all(b"\n").map_err(|error| error.to_string())?;
+    writer.flush().map_err(|error| error.to_string())?;
+    drop(writer);
+    fs::rename(temporary, path).map_err(|error| error.to_string())
+}
 
 pub const AI_INDEX_DIR: &str = ".ai-index";
 pub const RUNTIME_DIR: &str = "runtime";
@@ -8,9 +37,7 @@ pub const ACTIVE_FILE_STATE_SNAPSHOT_FILE: &str = "active-file-state-snapshot.js
 pub const INDEX_STATE_SNAPSHOT_FILE: &str = "index-state.json";
 pub const EXPORT_CATALOG_SNAPSHOT_FILE: &str = "export-catalog-snapshot.json";
 pub const INDEXED_DOCUMENT_JOURNAL_FILE: &str = "indexed-document-journal.jsonl";
-pub const SUMMARY_BACKFILL_STATE_FILE: &str = "summary-backfill-state.json";
 pub const PRIORITY_HINTS_FILE: &str = "priority-hints.json";
-pub const EXPORT_MANIFEST_FILE: &str = "manifest.json";
 pub const SEARCH_MANIFEST_RELATIVE_PATH: &str = "search/manifest.json";
 
 pub fn runtime_dir(root_dir: &str) -> PathBuf {
@@ -43,18 +70,6 @@ pub fn indexed_document_journal_path(root_dir: &str) -> PathBuf {
     runtime_dir(root_dir).join(INDEXED_DOCUMENT_JOURNAL_FILE)
 }
 
-pub fn summary_backfill_state_path(root_dir: &str) -> PathBuf {
-    runtime_dir(root_dir).join(SUMMARY_BACKFILL_STATE_FILE)
-}
-
 pub fn priority_hints_path(root_dir: &str) -> PathBuf {
     runtime_dir(root_dir).join(PRIORITY_HINTS_FILE)
-}
-
-pub fn export_manifest_path(root_dir: &str) -> PathBuf {
-    export_dir(root_dir).join(EXPORT_MANIFEST_FILE)
-}
-
-pub fn search_manifest_path(root_dir: &str) -> PathBuf {
-    export_dir(root_dir).join(SEARCH_MANIFEST_RELATIVE_PATH)
 }

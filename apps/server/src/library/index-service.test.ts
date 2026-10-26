@@ -87,6 +87,7 @@ test("索引运行中通过 onProgress 写入的进度会映射到状态并随�
         failedCount: 0,
         totalCount: null,
         maxConcurrency: 1,
+        activeTaskCount: 0, pendingTaskCount: 0, completedTaskCount: 12,
       });
       await new Promise((resolve) => setTimeout(resolve, 20));
     },
@@ -101,27 +102,11 @@ test("索引运行中通过 onProgress 写入的进度会映射到状态并随�
   assert.equal(final.progress?.indexedCount, 3);
 });
 
-test("索引运行状态会持久化到磁盘，重启后新实例仍能读回进度与时间线", async () => {
+test("原生任务持久化状态，宿主重启后读回进度与时间线", async t => {
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "x-file-index-persist-"));
-  // 两个独立的 runtimeStatusStore 共享同一磁盘文件，模拟"同一仓库、不同进程/重启"
-  const serviceA = new LibraryIndexService(
-    new TaskManager(),
-    new IndexRuntimeStore(),
-    new LibraryRuntimeStatusStore(),
-    async ({ onProgress, onStageChange }) => {
-      onStageChange?.("index_text");
-      onProgress?.({
-        scannedCount: 9,
-        indexedCount: 9,
-        unchangedCount: 0,
-        skippedCount: 0,
-        failedCount: 0,
-        totalCount: 9,
-        maxConcurrency: 1,
-      });
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    },
-  );
+  t.after(() => fs.rmSync(rootDir, { recursive: true, force: true }));
+  for (let index = 0; index < 9; index++) fs.writeFileSync(path.join(rootDir, `${index}.md`), "文档内容");
+  const serviceA = new LibraryIndexService(new TaskManager(), new IndexRuntimeStore(), new LibraryRuntimeStatusStore());
   const binding = createBinding(rootDir);
   serviceA.requestRefresh(binding, { reason: "manual_refresh" });
   await waitFor(() => serviceA.getStatus(rootDir).state === "cooldown");
@@ -171,3 +156,34 @@ async function waitFor(check: () => boolean): Promise<void> {
   }
   assert.fail("等待索引状态超时");
 }
+
+test("运行中的变更合并为下一轮且同根目录不会并发执行", async t => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "x-file-index-coalescing-"));
+  t.after(() => fs.rmSync(rootDir, { recursive: true, force: true }));
+  let started!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>(resolve => { started = resolve; });
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const targets: Array<string | undefined> = [];
+  const ranges: Array<string[] | undefined> = [];
+  let active = 0;
+  let maxActive = 0;
+  const service = new LibraryIndexService(new TaskManager(), new IndexRuntimeStore(),
+    new LibraryRuntimeStatusStore(), async ({ targetPath, targetPaths }) => {
+      targets.push(targetPath);
+      ranges.push(targetPaths);
+      maxActive = Math.max(maxActive, ++active);
+      if (targets.length === 1) { started(); await held; }
+      active -= 1;
+    });
+  const binding = createBinding(rootDir);
+  service.requestRefresh(binding, { targetPath: "docs/a.md" });
+  await entered;
+  assert.equal(service.requestRefresh(binding, { targetPath: "docs/b.md" }).deduped, true);
+  service.requestRefresh(binding, { targetPath: "other/c.md" });
+  release();
+  await waitFor(() => service.getStatus(rootDir).state === "cooldown");
+  assert.deepEqual(targets, ["docs/a.md", undefined]);
+  assert.deepEqual(ranges, [undefined, ["docs/b.md", "other/c.md"]]);
+  assert.equal(maxActive, 1);
+});

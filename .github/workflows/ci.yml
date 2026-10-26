@@ -2,7 +2,6 @@ name: ci
 
 # X-File PR 检查：TS 类型检查 + Web 单元测试 + 共享包/前后端构建。
 # Rust 桌面壳的编译由 desktop-release.yml 在 tag 时跨平台验证，这里不重复（避免 PR 耗时）。
-# better-sqlite3 原生模块在 pnpm install 时按 onlyBuiltDependencies 编译，ubuntu-latest 自带 python + 构建工具。
 
 on:
   push:
@@ -41,6 +40,7 @@ jobs:
         run: |
           pnpm --filter @x-file/shared build
           pnpm --filter @x-file/indexer build
+          pnpm --filter @codingns/session-sync-core build
 
       - name: Typecheck（全仓 TS）
         run: pnpm typecheck

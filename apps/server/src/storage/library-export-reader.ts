@@ -102,7 +102,14 @@ interface SearchBucketFile {
   terms?: SearchBucketPosting[];
 }
 
+interface SearchManifestFile {
+  buckets?: Array<{ bucket: string; path: string }>;
+}
+
+const searchTermViews = new WeakMap<SearchBucketFile, Map<string, SearchBucketPosting>>();
+
 export class LibraryExportReader {
+  private readonly documentViews = new WeakMap<ManifestFile, LibraryDocumentRecord[]>();
   readSnapshot(
     binding: LibraryBinding | null,
     fallbackStatus: LibraryIndexStatus,
@@ -211,6 +218,8 @@ export class LibraryExportReader {
     exportDir: string,
     manifest: ManifestFile,
   ): LibraryDocumentRecord[] {
+    const cached = this.documentViews.get(manifest);
+    if (cached) return cached;
     const documents: LibraryDocumentRecord[] = [];
     for (const shard of manifest.meta_shards ?? []) {
       const shardFile = readJson<MetaShardFile>(
@@ -236,9 +245,9 @@ export class LibraryExportReader {
         });
       }
     }
-    return documents.sort((left, right) =>
-      left.path.localeCompare(right.path, "zh-Hans-CN"),
-    );
+    documents.sort((left, right) => left.path.localeCompare(right.path, "zh-Hans-CN"));
+    this.documentViews.set(manifest, documents);
+    return documents;
   }
 }
 
@@ -263,6 +272,7 @@ function deriveSteadyProgress(documentCount: number): LibraryIndexProgress | nul
     unchangedCount: 0,
     totalCount: documentCount,
     maxConcurrency: null,
+    activeTaskCount: 0, pendingTaskCount: 0, completedTaskCount: documentCount,
   };
 }
 
@@ -425,24 +435,33 @@ function readOfflineSearchMatchState(
   if (!fs.existsSync(manifestPath)) {
     return createEmptySearchMatchState(keywords);
   }
+  const manifest = readJson<SearchManifestFile>(manifestPath);
 
   const ranks = new Map<string, number>();
   const groups = keywords.map((keywordItem) => {
     const documentIds = new Set<string>();
     for (const term of tokenizeSearchQuery(keywordItem)) {
-      const bucketPath = path.join(exportDir, "search", `${resolveSearchBucketName(term)}.json`);
-      const bucket = readJson<SearchBucketFile>(bucketPath);
-      const posting = bucket?.terms?.find((item) => item.term === term);
-      if (!posting) {
-        continue;
-      }
-
-      const postingDocumentIds = Array.isArray(posting.document_ids)
-        ? posting.document_ids
-        : (posting.postings ?? []).map((item) => item.document_id);
-      for (const documentId of postingDocumentIds) {
-        documentIds.add(documentId);
-        ranks.set(documentId, (ranks.get(documentId) ?? 0) + 1);
+      const prefix = resolveSearchBucketName(term);
+      const buckets = manifest?.buckets?.filter(
+        (bucket) => bucket.bucket === prefix || bucket.bucket.startsWith(`${prefix}-`),
+      ) ?? [{ bucket: prefix, path: `search/${prefix}.json` }];
+      for (const entry of buckets) {
+        const bucket = readJson<SearchBucketFile>(path.join(exportDir, entry.path));
+        if (!bucket) continue;
+        let terms = searchTermViews.get(bucket);
+        if (!terms) {
+          terms = new Map((bucket.terms ?? []).map((posting) => [posting.term, posting]));
+          searchTermViews.set(bucket, terms);
+        }
+        const posting = terms.get(term);
+        if (!posting) continue;
+        const postingDocumentIds = Array.isArray(posting.document_ids)
+          ? posting.document_ids
+          : (posting.postings ?? []).map((item) => item.document_id);
+        for (const documentId of postingDocumentIds) {
+          documentIds.add(documentId);
+          ranks.set(documentId, (ranks.get(documentId) ?? 0) + 1);
+        }
       }
     }
 
@@ -622,12 +641,20 @@ function normalizeDocumentPath(value: string): string {
   return value.trim().replaceAll("\\", "/").replace(/^\/+/, "");
 }
 
+const jsonViews = new Map<string, { version: string; value: unknown }>();
+
 function readJson<T>(filePath: string): T | null {
   try {
     if (!fs.existsSync(filePath)) {
       return null;
     }
-    return JSON.parse(fs.readFileSync(filePath, "utf8")) as T;
+    const stat = fs.statSync(filePath, { bigint: true });
+    const version = `${stat.ino}:${stat.mtimeNs}:${stat.size}`;
+    const cached = jsonViews.get(filePath);
+    if (cached?.version === version) return cached.value as T;
+    const value = JSON.parse(fs.readFileSync(filePath, "utf8")) as T;
+    jsonViews.set(filePath, { version, value });
+    return value;
   } catch {
     return null;
   }

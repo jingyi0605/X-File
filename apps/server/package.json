@@ -23,7 +23,8 @@
   "dependencies": {
     "@x-file/indexer": "workspace:*",
     "@x-file/shared": "workspace:*",
-    "fastify": "^5.2.1"
+    "fastify": "^5.2.1",
+    "@codingns/session-sync-core": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.15.30",

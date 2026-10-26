@@ -1,13 +1,6 @@
 import crypto from "node:crypto";
 import path from "node:path";
-import {
-  CatalogRepository,
-  CatalogWriteRepository,
-  initCatalog,
-  loadRuntimeConfig,
-  TagRecomputeService,
-  type RecomputeScope,
-} from "@x-file/indexer";
+import { readCatalogSnapshot, runNativeLibraryWorker } from "@x-file/indexer";
 
 import type {
   LibraryDocumentTagDetails,
@@ -96,26 +89,12 @@ export class TagService {
       taskType: LIBRARY_TAG_RECOMPUTE_TASK_TYPE,
       timeoutMs: 30 * 60 * 1000,
       run: async (input, context) => {
-        const config = loadRuntimeConfig(input.binding.rootDir, {
-          args: {
-            rootDir: input.binding.rootDir,
-            allowedExtensions: input.binding.allowedExtensions,
-            includedHiddenPaths: input.binding.includedHiddenPaths,
-          },
-        });
-        initCatalog(config);
-        const result = await new TagRecomputeService(config).run({
-          scope: input.scope,
-          signal: context.signal,
-          onProgress: (progress) => context.setStage(progress.label),
-        });
-        return {
-          scannedCount: result.scannedCount,
-          updatedCount: result.updatedCount,
-          directAssignedCount: result.directAssignedCount,
-          derivedAssignedCount: result.derivedAssignedCount,
-          exportedAt: result.exportResult?.exportedAt ?? null,
-        };
+        context.setStage("recompute_tags");
+        return runNativeLibraryWorker<LibraryTagRecomputeTaskResult>("tags-only", {
+          rootDir: input.binding.rootDir,
+          reason: input.reason,
+          tagStore: this.readStoreForBinding(input.binding),
+        }, context.signal);
       },
     });
   }
@@ -179,7 +158,7 @@ export class TagService {
       replaceTagRules(data, tag.id, input.smartRules);
     }
     this.writeCurrentStore(data);
-    this.syncTagCatalogAndMaybeRecompute(binding, data, {
+    this.scheduleTagRecompute(binding, {
       reason: `tag_definition_saved:${tag.id}`,
       scope: { kind: "full" },
       shouldRecompute: Array.isArray(input.smartRules),
@@ -196,7 +175,6 @@ export class TagService {
       null,
     );
     this.writeCurrentStore(data);
-    this.syncTagDefinitionsToCatalog(binding.rootDir, data);
     return this.toTagDetail(tag, data);
   }
 
@@ -274,7 +252,7 @@ export class TagService {
     }
 
     this.writeCurrentStore(data);
-    this.syncTagCatalogAndMaybeRecompute(binding, data, {
+    this.scheduleTagRecompute(binding, {
       reason: `tag_definition_saved:${tag.id}`,
       scope: { kind: "full" },
       shouldRecompute: Array.isArray(input.smartRules),
@@ -302,8 +280,7 @@ export class TagService {
       bindingTagIds: binding.bindingTagIds.filter((id) => !deleted.has(id)),
     }));
     this.writeCurrentStore(data);
-    deleteCatalogTags(binding.rootDir, deletedTagIds);
-    this.syncTagCatalogAndMaybeRecompute(binding, data, {
+    this.scheduleTagRecompute(binding, {
       reason: `tag_definition_deleted:${tag.id}`,
       scope: { kind: "full" },
       shouldRecompute: true,
@@ -330,7 +307,7 @@ export class TagService {
       documentPath,
     );
     const catalogResolved = catalogContext
-      ? readCatalogResolvedTags(binding.rootDir, catalogContext.documentId)
+      ? readCatalogResolvedTags(binding.rootDir, catalogContext.documentId, data)
       : [];
 
     return {
@@ -391,7 +368,7 @@ export class TagService {
     );
     const next = {
       documentId: normalizedDocumentId,
-      path: existing?.path ?? normalizedDocumentId,
+      path: readCatalogDocumentContext(binding.rootDir, normalizedDocumentId, normalizedDocumentId)?.path ?? existing?.path ?? normalizedDocumentId,
       title:
         existing?.title ??
         (path.basename(normalizedDocumentId) || normalizedDocumentId),
@@ -406,7 +383,6 @@ export class TagService {
       next,
     ];
     this.writeCurrentStore(data);
-    this.syncManualDocumentBindingToCatalog(binding.rootDir, data, next);
     const catalogContext = readCatalogDocumentContext(
       binding.rootDir,
       normalizedDocumentId,
@@ -472,12 +448,6 @@ export class TagService {
       },
     ];
     this.writeCurrentStore(data);
-    this.syncFolderBindingToCatalog(
-      binding.rootDir,
-      data,
-      folderPath,
-      bindingTagIds,
-    );
     this.enqueueTagRecompute(binding, {
       reason: `folder_tags_saved:${folderPath}`,
       scope: { kind: "folder", folderPath, mode: "folder_bindings_only" },
@@ -511,11 +481,6 @@ export class TagService {
       LIBRARY_TAG_RECOMPUTE_TASK_TYPE,
       binding.rootDir,
     );
-  }
-
-  private readCurrentStore(): StoredLibraryTags {
-    const binding = this.requireCurrentBinding();
-    return this.readStoreForBinding(binding);
   }
 
   private requireCurrentBinding() {
@@ -679,89 +644,13 @@ export class TagService {
     };
   }
 
-  private syncTagCatalogAndMaybeRecompute(
+  private scheduleTagRecompute(
     binding: LibraryTagRecomputeTaskInput["binding"],
-    data: StoredLibraryTags,
     input: { reason: string; scope: RecomputeScope; shouldRecompute: boolean },
   ): void {
-    this.syncTagDefinitionsToCatalog(binding.rootDir, data);
     if (input.shouldRecompute) {
       this.enqueueTagRecompute(binding, input);
     }
-  }
-
-  private syncTagDefinitionsToCatalog(
-    rootDir: string,
-    data: StoredLibraryTags,
-  ): void {
-    withCatalog(rootDir, ({ writer }) => {
-      const sortedTags = [...data.tags].sort((left, right) =>
-        left.path.localeCompare(right.path, "zh-Hans-CN"),
-      );
-      for (const tag of sortedTags) {
-        writer.saveTagDefinition({
-          id: tag.id,
-          path: tag.path,
-          name: tag.name,
-          rootType: tag.rootType,
-          parentId: tag.parentId,
-          canonicalName: tag.name,
-          description: tag.description,
-          status: tag.status,
-          createdBy: "user",
-        });
-        writer.replaceTagRules(
-          tag.id,
-          data.tagRules
-            .filter((rule) => rule.tagId === tag.id)
-            .map((rule) => ({
-              relation: rule.relation,
-              ruleType: rule.ruleType,
-              matcher: rule.matcher as never,
-              enabled: rule.enabled,
-              priority: rule.priority,
-            })),
-        );
-      }
-    });
-  }
-
-  private syncManualDocumentBindingToCatalog(
-    rootDir: string,
-    data: StoredLibraryTags,
-    binding: { documentId: string; path: string; manualTagIds: string[] },
-  ): void {
-    this.syncTagDefinitionsToCatalog(rootDir, data);
-    withCatalog(rootDir, ({ repository, writer }) => {
-      const context =
-        repository.getDocumentContext(binding.documentId, binding.path) ??
-        repository.getDocumentContext(undefined, binding.path);
-      if (!context) {
-        return;
-      }
-      writer.replaceManualDocumentTagBindings(
-        {
-          documentId: context.documentId,
-          inodeKey: context.inodeKey,
-          contentHash: context.contentHash,
-          size: context.size,
-          extension: context.extension,
-        },
-        binding.manualTagIds,
-      );
-    });
-  }
-
-  private syncFolderBindingToCatalog(
-    rootDir: string,
-    data: StoredLibraryTags,
-    folderPath: string,
-    tagIds: string[],
-  ): void {
-    this.syncTagDefinitionsToCatalog(rootDir, data);
-    withCatalog(rootDir, ({ writer }) => {
-      writer.replaceFolderTagBindings(folderPath, tagIds);
-    });
   }
 
   private enqueueTagRecompute(
@@ -830,78 +719,26 @@ interface LibraryTagRecomputeTaskResult {
   exportedAt: string | null;
 }
 
-type CatalogHandle = {
-  repository: CatalogRepository;
-  writer: CatalogWriteRepository;
-};
+type RecomputeScope = { kind: "full" } | { kind: "document"; documentId: string }
+  | { kind: "folder"; folderPath: string; mode: "folder_bindings_only" };
 
-function withCatalog<T>(
-  rootDir: string,
-  handler: (handle: CatalogHandle) => T,
-): T {
-  const config = loadRuntimeConfig(rootDir, { args: { rootDir } });
-  initCatalog(config);
-  return handler({
-    repository: new CatalogRepository(config.dbPath),
-    writer: new CatalogWriteRepository(config.dbPath),
+function readCatalogDocumentContext(rootDir: string, documentId: string, filePath: string) {
+  const document = readCatalogSnapshot(rootDir)?.documents.find(item => item.documentId === documentId || item.path === filePath);
+  return document ? { ...document, modifiedAt: document.mtime } : null;
+}
+
+function readCatalogResolvedTags(rootDir: string, documentId: string, data: StoredLibraryTags) {
+  const document = readCatalogSnapshot(rootDir)?.documents.find(item => item.documentId === documentId);
+  if (!document) return [];
+  return [...document.tags, ...document.derivedTags].map(tagPath => {
+    const tag = data.tags.find(item => item.path === tagPath);
+    const rules = data.tagRules.filter(rule => rule.enabled && rule.tagId === tag?.id);
+    const rule = resolveMatchedRecommendationRule({ kind: "document", path: document.path,
+      title: document.title, content: document.summary, extension: path.extname(document.path), modifiedAt: document.mtime }, rules);
+    return { path: tagPath, sourceType: rule ? "smart_rule" as const : "system_derived" as const,
+      sourceRef: rule?.id ?? null, evidence: rule ? resolveRecommendationRuleEvidence(rule) : null,
+      confidence: 1, priority: rule ? 60 : 40 };
   });
-}
-
-function deleteCatalogTags(rootDir: string, tagIds: string[]): void {
-  withCatalog(rootDir, ({ writer }) => {
-    writer.deleteTagDefinitions(tagIds);
-  });
-}
-
-function readCatalogDocumentContext(
-  rootDir: string,
-  documentId: string,
-  filePath: string,
-) {
-  try {
-    return withCatalog(
-      rootDir,
-      ({ repository }) =>
-        repository.getDocumentContext(documentId, filePath) ??
-        repository.getDocumentContext(undefined, filePath),
-    );
-  } catch {
-    return null;
-  }
-}
-
-function readCatalogResolvedTags(rootDir: string, documentId: string) {
-  try {
-    return withCatalog(rootDir, ({ repository }) =>
-      repository
-        .listResolvedDocumentTagsByDocumentIds([documentId])
-        .map((item) => ({
-          path: item.path,
-          sourceType: item.sourceType,
-          sourceRef: item.sourceRef,
-          evidence: item.evidence,
-          confidence: item.confidence,
-          priority: resolveResolvedTagPriority(item.sourceType),
-        })),
-    );
-  } catch {
-    return [];
-  }
-}
-
-function resolveResolvedTagPriority(sourceType: string): number {
-  switch (sourceType) {
-    case "manual_document":
-      return 100;
-    case "folder_binding":
-      return 80;
-    case "smart_rule":
-      return 60;
-    case "system_derived":
-      return 40;
-    default:
-      return 0;
-  }
 }
 
 function mergeResolvedTagSources<
@@ -1453,6 +1290,7 @@ function matchesRecommendationRule(
     title: string;
     extension?: string;
     modifiedAt?: string;
+    content?: string;
   },
   rule: StoredTagRule,
 ): boolean {
@@ -1474,7 +1312,7 @@ function matchesRecommendationRule(
       )
         .trim()
         .toLowerCase();
-      const text = `${target.title}\n${target.path}`.toLowerCase();
+      const text = `${target.title}\n${target.path}\n${target.content ?? ""}`.toLowerCase();
       return keyword.length > 0 && text.includes(keyword);
     }
     case "file_extension_in": {
@@ -1538,6 +1376,7 @@ function resolveMatchedRecommendationRule(
     title: string;
     extension?: string;
     modifiedAt?: string;
+    content?: string;
   },
   rules: StoredTagRule[],
 ): StoredTagRule | null {

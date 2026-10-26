@@ -60,16 +60,9 @@ write_resource_boundary_manifest() {
     "backendEntryPriority": [
       "server/dist/main.js",
       "server/main.js"
-    ],
-    "workerEntryPriority": [
-      "apps/server/dist/library/*.js (dev fallback)"
     ]
   },
   "desktopHost": {
-    "nodeWorkerFallback": {
-      "allowHostNodeFallbackByDefault": false,
-      "explicitOptInEnv": "X_FILE_ENABLE_HOST_NODE_WORKER_FALLBACK"
-    },
     "nodeSidecar": {
       "profileInMainBundle": "none",
       "libraryCoreHttpRoutesServedByDefault": false,

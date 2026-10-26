@@ -56,31 +56,6 @@ export class LibraryRuntimeStatusStore {
     }
   }
 
-  /** 把运行时状态写入磁盘；rootDir 为空或写入失败时静默跳过，不影响索引主流程。 */
-  write(rootDir: string, status: LibraryIndexStatus): void {
-    const filePath = this.resolveFilePath(rootDir);
-    if (!filePath) {
-      return;
-    }
-    const payload: PersistedRuntimeStatus = {
-      state: status.state,
-      lastRequestedAt: status.lastRequestedAt,
-      lastStartedAt: status.lastStartedAt,
-      lastCompletedAt: status.lastCompletedAt,
-      lastFailedAt: status.lastFailedAt,
-      nextAllowedAt: status.nextAllowedAt,
-      runningStage: status.runningStage,
-      errorSummary: status.errorSummary,
-      progress: status.progress ?? null,
-    };
-    try {
-      fs.mkdirSync(path.dirname(filePath), { recursive: true });
-      fs.writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
-    } catch {
-      // 磁盘写入失败不阻断索引流程，仅丢失持久化快照。
-    }
-  }
-
   readRuntimeIndexState(rootDir: string): LibraryRuntimeIndexState | null {
     const normalized = rootDir?.trim();
     if (!normalized) {

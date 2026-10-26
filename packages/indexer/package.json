@@ -9,10 +9,6 @@
     ".": {
       "types": "./dist/src/index.d.ts",
       "import": "./dist/src/index.js"
-    },
-    "./contracts": {
-      "types": "./dist/contracts/src/index.d.ts",
-      "import": "./dist/contracts/src/index.js"
     }
   },
   "scripts": {
@@ -20,11 +16,11 @@
     "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput"
   },
   "dependencies": {
-    "better-sqlite3": "^11.10.0"
+    "@x-file/shared": "workspace:*"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.15.30",
     "typescript": "^5.8.3"
-  }
+  },
+  "description": "原生文档索引 CLI 客户端与只读业务类型"
 }

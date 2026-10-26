@@ -5,24 +5,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
-    file_name_from_path,
-    iso_now,
-    normalize_document_path,
-    normalize_folder_path,
-    normalize_optional_text,
-    read_json_file,
-    read_local_library_binding, read_meta_documents,
-    read_optional_json_file, resolve_runtime_export_catalog_snapshot_path,
-    run_native_library_export_once, run_native_library_search_once, sha256_hex,
-    write_json_file, write_runtime_export_catalog_snapshot, x_file_data_dir,
-    LocalLibraryBinding, LocalLibraryDocumentTagDetails, LocalLibraryFolderTagDetails,
-    LocalLibraryTagDetailWithRules, LocalLibraryTagListResult, LocalLibraryTagListSummary,
-    LocalLibraryTagRecommendation, LocalLibraryTagRecomputeStatus,
-    LocalLibraryTagRecomputeTask, LocalLibraryTagRuleView, LocalResolvedTagSource,
-    LocalRuntimeExportCatalogSnapshot, LocalRuntimeSnapshotDocument,
+    file_name_from_path, iso_now, normalize_document_path, normalize_folder_path,
+    normalize_optional_text, read_json_file, read_local_library_binding, read_optional_json_file,
+    resolve_runtime_export_catalog_snapshot_path, run_native_library_export_once, sha256_hex,
+    write_json_file, write_runtime_export_catalog_snapshot, x_file_data_dir, LocalLibraryBinding,
+    LocalLibraryDocumentTagDetails, LocalLibraryFolderTagDetails, LocalLibraryTagDetailWithRules,
+    LocalLibraryTagListResult, LocalLibraryTagListSummary, LocalLibraryTagRecommendation,
+    LocalLibraryTagRecomputeStatus, LocalLibraryTagRecomputeTask, LocalLibraryTagRuleView,
+    LocalResolvedTagSource, LocalRuntimeExportCatalogSnapshot, LocalRuntimeSnapshotDocument,
     LocalRuntimeSnapshotTag, LocalStoredDocumentTagBinding, LocalStoredFolderTagBinding,
-    LocalStoredLibraryTags, LocalStoredTagDefinition, LocalStoredTagRule,
-    ManifestFile, MetaDocument,
+    LocalStoredLibraryTags, LocalStoredTagDefinition, LocalStoredTagRule, MetaDocument,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -123,9 +115,7 @@ pub fn get_native_document_tag_details(document_id: &str) -> Result<Value, Strin
         .map_err(|error| format!("序列化本地 document tag details 失败：{error}"))
 }
 
-pub fn save_native_document_tags(
-    request: NativeSaveDocumentTagsRequest,
-) -> Result<Value, String> {
+pub fn save_native_document_tags(request: NativeSaveDocumentTagsRequest) -> Result<Value, String> {
     serde_json::to_value(save_local_document_tags(request)?)
         .map_err(|error| format!("序列化本地 document tags 失败：{error}"))
 }
@@ -135,16 +125,13 @@ pub fn get_native_folder_tag_details(folder_path: &str) -> Result<Value, String>
         .map_err(|error| format!("序列化本地 folder tag details 失败：{error}"))
 }
 
-pub fn save_native_folder_tags(
-    request: NativeSaveFolderTagsRequest,
-) -> Result<Value, String> {
+pub fn save_native_folder_tags(request: NativeSaveFolderTagsRequest) -> Result<Value, String> {
     serde_json::to_value(save_local_folder_tags(request)?)
         .map_err(|error| format!("序列化本地 folder tags 失败：{error}"))
 }
 
 pub fn request_native_library_tag_recompute() -> Result<Value, String> {
-    let binding = read_local_library_binding()?
-        .ok_or_else(|| "当前未绑定文档库".to_string())?;
+    let binding = read_local_library_binding()?.ok_or_else(|| "当前未绑定文档库".to_string())?;
     let task = sync_local_tag_exports_core(&binding, "native_manual_tag_recompute")?;
     Ok(json!({
         "taskId": task.task_id,
@@ -234,8 +221,7 @@ pub fn empty_local_library_tags_store(binding: &LocalLibraryBinding) -> LocalSto
 pub fn read_local_library_tag_list_result(
     include_disabled: bool,
 ) -> Result<LocalLibraryTagListResult, String> {
-    let binding = read_local_library_binding()?
-        .ok_or_else(|| "当前未绑定文档库".to_string())?;
+    let binding = read_local_library_binding()?.ok_or_else(|| "当前未绑定文档库".to_string())?;
     let store = read_local_library_tags_store(&binding)?;
     let documents = read_local_tag_documents_core(&binding).unwrap_or_default();
     let tag_counts = count_local_tags(&documents);
@@ -259,7 +245,11 @@ pub fn read_local_library_tag_list_result(
     Ok(LocalLibraryTagListResult {
         items,
         summary: LocalLibraryTagListSummary {
-            total_active_tags: store.tags.iter().filter(|tag| tag.status == "active").count(),
+            total_active_tags: store
+                .tags
+                .iter()
+                .filter(|tag| tag.status == "active")
+                .count(),
             total_disabled_tags: store
                 .tags
                 .iter()
@@ -321,8 +311,7 @@ fn map_local_tag_detail(
 pub fn read_local_library_tag_detail(
     tag_id: &str,
 ) -> Result<LocalLibraryTagDetailWithRules, String> {
-    let binding = read_local_library_binding()?
-        .ok_or_else(|| "当前未绑定文档库".to_string())?;
+    let binding = read_local_library_binding()?.ok_or_else(|| "当前未绑定文档库".to_string())?;
     let store = read_local_library_tags_store(&binding)?;
     let documents = read_local_tag_documents_core(&binding).unwrap_or_default();
     let tag_counts = count_local_tags(&documents);
@@ -338,8 +327,7 @@ pub fn save_local_library_tag(
     override_tag_id: Option<String>,
     request: NativeSaveLibraryTagDefinitionRequest,
 ) -> Result<LocalLibraryTagDetailWithRules, String> {
-    let binding = read_local_library_binding()?
-        .ok_or_else(|| "当前未绑定文档库".to_string())?;
+    let binding = read_local_library_binding()?.ok_or_else(|| "当前未绑定文档库".to_string())?;
     let mut store = read_local_library_tags_store(&binding)?;
     let now = iso_now();
     let tag_id = override_tag_id.clone().or(request.tag_id.clone());
@@ -457,8 +445,7 @@ fn replace_local_tag_rules(
 }
 
 pub fn delete_local_library_tag(tag_id: &str) -> Result<Value, String> {
-    let binding = read_local_library_binding()?
-        .ok_or_else(|| "当前未绑定文档库".to_string())?;
+    let binding = read_local_library_binding()?.ok_or_else(|| "当前未绑定文档库".to_string())?;
     let mut store = read_local_library_tags_store(&binding)?;
     let normalized = tag_id.trim();
     let mut deleted_ids = store
@@ -495,16 +482,14 @@ pub fn delete_local_library_tag(tag_id: &str) -> Result<Value, String> {
 pub fn read_local_document_tag_details(
     document_id: &str,
 ) -> Result<LocalLibraryDocumentTagDetails, String> {
-    let binding = read_local_library_binding()?
-        .ok_or_else(|| "当前未绑定文档库".to_string())?;
+    let binding = read_local_library_binding()?.ok_or_else(|| "当前未绑定文档库".to_string())?;
     let store = read_local_library_tags_store(&binding)?;
     let documents = read_local_tag_documents_core(&binding)?;
     let target = documents
         .into_iter()
         .find(|item| {
             item.document_id == document_id.trim()
-                || normalize_document_path(&item.path)
-                    == normalize_document_path(document_id)
+                || normalize_document_path(&item.path) == normalize_document_path(document_id)
         })
         .ok_or_else(|| "文档不存在".to_string())?;
     let normalized_path = normalize_document_path(&target.path);
@@ -570,8 +555,7 @@ pub fn read_local_document_tag_details(
 pub fn save_local_document_tags(
     request: NativeSaveDocumentTagsRequest,
 ) -> Result<LocalLibraryDocumentTagDetails, String> {
-    let binding = read_local_library_binding()?
-        .ok_or_else(|| "当前未绑定文档库".to_string())?;
+    let binding = read_local_library_binding()?.ok_or_else(|| "当前未绑定文档库".to_string())?;
     let mut store = read_local_library_tags_store(&binding)?;
     let documents = read_local_tag_documents_core(&binding)?;
     let target = documents
@@ -613,8 +597,7 @@ pub fn save_local_document_tags(
 pub fn read_local_folder_tag_details(
     folder_path: &str,
 ) -> Result<LocalLibraryFolderTagDetails, String> {
-    let binding = read_local_library_binding()?
-        .ok_or_else(|| "当前未绑定文档库".to_string())?;
+    let binding = read_local_library_binding()?.ok_or_else(|| "当前未绑定文档库".to_string())?;
     let store = read_local_library_tags_store(&binding)?;
     let normalized_folder = normalize_folder_path(folder_path);
     let folder_binding = store
@@ -652,8 +635,7 @@ pub fn read_local_folder_tag_details(
 pub fn save_local_folder_tags(
     request: NativeSaveFolderTagsRequest,
 ) -> Result<LocalLibraryFolderTagDetails, String> {
-    let binding = read_local_library_binding()?
-        .ok_or_else(|| "当前未绑定文档库".to_string())?;
+    let binding = read_local_library_binding()?.ok_or_else(|| "当前未绑定文档库".to_string())?;
     let mut store = read_local_library_tags_store(&binding)?;
     let normalized_folder = normalize_folder_path(request.folder_path.as_deref().unwrap_or("."));
     let mut tag_ids = normalize_tag_ids(&store, request.tag_ids.unwrap_or_default());
@@ -678,7 +660,11 @@ pub fn save_local_folder_tags(
 }
 
 fn normalize_tag_segment(value: &str) -> String {
-    value.trim().replace('\\', "/").trim_matches('/').to_string()
+    value
+        .trim()
+        .replace('\\', "/")
+        .trim_matches('/')
+        .to_string()
 }
 
 fn normalize_tag_status(value: Option<&str>) -> String {
@@ -831,6 +817,7 @@ pub fn sync_local_tag_exports_core(
     binding: &LocalLibraryBinding,
     reason: &str,
 ) -> Result<LocalLibraryTagRecomputeTask, String> {
+    let _root_lock = crate::native_core::scheduler::lock_root(&binding.root_dir)?;
     let task_id = format!(
         "library.tag_recompute:{}",
         sha256_hex(format!("{}:{}:{}", binding.library_id, binding.root_dir, iso_now()).as_bytes())
@@ -881,17 +868,6 @@ pub fn sync_local_tag_exports_core(
         write_local_tag_recompute_task_core(binding, &task)?;
         return Err(error);
     }
-    task.running_stage = Some("search_index".to_string());
-    write_local_tag_recompute_task_core(binding, &task)?;
-    if let Err(error) = run_native_library_search_once(binding, reason, None, Some(dirty_scope)) {
-        task.state = "failed".to_string();
-        task.failed_at = Some(iso_now());
-        task.error_summary = Some(error.clone());
-        task.running_stage = None;
-        write_local_tag_recompute_task_core(binding, &task)?;
-        return Err(error);
-    }
-
     task.state = "fresh".to_string();
     task.completed_at = Some(iso_now());
     task.running_stage = None;
@@ -903,13 +879,9 @@ pub fn sync_local_tag_exports_core(
 pub fn read_local_tag_documents_core(
     binding: &LocalLibraryBinding,
 ) -> Result<Vec<MetaDocument>, String> {
-    let export_dir = PathBuf::from(&binding.root_dir).join(".ai-index").join("exports");
-    let manifest_path = export_dir.join("manifest.json");
-    if !manifest_path.is_file() {
-        return Ok(Vec::new());
-    }
-    let manifest: ManifestFile = read_json_file(&manifest_path)?;
-    read_meta_documents(&export_dir, &manifest)
+    Ok(crate::read_local_library_export_payload(&binding.root_dir)?
+        .map(|payload| payload.documents.clone())
+        .unwrap_or_default())
 }
 
 pub fn read_runtime_export_catalog_snapshot_core(
@@ -922,112 +894,121 @@ pub fn build_local_tag_snapshot_core(
     binding: &LocalLibraryBinding,
     store: &LocalStoredLibraryTags,
 ) -> Result<LocalRuntimeExportCatalogSnapshot, String> {
-    let previous_snapshot = read_runtime_export_catalog_snapshot_core(&binding.root_dir)?;
-    let previous_documents = previous_snapshot
-        .as_ref()
-        .map(|snapshot| {
-            snapshot
-                .documents
+    let mut snapshot = read_runtime_export_catalog_snapshot_core(&binding.root_dir)?.unwrap_or(
+        LocalRuntimeExportCatalogSnapshot {
+            version: 1,
+            generated_at: None,
+            generated_at_legacy: None,
+            tags: Vec::new(),
+            documents: Vec::new(),
+        },
+    );
+    let active = store
+        .tags
+        .iter()
+        .filter(|tag| tag.status == "active")
+        .collect::<Vec<_>>();
+    for document in &mut snapshot.documents {
+        let mut tags =
+            resolve_manual_tag_paths_core(store, &document.path, Some(&document.document_id))
+                .into_iter()
+                .chain(resolve_folder_tag_paths_core(store, &document.path))
+                .collect::<BTreeSet<_>>();
+        for tag in &active {
+            let mut rules = store
+                .tag_rules
                 .iter()
-                .cloned()
-                .map(|document| (document.path.clone(), document))
-                .collect::<BTreeMap<_, _>>()
-        })
-        .unwrap_or_default();
-    let documents = read_local_tag_documents_core(binding)?;
-    let mut snapshot_documents = BTreeMap::<String, LocalRuntimeSnapshotDocument>::new();
-    for document in documents {
-        let normalized_path = normalize_document_path(&document.path);
-        let previous_document = previous_documents.get(&normalized_path);
-        let manual_tag_paths =
-            resolve_manual_tag_paths_core(store, &normalized_path, Some(&document.document_id));
-        let folder_tag_paths = resolve_folder_tag_paths_core(store, &normalized_path);
-        let mut direct_tags = BTreeSet::new();
-        for tag_path in manual_tag_paths.into_iter().chain(folder_tag_paths.into_iter()) {
-            direct_tags.insert(tag_path);
-        }
-        let derived_tags = sort_unique_tag_paths_core(
-            document
-                .derived_tags
-                .unwrap_or_else(|| {
-                    previous_document
-                        .map(|item| item.derived_tags.clone())
-                        .unwrap_or_default()
-                }),
-        );
-        snapshot_documents.insert(
-            normalized_path.clone(),
-            LocalRuntimeSnapshotDocument {
-                document_id: document.document_id,
-                path: normalized_path.clone(),
-                title: document
-                    .title
-                    .filter(|value| !value.trim().is_empty())
-                    .or_else(|| previous_document.map(|item| item.title.clone()))
-                    .unwrap_or_else(|| file_name_from_path(&normalized_path)),
-                summary: document
-                    .summary
-                    .filter(|value| !value.trim().is_empty())
-                    .or_else(|| previous_document.map(|item| item.summary.clone()))
-                    .unwrap_or_default(),
-                tags: direct_tags.into_iter().collect(),
-                derived_tags,
-                mtime: document
-                    .mtime
-                    .or_else(|| previous_document.map(|item| item.mtime.clone()))
-                    .unwrap_or_else(iso_now),
-            },
-        );
-    }
-
-    if snapshot_documents.is_empty() {
-        for previous_document in previous_documents.into_values() {
-            let manual_tag_paths = resolve_manual_tag_paths_core(
-                store,
-                &previous_document.path,
-                Some(&previous_document.document_id),
-            );
-            let folder_tag_paths = resolve_folder_tag_paths_core(store, &previous_document.path);
-            let mut direct_tags = BTreeSet::new();
-            for tag_path in manual_tag_paths.into_iter().chain(folder_tag_paths.into_iter()) {
-                direct_tags.insert(tag_path);
+                .filter(|rule| rule.enabled && rule.tag_id == tag.id)
+                .collect::<Vec<_>>();
+            rules.sort_by_key(|rule| rule.priority);
+            let mut has_positive = false;
+            let mut matches = true;
+            let mut or_matches = None;
+            for rule in rules {
+                let matched = matches_tag_rule(document, rule);
+                match rule.relation.as_str() {
+                    "not" => {
+                        matches &= !matched;
+                    }
+                    "or" => {
+                        has_positive = true;
+                        or_matches = Some(or_matches.unwrap_or(false) || matched);
+                    }
+                    _ => {
+                        has_positive = true;
+                        matches &= matched;
+                    }
+                }
             }
-            snapshot_documents.insert(
-                previous_document.path.clone(),
-                LocalRuntimeSnapshotDocument {
-                    document_id: previous_document.document_id,
-                    path: previous_document.path,
-                    title: previous_document.title,
-                    summary: previous_document.summary,
-                    tags: direct_tags.into_iter().collect(),
-                    derived_tags: sort_unique_tag_paths_core(previous_document.derived_tags),
-                    mtime: previous_document.mtime,
-                },
-            );
+            if has_positive && matches && or_matches.unwrap_or(true) {
+                tags.insert(tag.path.clone());
+            }
+        }
+        document.tags = tags.into_iter().collect();
+    }
+    let mut tags = BTreeMap::new();
+    for tag in active {
+        register_snapshot_tag_path_core(&mut tags, &tag.path);
+    }
+    for document in &snapshot.documents {
+        for tag in document.tags.iter().chain(&document.derived_tags) {
+            register_snapshot_tag_path_core(&mut tags, tag);
         }
     }
+    snapshot.tags = tags.into_values().collect();
+    snapshot.generated_at = Some(iso_now());
+    Ok(snapshot)
+}
 
-    let snapshot_documents = snapshot_documents.into_values().collect::<Vec<_>>();
-    let mut snapshot_tags = BTreeMap::<String, LocalRuntimeSnapshotTag>::new();
-    for tag in &store.tags {
-        if tag.status != "active" {
-            continue;
+fn matches_tag_rule(document: &LocalRuntimeSnapshotDocument, rule: &LocalStoredTagRule) -> bool {
+    let keyword = rule.matcher["keyword"]
+        .as_str()
+        .unwrap_or("")
+        .to_lowercase();
+    match rule.rule_type.as_str() {
+        "file_name_contains" => {
+            !keyword.is_empty()
+                && file_name_from_path(&document.path)
+                    .to_lowercase()
+                    .contains(&keyword)
         }
-        register_snapshot_tag_path_core(&mut snapshot_tags, &tag.path);
-    }
-    for document in &snapshot_documents {
-        for tag_path in document.tags.iter().chain(document.derived_tags.iter()) {
-            register_snapshot_tag_path_core(&mut snapshot_tags, tag_path);
+        "file_content_contains" => {
+            !keyword.is_empty()
+                && format!(
+                    "{}\n{}\n{}",
+                    document.title, document.path, document.summary
+                )
+                .to_lowercase()
+                .contains(&keyword)
         }
+        "file_extension_in" => rule.matcher["extensions"]
+            .as_array()
+            .is_some_and(|extensions| {
+                let extension = PathBuf::from(&document.path)
+                    .extension()
+                    .map(|ext| format!(".{}", ext.to_string_lossy().to_lowercase()))
+                    .unwrap_or_default();
+                extensions.iter().filter_map(Value::as_str).any(|value| {
+                    format!(".{}", value.trim_start_matches('.').to_lowercase()) == extension
+                })
+            }),
+        "document_path_in_folder" => {
+            let folder = normalize_folder_path(rule.matcher["folderPath"].as_str().unwrap_or("."));
+            folder == "." || document.path.starts_with(&format!("{folder}/"))
+        }
+        "modified_time_between" => {
+            let parse = |value: &str| chrono::DateTime::parse_from_rfc3339(value).ok();
+            let Some(time) = parse(&document.mtime) else {
+                return false;
+            };
+            let start = rule.matcher["start"].as_str().and_then(parse);
+            let end = rule.matcher["end"].as_str().and_then(parse);
+            (start.is_some() || end.is_some())
+                && start.map_or(true, |start| time >= start)
+                && end.map_or(true, |end| time <= end)
+        }
+        _ => false,
     }
-
-    Ok(LocalRuntimeExportCatalogSnapshot {
-        version: 1,
-        generated_at: Some(iso_now()),
-        generated_at_legacy: None,
-        tags: snapshot_tags.into_values().collect(),
-        documents: snapshot_documents,
-    })
 }
 
 pub fn register_snapshot_tag_path_core(
@@ -1066,7 +1047,9 @@ pub fn resolve_manual_tag_paths_core(
     let mut values = BTreeSet::new();
     for binding in store.document_tags.iter().filter(|item| {
         item.path == document_path
-            || document_id.map(|value| value == item.document_id).unwrap_or(false)
+            || document_id
+                .map(|value| value == item.document_id)
+                .unwrap_or(false)
     }) {
         for tag_id in &binding.manual_tag_ids {
             if let Some(tag_path) = active_tags.get(tag_id) {
@@ -1114,16 +1097,6 @@ pub fn collect_active_tag_paths_by_id_core(
         .iter()
         .filter(|tag| tag.status == "active")
         .map(|tag| (tag.id.clone(), tag.path.clone()))
-        .collect()
-}
-
-pub fn sort_unique_tag_paths_core(values: Vec<String>) -> Vec<String> {
-    values
-        .into_iter()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
         .collect()
 }
 

@@ -6,7 +6,6 @@ import {
 } from "./http-server-manager.js";
 import { AssistantController } from "./assistant/assistant-controller.js";
 import { registerLibraryEngineFeature } from "./library/library-engine-feature.js";
-import { clearLibraryDefaultExecutors } from "./library/library-default-executors.js";
 import { registerAssistantRoutes } from "./routes/assistant-routes.js";
 import { LibraryBindingStore } from "./storage/library-binding-store.js";
 import { registerWebShellRoutes } from "./web-shell-routes.js";
@@ -56,8 +55,6 @@ export function createServer(options: CreateServerOptions = {}) {
     app: "X-File",
     version: APP_VERSION,
   }));
-
-  clearLibraryDefaultExecutors();
 
   // Node 入口现在只负责装配仍需 HTTP sidecar 的服务；
   // 文档库主读链与 refresh 宿主已经优先走桌面 native 路径。

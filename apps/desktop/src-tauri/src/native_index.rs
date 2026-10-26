@@ -1,8 +1,11 @@
+use crate::native_core::catalog::{
+    read_catalog, write_catalog, ExportCatalogSnapshot, SnapshotDocument, SnapshotTag,
+};
 use crate::native_core::state_store::{
     active_file_state_snapshot_path, export_catalog_snapshot_path, index_state_snapshot_path,
     indexed_document_journal_path, priority_hints_path, runtime_status_path,
-    summary_backfill_state_path,
 };
+use crate::native_core::state_store::{file_version, write_compact_json, FileVersion};
 use crate::read_optional_json_file;
 use chrono::Datelike;
 use flate2::read::{DeflateDecoder, ZlibDecoder};
@@ -12,19 +15,14 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fs;
-use std::io::{Cursor, Read, Write};
+use std::io::{BufWriter, Cursor, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::Arc;
-use std::thread;
+use std::sync::{Arc, Mutex, OnceLock};
 use zip::ZipArchive;
 
 const INDEX_COOLDOWN_MS: i64 = 1500;
 const INDEX_PROGRESS_FLUSH_INTERVAL_MS: i64 = 500;
-const INDEX_PROGRESS_FLUSH_EVERY_FILES: usize = 16;
 const INDEX_PARTIAL_SNAPSHOT_FLUSH_INTERVAL_MS: i64 = 5000;
-const INDEX_PARTIAL_SNAPSHOT_FLUSH_EVERY_DOCUMENTS: usize = 256;
-const NATIVE_INDEX_WORKER_MAX: usize = 8;
 const SUMMARY_TEXT_MAX_BYTES: usize = 256 * 1024;
 const SUMMARY_ARCHIVE_ENTRY_MAX_BYTES: usize = 512 * 1024;
 const SUMMARY_ARCHIVE_MAX_ENTRIES: usize = 16;
@@ -34,28 +32,7 @@ const SUMMARY_PPTX_MAX_SLIDES: usize = 6;
 const SUMMARY_XLSX_MAX_SHEETS: usize = 3;
 const SUMMARY_XLSX_MAX_ROWS_PER_SHEET: usize = 20;
 const PDF_INFLATE_MAX_BYTES: u64 = 512 * 1024;
-const SUMMARY_BACKFILL_FLUSH_EVERY_DOCUMENTS: usize = 16;
-const SUMMARY_BACKFILL_RUNNING_STAGE: &str = "summary_backfill";
 
-const NATIVE_LIGHTWEIGHT_INDEX_EXTENSIONS: &[&str] = &[
-    ".md",
-    ".markdown",
-    ".mdx",
-    ".txt",
-    ".rtf",
-    ".html",
-    ".htm",
-    ".xml",
-    ".json",
-    ".yaml",
-    ".yml",
-    ".tsv",
-    ".csv",
-];
-
-const NATIVE_OPENXML_TARGET_EXTENSIONS: &[&str] = &[".docx", ".xlsx", ".pptx"];
-const NATIVE_OPENDOCUMENT_TARGET_EXTENSIONS: &[&str] = &[".odt", ".ods", ".odp"];
-const NATIVE_PDF_SUMMARY_EXTENSIONS: &[&str] = &[".pdf"];
 const NATIVE_SKIP_ONLY_EXTENSIONS: &[&str] =
     &[".doc", ".wps", ".xls", ".et", ".numbers", ".ppt", ".key"];
 
@@ -66,47 +43,9 @@ pub struct NativeIndexRequest {
     pub included_hidden_paths: Vec<String>,
     pub hide_dot_files: bool,
     pub hide_system_folders: bool,
-    pub config_relative_path: String,
     pub reason: String,
     pub target_path: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct NativeParserRequest {
-    pub file_path: String,
-    pub extension: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ExportCatalogSnapshot {
-    version: u32,
-    #[serde(rename = "generatedAt")]
-    generated_at: String,
-    tags: Vec<SnapshotTag>,
-    documents: Vec<SnapshotDocument>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SnapshotTag {
-    path: String,
-    name: String,
-    root_type: String,
-    parent_path: Option<String>,
-    depth: usize,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SnapshotDocument {
-    document_id: String,
-    path: String,
-    title: String,
-    summary: String,
-    tags: Vec<String>,
-    derived_tags: Vec<String>,
-    mtime: String,
+    pub target_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -153,13 +92,6 @@ struct DirtyScope {
     dirty_relations: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct NativeConfigFile {
-    #[serde(default)]
-    max_file_size_bytes: Option<u64>,
-}
-
 #[derive(Debug, Clone)]
 struct ScannedDocument {
     relative_path: String,
@@ -182,7 +114,7 @@ struct ScannedFile {
     mtime: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RuntimeIndexedDocumentState {
     path: String,
@@ -233,14 +165,6 @@ struct RuntimeIndexedDocumentJournalEntry {
     document: SnapshotDocument,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RuntimeSummaryBackfillStateSnapshot {
-    version: u32,
-    generated_at: String,
-    files: Vec<RuntimeIndexedDocumentState>,
-}
-
 #[derive(Debug, Clone)]
 struct RuntimeSkipRecordInput {
     path: String,
@@ -259,29 +183,6 @@ struct ScanProgressStats {
     indexed_count: usize,
     skipped_count: usize,
     unchanged_count: usize,
-    max_concurrency: usize,
-    pending_index_task_count: usize,
-}
-
-#[derive(Debug, Clone)]
-struct PartialSnapshotFlushState {
-    last_flushed_at: i64,
-    completed_since_flush: usize,
-}
-
-#[derive(Debug, Clone, Default)]
-struct CountProgressStats {
-    visited_count: usize,
-    total_count: usize,
-}
-
-#[derive(Debug, Clone, Default)]
-struct SummaryBackfillProgressStats {
-    total_count: usize,
-    scanned_count: usize,
-    indexed_count: usize,
-    skipped_count: usize,
-    unchanged_count: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -294,8 +195,10 @@ struct RuntimePriorityHints {
 #[derive(Debug, Clone)]
 enum TargetScope {
     All,
-    Exact(String),
-    Prefix(String),
+    Paths {
+        files: BTreeSet<String>,
+        directories: BTreeSet<String>,
+    },
 }
 
 pub fn run_native_index_worker(request: NativeIndexRequest) -> Result<Value, String> {
@@ -323,49 +226,20 @@ pub fn run_native_index_worker(request: NativeIndexRequest) -> Result<Value, Str
     )?;
 
     let result = (|| -> Result<(String, DirtyScope, IndexProgress, Value), String> {
+        let recovery_pending = fs::metadata(indexed_document_journal_path(&root_dir))
+            .is_ok_and(|metadata| metadata.len() > 0);
         let options = NativeIndexOptions::from_request(&request);
-        let target_scope = resolve_target_scope(&root_dir, request.target_path.as_deref())?;
-        let total_count =
-            count_indexable_files(&root_dir, &options, &target_scope, |count_progress| {
-                write_runtime_status(
-                    &root_dir,
-                    PersistedRuntimeStatus {
-                        state: "running".to_string(),
-                        last_requested_at: Some(last_requested_at.clone()),
-                        last_started_at: Some(last_started_at.clone()),
-                        last_completed_at: None,
-                        last_failed_at: None,
-                        next_allowed_at: None,
-                        progress_updated_at: Some(iso_now()),
-                        running_stage: Some("count_files".to_string()),
-                        error_summary: None,
-                        progress: Some(build_counting_index_progress(&count_progress)),
-                    },
-                )
-            })?;
-        write_runtime_status(
-            &root_dir,
-            PersistedRuntimeStatus {
-                state: "running".to_string(),
-                last_requested_at: Some(last_requested_at.clone()),
-                last_started_at: Some(last_started_at.clone()),
-                last_completed_at: None,
-                last_failed_at: None,
-                next_allowed_at: None,
-                progress_updated_at: Some(iso_now()),
-                running_stage: Some("index_text".to_string()),
-                error_summary: None,
-                progress: Some(build_running_index_progress(&ScanProgressStats {
-                    total_count: Some(total_count),
-                    ..ScanProgressStats::default()
-                })),
-            },
-        )?;
+        let target_scope = if request.target_paths.is_empty() {
+            resolve_target_scope(&root_dir, request.target_path.as_deref())
+        } else {
+            resolve_target_paths(&root_dir, &request.target_paths)
+        };
+        let previous_state = load_previous_native_index_state(&root_dir);
         let scanned = scan_documents(
             &root_dir,
             &options,
             &target_scope,
-            Some(total_count),
+            previous_state.as_deref(),
             |progress| {
                 let progress_updated_at = iso_now();
                 write_runtime_status(
@@ -385,8 +259,51 @@ pub fn run_native_index_worker(request: NativeIndexRequest) -> Result<Value, Str
                 )
             },
         )?;
-        let snapshot_path = write_export_snapshot(&root_dir, &scanned.documents, &target_scope)?;
-        write_runtime_mirror_snapshots(&root_dir, &scanned, &target_scope)?;
+        let snapshot_path = if scanned
+            .documents
+            .iter()
+            .any(|document| !document.reused_previous)
+            || recovery_pending
+            || !scanned.deleted_paths.is_empty()
+            || !export_catalog_snapshot_path(&root_dir).exists()
+        {
+            write_export_snapshot(
+                &root_dir,
+                &scanned.documents,
+                &target_scope,
+                previous_state.as_deref(),
+            )?
+        } else {
+            export_catalog_snapshot_path(&root_dir)
+                .to_string_lossy()
+                .to_string()
+        };
+        let state_changed = recovery_pending
+            || !scanned.deleted_paths.is_empty()
+            || scanned
+                .documents
+                .iter()
+                .any(|document| !document.reused_previous)
+            || scanned.skipped_documents.iter().any(|skip| {
+                previous_state
+                    .as_ref()
+                    .and_then(|state| state.active_files.get(&skip.path))
+                    != Some(skip)
+            });
+        if state_changed || !active_file_state_snapshot_path(&root_dir).is_file() {
+            write_runtime_mirror_snapshots_with_state(
+                &root_dir,
+                &scanned,
+                &target_scope,
+                previous_state.as_deref(),
+            )?;
+        } else {
+            clear_indexed_document_journal(&root_dir)?;
+        }
+        drop(previous_state);
+        if state_changed {
+            commit_cached_state(&root_dir, &scanned);
+        }
         let progress = IndexProgress {
             scanned_count: scanned.total_scanned,
             indexed_count: scanned
@@ -398,13 +315,12 @@ pub fn run_native_index_worker(request: NativeIndexRequest) -> Result<Value, Str
             failed_count: 0,
             unchanged_count: scanned.unchanged_count,
             total_count: Some(scanned.total_scanned),
-            max_concurrency: Some(resolve_native_index_worker_count()),
+            max_concurrency: Some(1),
             active_task_count: 0,
             pending_task_count: 0,
             completed_task_count: scanned.total_scanned,
         };
-        let dirty_scope =
-            build_dirty_scope(&scanned.documents, &scanned.deleted_paths, &target_scope);
+        let dirty_scope = build_dirty_scope(&scanned.documents, &scanned.deleted_paths);
         let index_result = build_native_text_index_result(
             &scanned,
             &dirty_scope,
@@ -483,319 +399,7 @@ pub fn run_native_index_worker(request: NativeIndexRequest) -> Result<Value, Str
     }
 }
 
-pub fn run_native_summary_backfill_worker(request: NativeIndexRequest) -> Result<Value, String> {
-    let root_dir = request.root_dir.trim().to_string();
-    if root_dir.is_empty() {
-        return Err("native summary backfill 缺少 rootDir".to_string());
-    }
-    let root = PathBuf::from(&root_dir);
-    if !root.is_dir() {
-        return Err("文档库根目录不存在".to_string());
-    }
-    let target_scope = resolve_target_scope(&root_dir, request.target_path.as_deref())?;
-    let Some(mut snapshot) = read_existing_snapshot(&root_dir)? else {
-        return Ok(json!({
-            "accepted": true,
-            "mode": "summary-backfill",
-            "processedCount": 0,
-            "updatedCount": 0,
-            "skippedCount": 0,
-        }));
-    };
-    let active_snapshot = read_optional_json_file::<RuntimeActiveFileStateSnapshot>(
-        &active_file_state_snapshot_path(&root_dir),
-    )?
-    .unwrap_or(RuntimeActiveFileStateSnapshot {
-        version: 1,
-        generated_at: iso_now(),
-        files: Vec::new(),
-    });
-    let active_files = active_snapshot
-        .files
-        .into_iter()
-        .map(|item| (item.path.clone(), item))
-        .collect::<BTreeMap<_, _>>();
-    let mut completed = load_summary_backfill_state(&root_dir);
-    let last_requested_at = iso_now();
-    let last_started_at = iso_now();
-    let total_count = snapshot
-        .documents
-        .iter()
-        .filter(|document| {
-            if !target_scope_matches_path(&target_scope, &document.path) {
-                return false;
-            }
-            let Some(active) = active_files.get(&document.path) else {
-                return false;
-            };
-            if active.index_status != "indexed" {
-                return false;
-            }
-            !completed
-                .get(&document.path)
-                .is_some_and(|state| runtime_indexed_state_matches(state, active))
-        })
-        .count();
-    let initial_progress = SummaryBackfillProgressStats {
-        total_count,
-        ..SummaryBackfillProgressStats::default()
-    };
-    write_summary_backfill_runtime_status(
-        &root_dir,
-        &last_requested_at,
-        &last_started_at,
-        "running",
-        Some(SUMMARY_BACKFILL_RUNNING_STAGE.to_string()),
-        None,
-        Some(build_summary_backfill_progress(&initial_progress)),
-        None,
-        None,
-        None,
-    )?;
-
-    let result = (|| -> Result<(usize, usize, usize, Vec<String>, SummaryBackfillProgressStats), String> {
-        let mut processed_count = 0usize;
-        let mut updated_count = 0usize;
-        let mut skipped_count = 0usize;
-        let mut completed_since_flush = 0usize;
-        let mut progress_steps_since_emit = 0usize;
-        let mut last_progress_emit_at = chrono::Utc::now().timestamp_millis();
-        let mut changed_paths = Vec::<String>::new();
-        let mut progress_stats = initial_progress.clone();
-
-        for index in 0..snapshot.documents.len() {
-            let document_path = snapshot.documents[index].path.clone();
-            if !target_scope_matches_path(&target_scope, &document_path) {
-                continue;
-            }
-            let Some(active) = active_files.get(&document_path) else {
-                skipped_count += 1;
-                continue;
-            };
-            if active.index_status != "indexed" {
-                skipped_count += 1;
-                continue;
-            }
-            if completed
-                .get(&document_path)
-                .is_some_and(|state| runtime_indexed_state_matches(state, active))
-            {
-                skipped_count += 1;
-                continue;
-            }
-
-            let document = &mut snapshot.documents[index];
-            progress_stats.scanned_count += 1;
-
-            if !document.summary.trim().is_empty() {
-                completed.insert(document_path, active.clone());
-                progress_stats.unchanged_count += 1;
-                completed_since_flush += 1;
-                progress_steps_since_emit += 1;
-                maybe_report_summary_backfill_progress(
-                    &root_dir,
-                    &last_requested_at,
-                    &last_started_at,
-                    &mut last_progress_emit_at,
-                    &mut progress_steps_since_emit,
-                    &progress_stats,
-                )?;
-                continue;
-            }
-
-            let file_path = root.join(&document_path);
-            if !file_path.is_file() {
-                skipped_count += 1;
-                progress_stats.skipped_count += 1;
-                progress_steps_since_emit += 1;
-                maybe_report_summary_backfill_progress(
-                    &root_dir,
-                    &last_requested_at,
-                    &last_started_at,
-                    &mut last_progress_emit_at,
-                    &mut progress_steps_since_emit,
-                    &progress_stats,
-                )?;
-                continue;
-            }
-            let file = ScannedFile {
-                relative_path: document_path.clone(),
-                full_path: file_path,
-                extension: active.extension.clone(),
-                size: active.size,
-                mtime: active.mtime.clone(),
-            };
-            document.summary = read_summary(&file);
-            completed.insert(document_path, active.clone());
-            processed_count += 1;
-            updated_count += 1;
-            progress_stats.indexed_count += 1;
-            completed_since_flush += 1;
-            progress_steps_since_emit += 1;
-            changed_paths.push(document.path.clone());
-            maybe_report_summary_backfill_progress(
-                &root_dir,
-                &last_requested_at,
-                &last_started_at,
-                &mut last_progress_emit_at,
-                &mut progress_steps_since_emit,
-                &progress_stats,
-            )?;
-            if completed_since_flush >= SUMMARY_BACKFILL_FLUSH_EVERY_DOCUMENTS {
-                write_existing_snapshot(&root_dir, &snapshot)?;
-                write_summary_backfill_state(&root_dir, &completed)?;
-                completed_since_flush = 0;
-            }
-        }
-
-        write_existing_snapshot(&root_dir, &snapshot)?;
-        write_summary_backfill_state(&root_dir, &completed)?;
-        Ok((
-            processed_count,
-            updated_count,
-            skipped_count,
-            changed_paths,
-            progress_stats,
-        ))
-    })();
-
-    match result {
-        Ok((processed_count, updated_count, skipped_count, changed_paths, progress_stats)) => {
-            let completed_at = iso_now();
-            let next_allowed_at =
-                iso_after_ms(INDEX_COOLDOWN_MS).unwrap_or_else(|| completed_at.clone());
-            write_summary_backfill_runtime_status(
-                &root_dir,
-                &last_requested_at,
-                &last_started_at,
-                "cooldown",
-                None,
-                None,
-                Some(build_summary_backfill_progress(&progress_stats)),
-                Some(completed_at.clone()),
-                None,
-                Some(next_allowed_at.clone()),
-            )?;
-            Ok(json!({
-                "accepted": true,
-                "mode": "summary-backfill",
-                "processedCount": processed_count,
-                "updatedCount": updated_count,
-                "skippedCount": skipped_count,
-                "totalCount": progress_stats.total_count,
-                "changedPaths": changed_paths,
-            }))
-        }
-        Err(error) => {
-            write_summary_backfill_runtime_status(
-                &root_dir,
-                &last_requested_at,
-                &last_started_at,
-                "failed",
-                Some(SUMMARY_BACKFILL_RUNNING_STAGE.to_string()),
-                Some(error.clone()),
-                Some(build_summary_backfill_progress(&initial_progress)),
-                None,
-                Some(iso_now()),
-                None,
-            )?;
-            Err(error)
-        }
-    }
-}
-
-pub fn run_native_parser(request: NativeParserRequest) -> Result<Value, String> {
-    let path = PathBuf::from(request.file_path.trim());
-    if request.file_path.trim().is_empty() {
-        return Err("native parser 缺少 filePath".to_string());
-    }
-    if !path.is_file() {
-        return Err(format!("native parser 目标文件不存在：{}", path.display()));
-    }
-    let extension = normalize_parser_extension(&request.extension);
-    match extension.as_str() {
-        ".docx" => build_docx_parse_payload(&path, &extension),
-        ".xlsx" => build_xlsx_parse_payload(&path, &extension),
-        ".pptx" => build_pptx_parse_payload(&path, &extension),
-        ".pdf" => build_pdf_parse_payload(&path, &extension),
-        other => Err(format!("native parser 不支持的扩展名：{other}")),
-    }
-}
-
-// 这里保留旧 helper 名字，是为了不改宿主现有调用点；
-// 实际语义已经收口为“桌面默认原生主链可承接的扩展集合”。
-pub fn can_native_index_lightweight_set(allowed_extensions: &[String]) -> bool {
-    if allowed_extensions.is_empty() {
-        return true;
-    }
-    can_native_index_extension_set(allowed_extensions, is_native_default_route_extension)
-}
-
-fn can_native_index_extension_set(
-    allowed_extensions: &[String],
-    predicate: fn(&str) -> bool,
-) -> bool {
-    let Some(normalized) = normalize_allowed_extensions(allowed_extensions) else {
-        return false;
-    };
-    if normalized.is_empty() {
-        return false;
-    }
-    normalized.iter().all(|extension| predicate(extension))
-}
-
-pub fn is_native_lightweight_extension(extension: &str) -> bool {
-    let normalized = extension.trim().to_lowercase();
-    let normalized = if normalized.starts_with('.') {
-        normalized
-    } else {
-        format!(".{normalized}")
-    };
-    NATIVE_LIGHTWEIGHT_INDEX_EXTENSIONS.contains(&normalized.as_str())
-}
-
-pub fn is_native_openxml_target_extension(extension: &str) -> bool {
-    let normalized = extension.trim().to_lowercase();
-    let normalized = if normalized.starts_with('.') {
-        normalized
-    } else {
-        format!(".{normalized}")
-    };
-    NATIVE_OPENXML_TARGET_EXTENSIONS.contains(&normalized.as_str())
-}
-
-pub fn is_native_pdf_summary_extension(extension: &str) -> bool {
-    let normalized = extension.trim().to_lowercase();
-    let normalized = if normalized.starts_with('.') {
-        normalized
-    } else {
-        format!(".{normalized}")
-    };
-    NATIVE_PDF_SUMMARY_EXTENSIONS.contains(&normalized.as_str())
-}
-
-pub fn is_native_opendocument_target_extension(extension: &str) -> bool {
-    let normalized = extension.trim().to_lowercase();
-    let normalized = if normalized.starts_with('.') {
-        normalized
-    } else {
-        format!(".{normalized}")
-    };
-    NATIVE_OPENDOCUMENT_TARGET_EXTENSIONS.contains(&normalized.as_str())
-}
-
-pub fn is_native_summary_extension(extension: &str) -> bool {
-    is_native_lightweight_extension(extension)
-        || is_native_openxml_target_extension(extension)
-        || is_native_opendocument_target_extension(extension)
-        || is_native_pdf_summary_extension(extension)
-}
-
-pub fn is_native_default_route_extension(extension: &str) -> bool {
-    is_native_summary_extension(extension) || is_native_skip_only_extension(extension)
-}
-
-pub fn is_native_skip_only_extension(extension: &str) -> bool {
+fn is_native_skip_only_extension(extension: &str) -> bool {
     let normalized = extension.trim().to_lowercase();
     let normalized = if normalized.starts_with('.') {
         normalized
@@ -811,21 +415,17 @@ struct NativeIndexOptions {
     included_hidden_paths: Vec<String>,
     hide_dot_files: bool,
     hide_system_folders: bool,
-    max_file_size_bytes: Option<u64>,
 }
 
 impl NativeIndexOptions {
     fn from_request(request: &NativeIndexRequest) -> Self {
         let allowed_extensions = normalize_allowed_extensions(&request.allowed_extensions);
         let included_hidden_paths = normalize_included_hidden_paths(&request.included_hidden_paths);
-        let max_file_size_bytes =
-            read_max_file_size_bytes(&request.root_dir, &request.config_relative_path);
         Self {
             allowed_extensions,
             included_hidden_paths,
             hide_dot_files: request.hide_dot_files,
             hide_system_folders: request.hide_system_folders,
-            max_file_size_bytes,
         }
     }
 }
@@ -838,15 +438,6 @@ struct ScanDocumentsResult {
     unchanged_count: usize,
     skipped_count: usize,
     deleted_paths: Vec<String>,
-}
-
-enum NativeIndexTask {
-    Index(ScannedFile),
-    Stop,
-}
-
-enum NativeIndexTaskResult {
-    Indexed(ScannedDocument),
 }
 
 fn build_native_text_index_result(
@@ -872,16 +463,6 @@ fn build_native_text_index_result(
             acc
         },
     );
-    let direct_assigned_count = scanned
-        .documents
-        .iter()
-        .map(|document| document.tags.len())
-        .sum::<usize>();
-    let derived_assigned_count = scanned
-        .documents
-        .iter()
-        .map(|document| document.derived_tags.len())
-        .sum::<usize>();
     let indexed_count = indexed_paths.len();
 
     json!({
@@ -897,41 +478,7 @@ fn build_native_text_index_result(
         "deletedCount": scanned.deleted_paths.len(),
         "deletedPaths": scanned.deleted_paths,
         "dirtyScope": dirty_scope,
-        "timingsMs": {
-            "scanFs": 0.0,
-            "parse": 0.0,
-            "tagInference": 0.0,
-            "skipCatalog": 0.0,
-            "writeIndexed": 0.0,
-            "writeSkipped": 0.0,
-            "scanAndParse": 0.0,
-            "writeSuccess": 0.0,
-            "writeFailure": 0.0,
-            "scanLoop": 0.0,
-            "cleanup": 0.0,
-            "reconcile": 0.0,
-            "dirtyScope": 0.0,
-            "total": total_duration_ms,
-        },
-        "batchStats": {
-            "writeBatchSize": 1,
-            "successBatchCount": indexed_count + scanned.skipped_documents.len(),
-            "failureBatchCount": 0,
-        },
-        "tagStats": {
-            "directAssignedCount": direct_assigned_count,
-            "derivedAssignedCount": derived_assigned_count,
-            "avgDirectPerIndexedDocument": if indexed_count > 0 {
-                direct_assigned_count as f64 / indexed_count as f64
-            } else {
-                0.0
-            },
-            "avgDerivedPerIndexedDocument": if indexed_count > 0 {
-                derived_assigned_count as f64 / indexed_count as f64
-            } else {
-                0.0
-            },
-        },
+        "timingsMs": { "total": total_duration_ms },
         "skipStats": {
             "skippedCount": scanned.skipped_documents.len(),
             "skippedByExtension": skipped_by_extension,
@@ -940,7 +487,7 @@ fn build_native_text_index_result(
     })
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct PreviousNativeIndexState {
     active_files: BTreeMap<String, RuntimeIndexedDocumentState>,
     documents: BTreeMap<String, SnapshotDocument>,
@@ -956,318 +503,159 @@ fn scan_documents(
     root_dir: &str,
     options: &NativeIndexOptions,
     target_scope: &TargetScope,
-    estimated_total_count: Option<usize>,
+    previous_state: Option<&PreviousNativeIndexState>,
     mut progress_reporter: impl FnMut(IndexProgress) -> Result<(), String>,
 ) -> Result<ScanDocumentsResult, String> {
     let root = PathBuf::from(root_dir);
-    if !root.is_dir() {
-        return Err("文档库根目录不存在".to_string());
-    }
-    let scan_base = resolve_scan_base(&root, target_scope);
-    let mut queue = VecDeque::from([scan_base.clone()]);
-    let mut queued_directory_paths =
-        HashSet::<String>::from([directory_queue_key(&root, &scan_base)]);
-    let mut visited_directory_paths = HashSet::<String>::new();
+    let mut queue = VecDeque::from(resolve_scan_bases(&root, target_scope));
+    let mut queued = queue
+        .iter()
+        .map(|path| directory_queue_key(&root, path))
+        .collect::<HashSet<_>>();
+    let mut visited = HashSet::new();
     let mut documents = Vec::new();
     let mut skipped_documents = Vec::new();
-    let mut parser_skips = BTreeMap::<String, RuntimeParserSkipState>::new();
-    let worker_count = resolve_native_index_worker_count();
-    let mut progress_stats = ScanProgressStats {
-        total_count: estimated_total_count,
-        max_concurrency: worker_count,
-        ..ScanProgressStats::default()
-    };
-    let previous_state = load_previous_native_index_state(root_dir);
-    // 保持 worker 满载，但不要提前塞满每个 worker 的私有队列。
-    // 这样用户访问目录写入 priority hint 后，只需要等待当前正在处理的任务完成，
-    // 不会再被几十个已预取任务挡在后面。
-    let max_pending_index_tasks = worker_count.saturating_add(1).max(2);
-    let mut worker_pool = NativeIndexWorkerPool::start(worker_count, previous_state.clone());
-    let mut pending_index_tasks = 0usize;
-    let mut seen_paths = HashSet::<String>::new();
-    let mut last_progress_emit_at = chrono::Utc::now().timestamp_millis();
-    let mut files_since_last_progress_emit = 0usize;
-    let mut partial_snapshot_flush = PartialSnapshotFlushState {
-        last_flushed_at: chrono::Utc::now().timestamp_millis(),
-        completed_since_flush: 0,
-    };
-    let mut last_priority_hint_check_at = 0i64;
+    let mut parser_skips = BTreeMap::new();
+    let mut seen_paths = HashSet::new();
+    let mut progress = ScanProgressStats::default();
+    let mut last_progress = chrono::Utc::now().timestamp_millis();
+    let mut last_snapshot = last_progress;
+    let mut last_hint = 0;
+    let journal_path = indexed_document_journal_path(root_dir);
+    fs::create_dir_all(journal_path.parent().unwrap()).map_err(|error| error.to_string())?;
+    let mut journal = BufWriter::new(
+        fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&journal_path)
+            .map_err(|error| error.to_string())?,
+    );
 
     while let Some(current) = queue.pop_front() {
-        queued_directory_paths.remove(&directory_queue_key(&root, &current));
+        queued.remove(&directory_queue_key(&root, &current));
         maybe_apply_priority_hints(
             root_dir,
             &root,
             options,
             target_scope,
             &mut queue,
-            &mut queued_directory_paths,
-            &visited_directory_paths,
-            &mut last_priority_hint_check_at,
+            &mut queued,
+            &visited,
+            &mut last_hint,
         )?;
-        drain_finished_index_tasks(
-            &mut worker_pool,
-            &mut documents,
-            &mut progress_stats,
-            &mut pending_index_tasks,
-            root_dir,
-            target_scope,
-            &mut partial_snapshot_flush,
-        )?;
-        if !current.exists() {
-            continue;
-        }
-        let current_metadata = match fs::metadata(&current) {
+        let metadata = match fs::symlink_metadata(&current) {
             Ok(value) => value,
-            Err(_) => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(format!("读取文件属性失败 {}: {error}", current.display())),
         };
-        if current_metadata.is_file() {
-            files_since_last_progress_emit += 1;
-            let scanned_file = match scan_file(&root, &current, &current_metadata, options) {
-                ScanFileOutcome::Indexed(value) => {
-                    progress_stats.scanned_count += 1;
-                    value
+        let mut files = Vec::new();
+        if metadata.is_dir() {
+            visited.insert(directory_queue_key(&root, &current));
+            for entry in fs::read_dir(&current).map_err(|error| error.to_string())? {
+                let entry = entry.map_err(|error| error.to_string())?;
+                let entry_path = entry.path();
+                let kind = entry.file_type().map_err(|error| error.to_string())?;
+                let relative = directory_queue_key(&root, &entry_path);
+                if kind.is_dir() {
+                    if !should_skip_directory(
+                        &entry.file_name().to_string_lossy(),
+                        &relative,
+                        options,
+                    ) && !visited.contains(&relative)
+                        && queued.insert(relative)
+                    {
+                        queue.push_back(entry_path);
+                    }
+                } else if kind.is_file() && is_supported_file(&entry_path, options) {
+                    files.push(entry_path);
+                }
+            }
+        } else if metadata.is_file() {
+            files.push(current);
+        }
+        for file_path in files {
+            let metadata = fs::metadata(&file_path).map_err(|error| error.to_string())?;
+            match scan_file(&root, &file_path, &metadata, options) {
+                ScanFileOutcome::Indexed(file) => {
+                    seen_paths.insert(file.relative_path.clone());
+                    progress.scanned_count += 1;
+                    let document = index_document(file, previous_state);
+                    if document.reused_previous {
+                        progress.unchanged_count += 1;
+                    } else {
+                        progress.indexed_count += 1;
+                        write_document_journal_entry(&mut journal, &document)?;
+                    }
+                    documents.push(document);
                 }
                 ScanFileOutcome::Skipped(skip) => {
                     seen_paths.insert(skip.path.clone());
-                    progress_stats.scanned_count += 1;
-                    progress_stats.skipped_count += 1;
+                    progress.scanned_count += 1;
+                    progress.skipped_count += 1;
                     register_runtime_skip(&mut skipped_documents, &mut parser_skips, skip);
-                    maybe_report_running_progress(
-                        &mut progress_reporter,
-                        &mut last_progress_emit_at,
-                        &mut files_since_last_progress_emit,
-                        &progress_stats,
-                    )?;
-                    continue;
                 }
-                ScanFileOutcome::Ignored => {
-                    maybe_report_running_progress(
-                        &mut progress_reporter,
-                        &mut last_progress_emit_at,
-                        &mut files_since_last_progress_emit,
-                        &progress_stats,
-                    )?;
-                    continue;
-                }
-            };
-            seen_paths.insert(scanned_file.relative_path.clone());
-            if let Some(document) =
-                resolve_reusable_previous_document(&scanned_file, previous_state.as_ref())
-            {
-                progress_stats.unchanged_count += 1;
-                documents.push(document);
-                maybe_flush_partial_export_snapshot(
-                    root_dir,
-                    &documents,
-                    target_scope,
-                    &mut partial_snapshot_flush,
-                )?;
-            } else {
-                worker_pool.send(scanned_file)?;
-                pending_index_tasks += 1;
-                progress_stats.pending_index_task_count = pending_index_tasks;
-                drain_index_tasks_until_below_limit(
-                    &mut worker_pool,
-                    &mut documents,
-                    &mut progress_stats,
-                    &mut pending_index_tasks,
-                    max_pending_index_tasks,
-                    root_dir,
-                    target_scope,
-                    &mut partial_snapshot_flush,
-                )?;
+                ScanFileOutcome::Ignored => continue,
             }
-            maybe_report_running_progress(
-                &mut progress_reporter,
-                &mut last_progress_emit_at,
-                &mut files_since_last_progress_emit,
-                &progress_stats,
-            )?;
-            continue;
-        }
-        if !current_metadata.is_dir() {
-            continue;
-        }
-        visited_directory_paths.insert(directory_queue_key(&root, &current));
-        let entries = fs::read_dir(&current)
-            .map_err(|error| format!("读取目录失败 {}: {error}", current.display()))?;
-        let mut collected = entries.filter_map(Result::ok).collect::<Vec<_>>();
-        collected.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
-        for entry in collected.into_iter().rev() {
-            drain_finished_index_tasks(
-                &mut worker_pool,
-                &mut documents,
-                &mut progress_stats,
-                &mut pending_index_tasks,
-                root_dir,
-                target_scope,
-                &mut partial_snapshot_flush,
-            )?;
-            let entry_path = entry.path();
-            let metadata = match entry.metadata() {
-                Ok(value) => value,
-                Err(_) => continue,
-            };
-            let relative_path = normalize_relative_path(
-                entry_path
-                    .strip_prefix(&root)
-                    .unwrap_or(entry_path.as_path()),
-            );
-            if metadata.is_dir() {
-                if should_skip_directory(
-                    &entry.file_name().to_string_lossy(),
-                    &relative_path,
-                    options,
-                ) {
-                    continue;
-                }
-                let queue_key = directory_queue_key(&root, &entry_path);
-                if !visited_directory_paths.contains(&queue_key)
-                    && queued_directory_paths.insert(queue_key)
-                {
-                    queue.push_back(entry_path);
-                }
-                continue;
+            let now = chrono::Utc::now().timestamp_millis();
+            if now - last_progress >= INDEX_PROGRESS_FLUSH_INTERVAL_MS {
+                journal.flush().map_err(|error| error.to_string())?;
+                progress_reporter(build_running_index_progress(&progress))?;
+                last_progress = now;
             }
-            if !metadata.is_file() {
-                continue;
+            if now - last_snapshot >= INDEX_PARTIAL_SNAPSHOT_FLUSH_INTERVAL_MS {
+                write_partial_export_snapshot(root_dir, &documents, previous_state)?;
+                last_snapshot = now;
             }
-            files_since_last_progress_emit += 1;
-            let scanned_file = match scan_file(&root, &entry_path, &metadata, options) {
-                ScanFileOutcome::Indexed(value) => {
-                    progress_stats.scanned_count += 1;
-                    value
-                }
-                ScanFileOutcome::Skipped(skip) => {
-                    seen_paths.insert(skip.path.clone());
-                    progress_stats.scanned_count += 1;
-                    progress_stats.skipped_count += 1;
-                    register_runtime_skip(&mut skipped_documents, &mut parser_skips, skip);
-                    maybe_report_running_progress(
-                        &mut progress_reporter,
-                        &mut last_progress_emit_at,
-                        &mut files_since_last_progress_emit,
-                        &progress_stats,
-                    )?;
-                    continue;
-                }
-                ScanFileOutcome::Ignored => {
-                    maybe_report_running_progress(
-                        &mut progress_reporter,
-                        &mut last_progress_emit_at,
-                        &mut files_since_last_progress_emit,
-                        &progress_stats,
-                    )?;
-                    continue;
-                }
-            };
-            seen_paths.insert(scanned_file.relative_path.clone());
-            if let Some(document) =
-                resolve_reusable_previous_document(&scanned_file, previous_state.as_ref())
-            {
-                progress_stats.unchanged_count += 1;
-                documents.push(document);
-                maybe_flush_partial_export_snapshot(
-                    root_dir,
-                    &documents,
-                    target_scope,
-                    &mut partial_snapshot_flush,
-                )?;
-            } else {
-                worker_pool.send(scanned_file)?;
-                pending_index_tasks += 1;
-                progress_stats.pending_index_task_count = pending_index_tasks;
-                drain_index_tasks_until_below_limit(
-                    &mut worker_pool,
-                    &mut documents,
-                    &mut progress_stats,
-                    &mut pending_index_tasks,
-                    max_pending_index_tasks,
-                    root_dir,
-                    target_scope,
-                    &mut partial_snapshot_flush,
-                )?;
-            }
-            maybe_report_running_progress(
-                &mut progress_reporter,
-                &mut last_progress_emit_at,
-                &mut files_since_last_progress_emit,
-                &progress_stats,
-            )?;
         }
     }
-
-    while pending_index_tasks > 0 {
-        wait_for_one_index_task(
-            &mut worker_pool,
-            &mut documents,
-            &mut progress_stats,
-            &mut pending_index_tasks,
-            root_dir,
-            target_scope,
-            &mut partial_snapshot_flush,
-        )?;
-        maybe_report_running_progress(
-            &mut progress_reporter,
-            &mut last_progress_emit_at,
-            &mut files_since_last_progress_emit,
-            &progress_stats,
-        )?;
-    }
-    flush_partial_export_snapshot(
-        root_dir,
-        &documents,
-        target_scope,
-        true,
-        &mut partial_snapshot_flush,
-    )?;
-    progress_stats.total_count = Some(progress_stats.scanned_count);
-    progress_reporter(build_running_index_progress(&progress_stats))?;
-    worker_pool.stop();
+    journal.flush().map_err(|error| error.to_string())?;
+    progress.total_count = Some(progress.scanned_count);
+    progress_reporter(build_running_index_progress(&progress))?;
     documents.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-    let deleted_paths = collect_deleted_paths(root_dir, target_scope, &seen_paths);
+    let deleted_paths = previous_state
+        .as_ref()
+        .map(|state| {
+            state
+                .active_files
+                .keys()
+                .chain(state.documents.keys())
+                .filter(|path| {
+                    target_scope_matches_path(target_scope, path) && !seen_paths.contains(*path)
+                })
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(ScanDocumentsResult {
         documents,
         skipped_documents,
         parser_skips: parser_skips.into_values().collect(),
-        total_scanned: progress_stats.scanned_count,
-        unchanged_count: progress_stats.unchanged_count,
-        skipped_count: progress_stats.skipped_count,
+        total_scanned: progress.scanned_count,
+        unchanged_count: progress.unchanged_count,
+        skipped_count: progress.skipped_count,
         deleted_paths,
     })
 }
 
-fn maybe_report_running_progress(
-    progress_reporter: &mut impl FnMut(IndexProgress) -> Result<(), String>,
-    last_progress_emit_at: &mut i64,
-    files_since_last_progress_emit: &mut usize,
-    progress_stats: &ScanProgressStats,
-) -> Result<(), String> {
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    let reached_file_threshold =
-        *files_since_last_progress_emit >= INDEX_PROGRESS_FLUSH_EVERY_FILES;
-    let reached_time_threshold =
-        now_ms.saturating_sub(*last_progress_emit_at) >= INDEX_PROGRESS_FLUSH_INTERVAL_MS;
-    if !reached_file_threshold && !reached_time_threshold {
-        return Ok(());
-    }
-    progress_reporter(build_running_index_progress(progress_stats))?;
-    *last_progress_emit_at = now_ms;
-    *files_since_last_progress_emit = 0;
-    Ok(())
+fn is_supported_file(path: &Path, options: &NativeIndexOptions) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|extension| {
+            let extension = format!(".{}", extension.to_lowercase());
+            supported_extensions().contains(extension.as_str())
+                && options
+                    .allowed_extensions
+                    .as_ref()
+                    .map_or(true, |allowed| allowed.contains(&extension))
+        })
 }
 
 fn build_running_index_progress(progress_stats: &ScanProgressStats) -> IndexProgress {
     let completed_task_count = progress_stats.indexed_count
         + progress_stats.unchanged_count
         + progress_stats.skipped_count;
-    let active_task_count = progress_stats
-        .pending_index_task_count
-        .min(progress_stats.max_concurrency);
-    let pending_task_count = progress_stats
-        .pending_index_task_count
-        .saturating_sub(active_task_count);
     IndexProgress {
         scanned_count: progress_stats.scanned_count,
         indexed_count: progress_stats.indexed_count,
@@ -1275,219 +663,11 @@ fn build_running_index_progress(progress_stats: &ScanProgressStats) -> IndexProg
         failed_count: 0,
         unchanged_count: progress_stats.unchanged_count,
         total_count: progress_stats.total_count,
-        max_concurrency: Some(progress_stats.max_concurrency),
-        active_task_count,
-        pending_task_count,
-        completed_task_count,
-    }
-}
-
-fn count_indexable_files(
-    root_dir: &str,
-    options: &NativeIndexOptions,
-    target_scope: &TargetScope,
-    mut progress_reporter: impl FnMut(CountProgressStats) -> Result<(), String>,
-) -> Result<usize, String> {
-    let root = PathBuf::from(root_dir);
-    if !root.is_dir() {
-        return Err("文档库根目录不存在".to_string());
-    }
-    let mut queue = VecDeque::from([resolve_scan_base(&root, target_scope)]);
-    let mut progress_stats = CountProgressStats::default();
-    let mut last_progress_emit_at = chrono::Utc::now().timestamp_millis();
-    let mut files_since_last_progress_emit = 0usize;
-
-    while let Some(current) = queue.pop_front() {
-        if !current.exists() {
-            continue;
-        }
-        let metadata = match fs::metadata(&current) {
-            Ok(value) => value,
-            Err(_) => continue,
-        };
-        if metadata.is_file() {
-            progress_stats.visited_count += 1;
-            files_since_last_progress_emit += 1;
-            if matches!(
-                scan_file(&root, &current, &metadata, options),
-                ScanFileOutcome::Indexed(_) | ScanFileOutcome::Skipped(_)
-            ) {
-                progress_stats.total_count += 1;
-            }
-            maybe_report_count_progress(
-                &mut progress_reporter,
-                &mut last_progress_emit_at,
-                &mut files_since_last_progress_emit,
-                &progress_stats,
-            )?;
-            continue;
-        }
-        if !metadata.is_dir() {
-            continue;
-        }
-        let entries = fs::read_dir(&current)
-            .map_err(|error| format!("读取目录失败 {}: {error}", current.display()))?;
-        let mut collected = entries.filter_map(Result::ok).collect::<Vec<_>>();
-        collected.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
-        for entry in collected.into_iter().rev() {
-            let entry_path = entry.path();
-            let entry_metadata = match entry.metadata() {
-                Ok(value) => value,
-                Err(_) => continue,
-            };
-            let relative_path = normalize_relative_path(
-                entry_path
-                    .strip_prefix(&root)
-                    .unwrap_or(entry_path.as_path()),
-            );
-            if entry_metadata.is_dir() {
-                if should_skip_directory(
-                    &entry.file_name().to_string_lossy(),
-                    &relative_path,
-                    options,
-                ) {
-                    continue;
-                }
-                queue.push_back(entry_path);
-                continue;
-            }
-            if !entry_metadata.is_file() {
-                continue;
-            }
-            progress_stats.visited_count += 1;
-            files_since_last_progress_emit += 1;
-            if matches!(
-                scan_file(&root, &entry_path, &entry_metadata, options),
-                ScanFileOutcome::Indexed(_) | ScanFileOutcome::Skipped(_)
-            ) {
-                progress_stats.total_count += 1;
-            }
-            maybe_report_count_progress(
-                &mut progress_reporter,
-                &mut last_progress_emit_at,
-                &mut files_since_last_progress_emit,
-                &progress_stats,
-            )?;
-        }
-    }
-
-    progress_reporter(progress_stats.clone())?;
-    Ok(progress_stats.total_count)
-}
-
-fn maybe_report_count_progress(
-    progress_reporter: &mut impl FnMut(CountProgressStats) -> Result<(), String>,
-    last_progress_emit_at: &mut i64,
-    files_since_last_progress_emit: &mut usize,
-    progress_stats: &CountProgressStats,
-) -> Result<(), String> {
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    let reached_file_threshold =
-        *files_since_last_progress_emit >= INDEX_PROGRESS_FLUSH_EVERY_FILES;
-    let reached_time_threshold =
-        now_ms.saturating_sub(*last_progress_emit_at) >= INDEX_PROGRESS_FLUSH_INTERVAL_MS;
-    if !reached_file_threshold && !reached_time_threshold {
-        return Ok(());
-    }
-    progress_reporter(progress_stats.clone())?;
-    *last_progress_emit_at = now_ms;
-    *files_since_last_progress_emit = 0;
-    Ok(())
-}
-
-fn build_counting_index_progress(progress_stats: &CountProgressStats) -> IndexProgress {
-    IndexProgress {
-        scanned_count: progress_stats.visited_count,
-        indexed_count: 0,
-        skipped_count: 0,
-        failed_count: 0,
-        unchanged_count: 0,
-        total_count: Some(progress_stats.total_count),
-        max_concurrency: Some(resolve_native_index_worker_count()),
-        active_task_count: 1,
-        pending_task_count: 0,
-        completed_task_count: progress_stats.visited_count,
-    }
-}
-
-fn build_summary_backfill_progress(progress_stats: &SummaryBackfillProgressStats) -> IndexProgress {
-    let completed_task_count = progress_stats.indexed_count
-        + progress_stats.unchanged_count
-        + progress_stats.skipped_count;
-    IndexProgress {
-        scanned_count: progress_stats.scanned_count,
-        indexed_count: progress_stats.indexed_count,
-        skipped_count: progress_stats.skipped_count,
-        failed_count: 0,
-        unchanged_count: progress_stats.unchanged_count,
-        total_count: Some(progress_stats.total_count),
         max_concurrency: Some(1),
-        active_task_count: usize::from(completed_task_count < progress_stats.total_count),
-        pending_task_count: progress_stats.total_count.saturating_sub(completed_task_count),
+        active_task_count: 0,
+        pending_task_count: 0,
         completed_task_count,
     }
-}
-
-fn maybe_report_summary_backfill_progress(
-    root_dir: &str,
-    last_requested_at: &str,
-    last_started_at: &str,
-    last_progress_emit_at: &mut i64,
-    steps_since_last_progress_emit: &mut usize,
-    progress_stats: &SummaryBackfillProgressStats,
-) -> Result<(), String> {
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    let reached_file_threshold =
-        *steps_since_last_progress_emit >= INDEX_PROGRESS_FLUSH_EVERY_FILES;
-    let reached_time_threshold =
-        now_ms.saturating_sub(*last_progress_emit_at) >= INDEX_PROGRESS_FLUSH_INTERVAL_MS;
-    if !reached_file_threshold && !reached_time_threshold {
-        return Ok(());
-    }
-    write_summary_backfill_runtime_status(
-        root_dir,
-        last_requested_at,
-        last_started_at,
-        "running",
-        Some(SUMMARY_BACKFILL_RUNNING_STAGE.to_string()),
-        None,
-        Some(build_summary_backfill_progress(progress_stats)),
-        None,
-        None,
-        None,
-    )?;
-    *last_progress_emit_at = now_ms;
-    *steps_since_last_progress_emit = 0;
-    Ok(())
-}
-
-fn write_summary_backfill_runtime_status(
-    root_dir: &str,
-    last_requested_at: &str,
-    last_started_at: &str,
-    state: &str,
-    running_stage: Option<String>,
-    error_summary: Option<String>,
-    progress: Option<IndexProgress>,
-    last_completed_at: Option<String>,
-    last_failed_at: Option<String>,
-    next_allowed_at: Option<String>,
-) -> Result<(), String> {
-    write_runtime_status(
-        root_dir,
-        PersistedRuntimeStatus {
-            state: state.to_string(),
-            last_requested_at: Some(last_requested_at.to_string()),
-            last_started_at: Some(last_started_at.to_string()),
-            last_completed_at,
-            last_failed_at,
-            next_allowed_at,
-            progress_updated_at: Some(iso_now()),
-            running_stage,
-            error_summary,
-            progress,
-        },
-    )
 }
 
 fn maybe_apply_priority_hints(
@@ -1517,9 +697,7 @@ fn maybe_apply_priority_hints(
         if normalized == "." || normalized.is_empty() {
             continue;
         }
-        if !target_scope_matches_path(target_scope, &normalized)
-            && !priority_hint_contains_target_scope(&normalized, target_scope)
-        {
+        if !target_scope_matches_path(target_scope, &normalized) {
             continue;
         }
         let target_dir = root.join(&normalized);
@@ -1565,15 +743,6 @@ fn promote_directory_to_queue_front(
     queue.push_front(target_dir);
 }
 
-fn priority_hint_contains_target_scope(hint_path: &str, target_scope: &TargetScope) -> bool {
-    match target_scope {
-        TargetScope::All => true,
-        TargetScope::Exact(value) | TargetScope::Prefix(value) => {
-            value == hint_path || value.starts_with(&format!("{hint_path}/"))
-        }
-    }
-}
-
 fn normalize_priority_hint_path(value: &str) -> String {
     let trimmed = value.trim().replace('\\', "/");
     let normalized = trimmed
@@ -1592,201 +761,14 @@ fn directory_queue_key(root: &Path, path: &Path) -> String {
     normalize_relative_path(path.strip_prefix(root).unwrap_or(path))
 }
 
-struct NativeIndexWorkerPool {
-    senders: Vec<Sender<NativeIndexTask>>,
-    result_receiver: Receiver<NativeIndexTaskResult>,
-    handles: Vec<thread::JoinHandle<()>>,
-    next_worker_index: usize,
-}
-
-impl NativeIndexWorkerPool {
-    fn start(worker_count: usize, previous_state: Option<PreviousNativeIndexState>) -> Self {
-        let worker_count = worker_count.max(1);
-        let (result_sender, result_receiver) = mpsc::channel::<NativeIndexTaskResult>();
-        let previous_state = Arc::new(previous_state);
-        let mut senders = Vec::with_capacity(worker_count);
-        let mut handles = Vec::with_capacity(worker_count);
-
-        for _ in 0..worker_count {
-            let (task_sender, task_receiver) = mpsc::channel::<NativeIndexTask>();
-            let worker_result_sender = result_sender.clone();
-            let worker_previous_state = Arc::clone(&previous_state);
-            let handle = thread::spawn(move || {
-                while let Ok(task) = task_receiver.recv() {
-                    match task {
-                        NativeIndexTask::Index(file) => {
-                            let document =
-                                index_document(file, worker_previous_state.as_ref().as_ref());
-                            let _ =
-                                worker_result_sender.send(NativeIndexTaskResult::Indexed(document));
-                        }
-                        NativeIndexTask::Stop => break,
-                    }
-                }
-            });
-            senders.push(task_sender);
-            handles.push(handle);
-        }
-
-        Self {
-            senders,
-            result_receiver,
-            handles,
-            next_worker_index: 0,
-        }
-    }
-
-    fn send(&mut self, file: ScannedFile) -> Result<(), String> {
-        if self.senders.is_empty() {
-            return Err("native index worker 池未初始化".to_string());
-        }
-        let worker_index = self.next_worker_index % self.senders.len();
-        self.next_worker_index = self.next_worker_index.wrapping_add(1);
-        self.senders[worker_index]
-            .send(NativeIndexTask::Index(file))
-            .map_err(|error| format!("native index worker 发送任务失败: {error}"))
-    }
-
-    fn try_recv(&self) -> Result<Option<NativeIndexTaskResult>, String> {
-        match self.result_receiver.try_recv() {
-            Ok(result) => Ok(Some(result)),
-            Err(mpsc::TryRecvError::Empty) => Ok(None),
-            Err(mpsc::TryRecvError::Disconnected) => {
-                Err("native index worker 结果通道已断开".to_string())
-            }
-        }
-    }
-
-    fn recv(&self) -> Result<NativeIndexTaskResult, String> {
-        self.result_receiver
-            .recv()
-            .map_err(|error| format!("native index worker 接收结果失败: {error}"))
-    }
-
-    fn stop(&mut self) {
-        for sender in &self.senders {
-            let _ = sender.send(NativeIndexTask::Stop);
-        }
-        while let Some(handle) = self.handles.pop() {
-            let _ = handle.join();
-        }
-    }
-}
-
-impl Drop for NativeIndexWorkerPool {
-    fn drop(&mut self) {
-        self.stop();
-    }
-}
-
-fn drain_finished_index_tasks(
-    worker_pool: &mut NativeIndexWorkerPool,
-    documents: &mut Vec<ScannedDocument>,
-    progress_stats: &mut ScanProgressStats,
-    pending_index_tasks: &mut usize,
-    root_dir: &str,
-    target_scope: &TargetScope,
-    partial_snapshot_flush: &mut PartialSnapshotFlushState,
-) -> Result<(), String> {
-    while let Some(result) = worker_pool.try_recv()? {
-        apply_index_task_result(
-            result,
-            documents,
-            progress_stats,
-            pending_index_tasks,
-            root_dir,
-        )?;
-        progress_stats.pending_index_task_count = *pending_index_tasks;
-        maybe_flush_partial_export_snapshot(
-            root_dir,
-            documents,
-            target_scope,
-            partial_snapshot_flush,
-        )?;
-    }
-    Ok(())
-}
-
-fn drain_index_tasks_until_below_limit(
-    worker_pool: &mut NativeIndexWorkerPool,
-    documents: &mut Vec<ScannedDocument>,
-    progress_stats: &mut ScanProgressStats,
-    pending_index_tasks: &mut usize,
-    max_pending_index_tasks: usize,
-    root_dir: &str,
-    target_scope: &TargetScope,
-    partial_snapshot_flush: &mut PartialSnapshotFlushState,
-) -> Result<(), String> {
-    while *pending_index_tasks >= max_pending_index_tasks {
-        wait_for_one_index_task(
-            worker_pool,
-            documents,
-            progress_stats,
-            pending_index_tasks,
-            root_dir,
-            target_scope,
-            partial_snapshot_flush,
-        )?;
-    }
-    Ok(())
-}
-
-fn wait_for_one_index_task(
-    worker_pool: &mut NativeIndexWorkerPool,
-    documents: &mut Vec<ScannedDocument>,
-    progress_stats: &mut ScanProgressStats,
-    pending_index_tasks: &mut usize,
-    root_dir: &str,
-    target_scope: &TargetScope,
-    partial_snapshot_flush: &mut PartialSnapshotFlushState,
-) -> Result<(), String> {
-    let result = worker_pool.recv()?;
-    apply_index_task_result(
-        result,
-        documents,
-        progress_stats,
-        pending_index_tasks,
-        root_dir,
-    )?;
-    progress_stats.pending_index_task_count = *pending_index_tasks;
-    maybe_flush_partial_export_snapshot(root_dir, documents, target_scope, partial_snapshot_flush)?;
-    Ok(())
-}
-
-fn apply_index_task_result(
-    result: NativeIndexTaskResult,
-    documents: &mut Vec<ScannedDocument>,
-    progress_stats: &mut ScanProgressStats,
-    pending_index_tasks: &mut usize,
-    root_dir: &str,
-) -> Result<(), String> {
-    match result {
-        NativeIndexTaskResult::Indexed(document) => {
-            append_indexed_document_journal(root_dir, &document)?;
-            progress_stats.indexed_count += 1;
-            documents.push(document);
-            progress_stats.indexed_count = documents
-                .iter()
-                .filter(|item| !item.reused_previous)
-                .count();
-            *pending_index_tasks = pending_index_tasks.saturating_sub(1);
-        }
-    }
-    Ok(())
-}
-
-fn resolve_native_index_worker_count() -> usize {
-    thread::available_parallelism()
-        .map(|value| value.get())
-        .unwrap_or(4)
-        .clamp(1, NATIVE_INDEX_WORKER_MAX)
-}
-
-fn resolve_scan_base(root: &PathBuf, target_scope: &TargetScope) -> PathBuf {
+fn resolve_scan_bases(root: &Path, target_scope: &TargetScope) -> Vec<PathBuf> {
     match target_scope {
-        TargetScope::All => root.clone(),
-        TargetScope::Exact(value) => root.join(value),
-        TargetScope::Prefix(value) => root.join(value),
+        TargetScope::All => vec![root.to_path_buf()],
+        TargetScope::Paths { files, directories } => files
+            .iter()
+            .chain(directories)
+            .map(|path| root.join(path))
+            .collect(),
     }
 }
 
@@ -1832,11 +814,6 @@ fn scan_file(
         return ScanFileOutcome::Ignored;
     }
     let size = metadata.len();
-    if let Some(max_file_size_bytes) = options.max_file_size_bytes {
-        if max_file_size_bytes > 0 && size > max_file_size_bytes {
-            return ScanFileOutcome::Ignored;
-        }
-    }
     let mtime = metadata
         .modified()
         .ok()
@@ -1876,6 +853,7 @@ fn index_document(
         .unwrap_or_default()
         .to_string();
     let derived_tags = infer_derived_tags(&file);
+    let summary = read_summary(&file);
     let tags = previous_state
         .and_then(|state| state.documents.get(&file.relative_path))
         .map(|document| document.tags.clone())
@@ -1885,7 +863,7 @@ fn index_document(
         extension: file.extension,
         size: file.size,
         title,
-        summary: String::new(),
+        summary,
         tags,
         mtime: file.mtime,
         derived_tags,
@@ -1942,31 +920,31 @@ fn snapshot_document_from_scanned(document: &ScannedDocument) -> SnapshotDocumen
     }
 }
 
-fn append_indexed_document_journal(
-    root_dir: &str,
+fn write_document_journal_entry(
+    writer: &mut impl Write,
     document: &ScannedDocument,
 ) -> Result<(), String> {
-    if document.reused_previous {
-        return Ok(());
-    }
-    let journal_path = indexed_document_journal_path(root_dir);
-    if let Some(parent) = journal_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("创建索引恢复日志目录失败 {}: {error}", parent.display()))?;
-    }
     let entry = RuntimeIndexedDocumentJournalEntry {
         active: runtime_active_state_from_document(document),
         document: snapshot_document_from_scanned(document),
     };
-    let line = serde_json::to_string(&entry)
-        .map_err(|error| format!("序列化索引恢复日志失败：{error}"))?;
+    serde_json::to_writer(&mut *writer, &entry).map_err(|error| error.to_string())?;
+    writer.write_all(b"\n").map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+fn append_indexed_document_journal(
+    root_dir: &str,
+    document: &ScannedDocument,
+) -> Result<(), String> {
+    let path = indexed_document_journal_path(root_dir);
+    fs::create_dir_all(path.parent().unwrap()).map_err(|error| error.to_string())?;
     let mut file = fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&journal_path)
-        .map_err(|error| format!("打开索引恢复日志失败 {}: {error}", journal_path.display()))?;
-    writeln!(file, "{line}")
-        .map_err(|error| format!("写入索引恢复日志失败 {}: {error}", journal_path.display()))
+        .open(path)
+        .map_err(|error| error.to_string())?;
+    write_document_journal_entry(&mut file, document)
 }
 
 fn clear_indexed_document_journal(root_dir: &str) -> Result<(), String> {
@@ -1982,15 +960,17 @@ fn write_export_snapshot(
     root_dir: &str,
     documents: &[ScannedDocument],
     target_scope: &TargetScope,
+    previous_state: Option<&PreviousNativeIndexState>,
 ) -> Result<String, String> {
     let generated_at = iso_now();
-    let native_documents = documents
-        .iter()
-        .map(snapshot_document_from_scanned)
+    let mut snapshot_documents = previous_state
+        .into_iter()
+        .flat_map(|state| state.documents.values())
+        .filter(|document| !target_scope_matches_path(target_scope, &document.path))
+        .cloned()
         .collect::<Vec<_>>();
-    let previous_snapshot = read_existing_snapshot(root_dir).ok().flatten();
-    let snapshot_documents =
-        merge_snapshot_documents(native_documents, previous_snapshot, target_scope);
+    snapshot_documents.extend(documents.iter().map(snapshot_document_from_scanned));
+    snapshot_documents.sort_by(|left, right| left.path.cmp(&right.path));
     let mut snapshot_tags = BTreeMap::<String, SnapshotTag>::new();
     for document in &snapshot_documents {
         for tag_path in document.tags.iter().chain(document.derived_tags.iter()) {
@@ -1999,59 +979,30 @@ fn write_export_snapshot(
     }
     let snapshot = ExportCatalogSnapshot {
         version: 1,
-        generated_at,
+        generated_at: Some(generated_at),
         tags: snapshot_tags.into_values().collect(),
         documents: snapshot_documents,
     };
     let snapshot_path = export_catalog_snapshot_path(root_dir);
-    write_json_file(&snapshot_path, &snapshot)?;
+    write_catalog(root_dir, snapshot)?;
     Ok(snapshot_path.to_string_lossy().to_string())
-}
-
-fn maybe_flush_partial_export_snapshot(
-    root_dir: &str,
-    documents: &[ScannedDocument],
-    target_scope: &TargetScope,
-    state: &mut PartialSnapshotFlushState,
-) -> Result<(), String> {
-    state.completed_since_flush = state.completed_since_flush.saturating_add(1);
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    let reached_document_threshold =
-        state.completed_since_flush >= INDEX_PARTIAL_SNAPSHOT_FLUSH_EVERY_DOCUMENTS;
-    let reached_time_threshold =
-        now_ms.saturating_sub(state.last_flushed_at) >= INDEX_PARTIAL_SNAPSHOT_FLUSH_INTERVAL_MS;
-    if !reached_document_threshold && !reached_time_threshold {
-        return Ok(());
-    }
-    flush_partial_export_snapshot(root_dir, documents, target_scope, false, state)
-}
-
-fn flush_partial_export_snapshot(
-    root_dir: &str,
-    documents: &[ScannedDocument],
-    target_scope: &TargetScope,
-    force: bool,
-    state: &mut PartialSnapshotFlushState,
-) -> Result<(), String> {
-    if documents.is_empty() && !force {
-        return Ok(());
-    }
-    write_partial_export_snapshot(root_dir, documents, target_scope)?;
-    state.last_flushed_at = chrono::Utc::now().timestamp_millis();
-    state.completed_since_flush = 0;
-    Ok(())
 }
 
 fn write_partial_export_snapshot(
     root_dir: &str,
     documents: &[ScannedDocument],
-    _target_scope: &TargetScope,
+    previous_state: Option<&PreviousNativeIndexState>,
 ) -> Result<String, String> {
     let native_documents = documents
         .iter()
         .map(snapshot_document_from_scanned)
         .collect::<Vec<_>>();
-    let previous_snapshot = read_existing_snapshot(root_dir).ok().flatten();
+    let previous_snapshot = previous_state.map(|state| ExportCatalogSnapshot {
+        version: 1,
+        generated_at: Some(iso_now()),
+        tags: Vec::new(),
+        documents: state.documents.values().cloned().collect(),
+    });
     let snapshot_documents = merge_partial_snapshot_documents(native_documents, previous_snapshot);
     let mut snapshot_tags = BTreeMap::<String, SnapshotTag>::new();
     for document in &snapshot_documents {
@@ -2061,87 +1012,22 @@ fn write_partial_export_snapshot(
     }
     let snapshot = ExportCatalogSnapshot {
         version: 1,
-        generated_at: iso_now(),
+        generated_at: Some(iso_now()),
         tags: snapshot_tags.into_values().collect(),
         documents: snapshot_documents,
     };
     let snapshot_path = export_catalog_snapshot_path(root_dir);
-    write_json_file(&snapshot_path, &snapshot)?;
+    write_catalog(root_dir, snapshot)?;
     Ok(snapshot_path.to_string_lossy().to_string())
 }
 
+#[cfg(test)]
 fn read_existing_snapshot(root_dir: &str) -> Result<Option<ExportCatalogSnapshot>, String> {
     let snapshot_path = export_catalog_snapshot_path(root_dir);
     if !snapshot_path.is_file() {
         return Ok(None);
     }
     read_json_file(&snapshot_path).map(Some)
-}
-
-fn write_existing_snapshot(root_dir: &str, snapshot: &ExportCatalogSnapshot) -> Result<(), String> {
-    write_json_file(&export_catalog_snapshot_path(root_dir), snapshot)
-}
-
-fn load_summary_backfill_state(root_dir: &str) -> BTreeMap<String, RuntimeIndexedDocumentState> {
-    read_optional_json_file::<RuntimeSummaryBackfillStateSnapshot>(&summary_backfill_state_path(
-        root_dir,
-    ))
-    .ok()
-    .flatten()
-    .map(|snapshot| {
-        snapshot
-            .files
-            .into_iter()
-            .map(|item| (item.path.clone(), item))
-            .collect::<BTreeMap<_, _>>()
-    })
-    .unwrap_or_default()
-}
-
-fn write_summary_backfill_state(
-    root_dir: &str,
-    completed: &BTreeMap<String, RuntimeIndexedDocumentState>,
-) -> Result<(), String> {
-    let snapshot = RuntimeSummaryBackfillStateSnapshot {
-        version: 1,
-        generated_at: iso_now(),
-        files: completed.values().cloned().collect(),
-    };
-    write_json_file(&summary_backfill_state_path(root_dir), &snapshot)
-}
-
-fn runtime_indexed_state_matches(
-    left: &RuntimeIndexedDocumentState,
-    right: &RuntimeIndexedDocumentState,
-) -> bool {
-    left.path == right.path
-        && left.extension == right.extension
-        && left.size == right.size
-        && left.mtime == right.mtime
-        && left.index_status == right.index_status
-}
-
-fn merge_snapshot_documents(
-    native_documents: Vec<SnapshotDocument>,
-    previous_snapshot: Option<ExportCatalogSnapshot>,
-    target_scope: &TargetScope,
-) -> Vec<SnapshotDocument> {
-    let mut merged = BTreeMap::<String, SnapshotDocument>::new();
-    if let Some(previous_snapshot) = previous_snapshot {
-        for document in previous_snapshot.documents {
-            let extension = document_extension(&document.path);
-            if is_native_summary_extension(&extension)
-                && target_scope_matches_path(target_scope, &document.path)
-            {
-                continue;
-            }
-            merged.insert(document.path.clone(), document);
-        }
-    }
-    for document in native_documents {
-        merged.insert(document.path.clone(), document);
-    }
-    merged.into_values().collect()
 }
 
 fn merge_partial_snapshot_documents(
@@ -2160,21 +1046,24 @@ fn merge_partial_snapshot_documents(
     merged.into_values().collect()
 }
 
+#[cfg(test)]
 fn write_runtime_mirror_snapshots(
     root_dir: &str,
     scanned: &ScanDocumentsResult,
     target_scope: &TargetScope,
 ) -> Result<(), String> {
+    let previous = load_previous_native_index_state(root_dir);
+    write_runtime_mirror_snapshots_with_state(root_dir, scanned, target_scope, previous.as_deref())
+}
+
+fn write_runtime_mirror_snapshots_with_state(
+    root_dir: &str,
+    scanned: &ScanDocumentsResult,
+    target_scope: &TargetScope,
+    previous_state: Option<&PreviousNativeIndexState>,
+) -> Result<(), String> {
     let active_file_path = active_file_state_snapshot_path(root_dir);
     let index_state_path = index_state_snapshot_path(root_dir);
-    let previous_active = read_optional_json_file::<RuntimeActiveFileStateSnapshot>(
-        &active_file_path,
-    )?
-    .unwrap_or(RuntimeActiveFileStateSnapshot {
-        version: 1,
-        generated_at: iso_now(),
-        files: Vec::new(),
-    });
     let previous_index = read_optional_json_file::<RuntimeIndexStateSnapshot>(&index_state_path)?
         .unwrap_or(RuntimeIndexStateSnapshot {
             version: 1,
@@ -2183,10 +1072,9 @@ fn write_runtime_mirror_snapshots(
             skipped_documents: Vec::new(),
             parser_skips: Vec::new(),
         });
-    let mut active_files = BTreeMap::<String, RuntimeIndexedDocumentState>::new();
-    for item in previous_active.files {
-        active_files.insert(item.path.clone(), item);
-    }
+    let mut active_files = previous_state
+        .map(|state| state.active_files.clone())
+        .unwrap_or_default();
     let mut skipped_documents = BTreeMap::<String, RuntimeIndexedDocumentState>::new();
     for item in previous_index.skipped_documents.iter().cloned() {
         skipped_documents.insert(item.path.clone(), item);
@@ -2342,13 +1230,67 @@ fn infer_derived_tags(file: &ScannedFile) -> Vec<String> {
     tags.into_iter().collect()
 }
 
-fn load_previous_native_index_state(root_dir: &str) -> Option<PreviousNativeIndexState> {
+type StateCache = BTreeMap<String, (Vec<FileVersion>, Arc<PreviousNativeIndexState>)>;
+
+fn state_cache() -> &'static Mutex<StateCache> {
+    static CACHE: OnceLock<Mutex<StateCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn state_versions(root: &str) -> Vec<FileVersion> {
+    [
+        active_file_state_snapshot_path(root),
+        export_catalog_snapshot_path(root),
+        indexed_document_journal_path(root),
+    ]
+    .iter()
+    .map(|path| file_version(path))
+    .collect()
+}
+
+fn commit_cached_state(root: &str, scanned: &ScanDocumentsResult) {
+    let mut cache = state_cache().lock().unwrap();
+    let entry = cache
+        .entry(root.to_string())
+        .or_insert_with(|| (vec![], Arc::new(PreviousNativeIndexState::default())));
+    let state = Arc::make_mut(&mut entry.1);
+    for document in &scanned.documents {
+        if !document.reused_previous {
+            state.active_files.insert(
+                document.relative_path.clone(),
+                runtime_active_state_from_document(document),
+            );
+            state.documents.insert(
+                document.relative_path.clone(),
+                snapshot_document_from_scanned(document),
+            );
+        }
+    }
+    for skip in &scanned.skipped_documents {
+        state.active_files.insert(skip.path.clone(), skip.clone());
+        state.documents.remove(&skip.path);
+    }
+    for path in &scanned.deleted_paths {
+        state.active_files.remove(path);
+        state.documents.remove(path);
+    }
+    entry.0 = state_versions(root);
+}
+
+fn load_previous_native_index_state(root_dir: &str) -> Option<Arc<PreviousNativeIndexState>> {
+    let versions = state_versions(root_dir);
+    let mut cache = state_cache().lock().unwrap();
+    if let Some((cached_versions, state)) = cache.get(root_dir) {
+        if *cached_versions == versions {
+            return Some(Arc::clone(state));
+        }
+    }
     let active_snapshot = read_optional_json_file::<RuntimeActiveFileStateSnapshot>(
         &active_file_state_snapshot_path(root_dir),
     )
     .ok()
     .flatten();
-    let export_snapshot = read_existing_snapshot(root_dir).ok().flatten();
+    let export_snapshot = read_catalog(root_dir).ok().flatten();
     let mut active_files = active_snapshot
         .map(|snapshot| {
             snapshot
@@ -2362,20 +1304,23 @@ fn load_previous_native_index_state(root_dir: &str) -> Option<PreviousNativeInde
         .map(|snapshot| {
             snapshot
                 .documents
-                .into_iter()
+                .iter()
+                .cloned()
                 .map(|item| (item.path.clone(), item))
                 .collect::<BTreeMap<_, _>>()
         })
         .unwrap_or_default();
     merge_indexed_document_journal(root_dir, &mut active_files, &mut documents);
     hydrate_missing_active_files_from_documents(root_dir, &documents, &mut active_files);
-    if active_files.is_empty() || documents.is_empty() {
+    if active_files.is_empty() && documents.is_empty() {
         return None;
     }
-    Some(PreviousNativeIndexState {
+    let state = Arc::new(PreviousNativeIndexState {
         active_files,
         documents,
-    })
+    });
+    cache.insert(root_dir.to_string(), (versions, Arc::clone(&state)));
+    Some(state)
 }
 
 fn hydrate_missing_active_files_from_documents(
@@ -2478,447 +1423,6 @@ fn read_text_summary(path: &PathBuf) -> String {
         return String::new();
     };
     short_summary(&raw, 180)
-}
-
-fn normalize_parser_extension(extension: &str) -> String {
-    let normalized = extension.trim().to_lowercase();
-    if normalized.starts_with('.') {
-        normalized
-    } else {
-        format!(".{normalized}")
-    }
-}
-
-fn default_parser_title(path: &PathBuf, extension: &str) -> String {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .map(|name| name.trim_end_matches(extension).to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "untitled".to_string())
-}
-
-fn build_docx_parse_payload(path: &PathBuf, extension: &str) -> Result<Value, String> {
-    let entries = read_zip_text_entries(path, &["word/document.xml"])
-        .map_err(|error| format!("DOCX 解析失败 {}: {error}", path.display()))?;
-    let document_xml = entries
-        .get("word/document.xml")
-        .ok_or_else(|| format!("DOCX 缺少 word/document.xml: {}", path.display()))?;
-    let core_xml = entries.get("docProps/core.xml").cloned();
-    let mut blocks = Vec::new();
-    let mut heading_count = 0usize;
-    for paragraph in parse_docx_paragraph_blocks(document_xml) {
-        if paragraph.kind == "heading" {
-            heading_count += 1;
-        }
-        blocks.push(json!({
-            "kind": paragraph.kind,
-            "text": paragraph.text,
-            "metadata": paragraph.metadata,
-        }));
-    }
-    if blocks.is_empty() {
-        return Err(format!("DOCX 中没有可读取内容：{}", path.display()));
-    }
-    let text = blocks
-        .iter()
-        .filter_map(|block| block.get("text").and_then(Value::as_str))
-        .collect::<Vec<_>>()
-        .join("\n\n")
-        .trim()
-        .to_string();
-    if text.is_empty() {
-        return Err(format!("DOCX 文本内容为空：{}", path.display()));
-    }
-    let title = parse_docx_core_title(core_xml.as_deref())
-        .or_else(|| {
-            blocks
-                .iter()
-                .find(|block| block.get("kind").and_then(Value::as_str) == Some("heading"))
-                .and_then(|block| block.get("text").and_then(Value::as_str))
-                .map(ToString::to_string)
-        })
-        .unwrap_or_else(|| default_parser_title(path, extension));
-    Ok(json!({
-        "title": title,
-        "text": text,
-        "summary": short_summary(&text, 180),
-        "parser": "docx",
-        "metadata": {
-            "adapter": "native_complex_parser",
-            "paragraphCount": blocks.len(),
-            "headingCount": heading_count,
-        },
-        "structured": {
-            "blocks": blocks,
-            "stats": {
-                "paragraphCount": blocks.len(),
-                "headingCount": heading_count,
-            }
-        }
-    }))
-}
-
-fn build_pptx_parse_payload(path: &PathBuf, extension: &str) -> Result<Value, String> {
-    let entries = read_zip_text_entries(path, &[])
-        .map_err(|error| format!("PPTX 解析失败 {}: {error}", path.display()))?;
-    let presentation_xml = entries
-        .get("ppt/presentation.xml")
-        .ok_or_else(|| format!("PPTX 缺少 presentation.xml: {}", path.display()))?;
-    let relationship_xml = entries
-        .get("ppt/_rels/presentation.xml.rels")
-        .ok_or_else(|| format!("PPTX 缺少 presentation.xml.rels: {}", path.display()))?;
-    let slide_paths = parse_pptx_slide_paths(presentation_xml, relationship_xml);
-    if slide_paths.is_empty() {
-        return Err(format!("PPTX 中未发现 slide：{}", path.display()));
-    }
-    let mut blocks = Vec::new();
-    for (index, slide_path) in slide_paths.iter().enumerate() {
-        let Some(slide_xml) = entries.get(slide_path) else {
-            continue;
-        };
-        let text = extract_xml_texts(slide_xml, "a:t")
-            .join("\n")
-            .trim()
-            .to_string();
-        if text.is_empty() {
-            continue;
-        }
-        blocks.push(json!({
-            "kind": "slide",
-            "slideIndex": index + 1,
-            "text": text,
-            "metadata": {
-                "slideIndex": index + 1,
-            }
-        }));
-    }
-    if blocks.is_empty() {
-        return Err(format!("PPTX 中没有可读取 slide 文本：{}", path.display()));
-    }
-    let text = blocks
-        .iter()
-        .map(|block| {
-            let slide_index = block
-                .get("slideIndex")
-                .and_then(Value::as_u64)
-                .unwrap_or_default();
-            let slide_text = block
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            format!("Slide {slide_index}\n{slide_text}")
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    Ok(json!({
-        "title": default_parser_title(path, extension),
-        "text": text,
-        "summary": short_summary(&text, 180),
-        "parser": "pptx",
-        "metadata": {
-            "adapter": "native_complex_parser",
-            "slideCount": slide_paths.len(),
-            "extractedSlideCount": blocks.len(),
-        },
-        "structured": {
-            "blocks": blocks,
-            "stats": {
-                "slideCount": slide_paths.len(),
-                "extractedSlideCount": blocks.len(),
-            }
-        }
-    }))
-}
-
-fn build_xlsx_parse_payload(path: &PathBuf, extension: &str) -> Result<Value, String> {
-    let entries = read_zip_text_entries(path, &[])
-        .map_err(|error| format!("XLSX 解析失败 {}: {error}", path.display()))?;
-    let workbook_xml = entries
-        .get("xl/workbook.xml")
-        .ok_or_else(|| format!("XLSX 缺少 workbook.xml: {}", path.display()))?;
-    let relationship_xml = entries
-        .get("xl/_rels/workbook.xml.rels")
-        .ok_or_else(|| format!("XLSX 缺少 workbook.xml.rels: {}", path.display()))?;
-    let shared_strings = entries
-        .get("xl/sharedStrings.xml")
-        .map(|xml| parse_xlsx_shared_strings(xml))
-        .unwrap_or_default();
-    let workbook_sheets = parse_xlsx_workbook_sheets(workbook_xml, relationship_xml);
-    if workbook_sheets.is_empty() {
-        return Err(format!("XLSX 中未发现 sheet：{}", path.display()));
-    }
-    let mut blocks = Vec::new();
-    let mut total_rows = 0usize;
-    let mut max_column_count = 0usize;
-    let mut text_chunks = Vec::new();
-    let mut parsed_sheet_count = 0usize;
-    for (sheet_name, target) in workbook_sheets {
-        let Some(worksheet_xml) = entries.get(&target) else {
-            continue;
-        };
-        let rows = parse_xlsx_rows(worksheet_xml, &shared_strings);
-        if rows.is_empty() {
-            continue;
-        }
-        parsed_sheet_count += 1;
-        let row_count = rows.len();
-        let column_count = rows.iter().map(|row| row.len()).max().unwrap_or(0);
-        total_rows += row_count;
-        max_column_count = max_column_count.max(column_count);
-        let sheet_text = rows
-            .iter()
-            .map(|row| {
-                row.iter()
-                    .filter(|cell| !cell.is_empty())
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            })
-            .filter(|line| !line.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n");
-        if !sheet_text.is_empty() {
-            text_chunks.push(format!("{sheet_name}\n{sheet_text}"));
-        }
-        blocks.push(json!({
-            "kind": "sheet",
-            "sheetName": sheet_name,
-            "text": sheet_text,
-            "metadata": {
-                "rowCount": row_count,
-                "columnCount": column_count,
-            }
-        }));
-        blocks.push(json!({
-            "kind": "table",
-            "sheetName": sheet_name,
-            "cells": rows,
-            "metadata": {
-                "rowCount": row_count,
-                "columnCount": column_count,
-            }
-        }));
-    }
-    if text_chunks.is_empty() {
-        return Err(format!("XLSX 中没有可读取 sheet 内容：{}", path.display()));
-    }
-    let text = text_chunks.join("\n\n");
-    Ok(json!({
-        "title": default_parser_title(path, extension),
-        "text": text,
-        "summary": short_summary(&text, 180),
-        "parser": "xlsx",
-        "metadata": {
-            "adapter": "native_complex_parser",
-            "sheetCount": parsed_sheet_count,
-            "rowCount": total_rows,
-            "columnCount": max_column_count,
-        },
-        "structured": {
-            "blocks": blocks,
-            "stats": {
-                "sheetCount": parsed_sheet_count,
-                "rowCount": total_rows,
-                "columnCount": max_column_count,
-            }
-        }
-    }))
-}
-
-fn build_pdf_parse_payload(path: &PathBuf, extension: &str) -> Result<Value, String> {
-    let raw =
-        fs::read(path).map_err(|error| format!("PDF 文件读取失败 {}: {error}", path.display()))?;
-    let pdf_text = raw.iter().map(|byte| *byte as char).collect::<String>();
-    if !pdf_text.starts_with("%PDF-") {
-        return Err(format!("PDF 文件头非法：{}", path.display()));
-    }
-    let objects = extract_pdf_objects(&pdf_text);
-    if objects.is_empty() {
-        return Err(format!("PDF 中未发现可读取对象：{}", path.display()));
-    }
-    let pages = parse_pdf_page_records(&objects);
-    if pages.is_empty() {
-        return Err(format!("PDF 中未发现页面对象：{}", path.display()));
-    }
-    let mut blocks = Vec::new();
-    for (page_index, page) in pages.iter().enumerate() {
-        let page_text = extract_pdf_page_text(page, &objects);
-        if page_text.is_empty() {
-            continue;
-        }
-        blocks.push(json!({
-            "kind": "page",
-            "page": page_index + 1,
-            "text": page_text,
-            "metadata": {
-                "pageNumber": page_index + 1,
-            }
-        }));
-    }
-    if blocks.is_empty() {
-        return Err(format!("PDF 中没有可提取文本：{}", path.display()));
-    }
-    let text = blocks
-        .iter()
-        .filter_map(|block| block.get("text").and_then(Value::as_str))
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    Ok(json!({
-        "title": default_parser_title(path, extension),
-        "text": text,
-        "summary": short_summary(&text, 180),
-        "parser": "pdf",
-        "metadata": {
-            "adapter": "native_complex_parser",
-            "pageCount": pages.len(),
-            "extractedPageCount": blocks.len(),
-        },
-        "structured": {
-            "blocks": blocks,
-            "stats": {
-                "pageCount": pages.len(),
-                "extractedPageCount": blocks.len(),
-            }
-        }
-    }))
-}
-
-#[derive(Debug, Clone)]
-struct NativeDocxParagraphBlock {
-    kind: String,
-    text: String,
-    metadata: Option<Value>,
-}
-
-fn parse_docx_paragraph_blocks(document_xml: &str) -> Vec<NativeDocxParagraphBlock> {
-    let paragraph_pattern = Regex::new(r"(?s)<w:p\b[^>]*>.*?</w:p>").unwrap();
-    let text_pattern = Regex::new(r"(?s)<w:t\b[^>]*>(.*?)</w:t>").unwrap();
-    let tab_pattern = Regex::new(r"<w:tab\b[^>]*/>").unwrap();
-    let break_pattern = Regex::new(r"<w:br\b[^>]*/>").unwrap();
-    let style_pattern = Regex::new(r#"<w:pStyle\b([^>]*)/>"#).unwrap();
-    let mut blocks = Vec::new();
-    for paragraph_match in paragraph_pattern.find_iter(document_xml) {
-        let paragraph_xml = paragraph_match.as_str();
-        let mut parts = Vec::new();
-        for capture in text_pattern.captures_iter(paragraph_xml) {
-            let text = capture.get(1).map(|item| item.as_str()).unwrap_or_default();
-            parts.push(decode_xml_entities(text.to_string()));
-        }
-        for _ in tab_pattern.find_iter(paragraph_xml) {
-            parts.push("\t".to_string());
-        }
-        for _ in break_pattern.find_iter(paragraph_xml) {
-            parts.push("\n".to_string());
-        }
-        let text = parts
-            .join("")
-            .replace(" \n", "\n")
-            .replace("\n ", "\n")
-            .trim()
-            .to_string();
-        if text.is_empty() {
-            continue;
-        }
-        let style = style_pattern
-            .captures(paragraph_xml)
-            .and_then(|captures| captures.get(1))
-            .and_then(|matched| extract_xml_attr(matched.as_str(), "w:val"));
-        let is_heading = style
-            .as_deref()
-            .map(|value| value.to_lowercase().starts_with("heading"))
-            .unwrap_or(false);
-        blocks.push(NativeDocxParagraphBlock {
-            kind: if is_heading { "heading" } else { "paragraph" }.to_string(),
-            text,
-            metadata: style.map(|style_value| json!({ "style": style_value })),
-        });
-    }
-    blocks
-}
-
-fn parse_docx_core_title(core_xml: Option<&str>) -> Option<String> {
-    let xml = core_xml?;
-    let title_pattern = Regex::new(r"(?s)<dc:title\b[^>]*>(.*?)</dc:title>").unwrap();
-    let matched = title_pattern.captures(xml)?.get(1)?.as_str();
-    let value = decode_xml_entities(strip_xml_tags(matched).to_string())
-        .trim()
-        .to_string();
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
-    }
-}
-
-fn parse_pptx_slide_paths(presentation_xml: &str, relationship_xml: &str) -> Vec<String> {
-    let relationship_pattern = Regex::new(r#"<Relationship\b([^>]*)/>"#).unwrap();
-    let slide_pattern = Regex::new(r#"<p:sldId\b([^>]*)/>"#).unwrap();
-    let mut relations = BTreeMap::new();
-    for captures in relationship_pattern.captures_iter(relationship_xml) {
-        let attributes = captures
-            .get(1)
-            .map(|value| value.as_str())
-            .unwrap_or_default();
-        let relation_id = extract_xml_attr(attributes, "Id");
-        let target = extract_xml_attr(attributes, "Target");
-        if let (Some(relation_id), Some(target)) = (relation_id, target) {
-            let normalized = Path::new("ppt")
-                .join(target)
-                .to_string_lossy()
-                .replace('\\', "/");
-            relations.insert(relation_id, normalized);
-        }
-    }
-    let mut slide_paths = Vec::new();
-    for captures in slide_pattern.captures_iter(presentation_xml) {
-        let attributes = captures
-            .get(1)
-            .map(|value| value.as_str())
-            .unwrap_or_default();
-        let Some(relation_id) = extract_xml_attr(attributes, "r:id") else {
-            continue;
-        };
-        if let Some(target) = relations.get(&relation_id) {
-            slide_paths.push(target.clone());
-        }
-    }
-    slide_paths
-}
-
-fn parse_xlsx_workbook_sheets(workbook_xml: &str, relationship_xml: &str) -> Vec<(String, String)> {
-    let relationship_pattern = Regex::new(r#"<Relationship\b([^>]*)/>"#).unwrap();
-    let sheet_pattern = Regex::new(r#"<sheet\b([^>]*)/>"#).unwrap();
-    let mut relations = BTreeMap::new();
-    for captures in relationship_pattern.captures_iter(relationship_xml) {
-        let attributes = captures
-            .get(1)
-            .map(|value| value.as_str())
-            .unwrap_or_default();
-        let relation_id = extract_xml_attr(attributes, "Id");
-        let target = extract_xml_attr(attributes, "Target");
-        if let (Some(relation_id), Some(target)) = (relation_id, target) {
-            let normalized = Path::new("xl")
-                .join(target)
-                .to_string_lossy()
-                .replace('\\', "/");
-            relations.insert(relation_id, normalized);
-        }
-    }
-    let mut sheets = Vec::new();
-    for captures in sheet_pattern.captures_iter(workbook_xml) {
-        let attributes = captures
-            .get(1)
-            .map(|value| value.as_str())
-            .unwrap_or_default();
-        let relation_id = extract_xml_attr(attributes, "r:id");
-        let sheet_name = extract_xml_attr(attributes, "name");
-        if let (Some(relation_id), Some(sheet_name)) = (relation_id, sheet_name) {
-            if let Some(target) = relations.get(&relation_id) {
-                sheets.push((sheet_name, target.clone()));
-            }
-        }
-    }
-    sheets
 }
 
 fn read_csv_summary(path: &PathBuf) -> String {
@@ -3118,36 +1622,6 @@ fn read_zip_text_entries_for_summary(
     Ok(entries)
 }
 
-fn read_zip_text_entries(
-    path: &PathBuf,
-    required_entries: &[&str],
-) -> Result<BTreeMap<String, String>, String> {
-    let file = fs::File::open(path)
-        .map_err(|error| format!("读取 zip 文件失败 {}: {error}", path.display()))?;
-    let mut archive = ZipArchive::new(file)
-        .map_err(|error| format!("解析 zip 容器失败 {}: {error}", path.display()))?;
-    let mut entries = BTreeMap::new();
-    for index in 0..archive.len() {
-        let mut file = archive
-            .by_index(index)
-            .map_err(|error| format!("读取 zip 条目失败 {}: {error}", path.display()))?;
-        if !(file.name().ends_with(".xml") || file.name().ends_with(".xml.rels")) {
-            continue;
-        }
-        let mut content = String::new();
-        if file.read_to_string(&mut content).is_ok() {
-            entries.insert(file.name().to_string(), content);
-        }
-    }
-    if required_entries
-        .iter()
-        .any(|entry| !entries.contains_key(*entry))
-    {
-        return Err(format!("zip 缺少必需 xml 条目 {}", path.display()));
-    }
-    Ok(entries)
-}
-
 fn extract_xml_texts(xml: &str, tag_name: &str) -> Vec<String> {
     let open_tag = format!("<{tag_name}");
     let close_tag = format!("</{tag_name}>");
@@ -3310,17 +1784,6 @@ fn short_summary(raw: &str, limit: usize) -> String {
     }
 }
 
-fn read_max_file_size_bytes(root_dir: &str, config_relative_path: &str) -> Option<u64> {
-    let trimmed = config_relative_path.trim().trim_start_matches('/');
-    if trimmed.is_empty() || trimmed.contains("..") {
-        return None;
-    }
-    let config_path = PathBuf::from(root_dir).join(trimmed);
-    let raw = fs::read_to_string(config_path).ok()?;
-    let config = serde_json::from_str::<NativeConfigFile>(&raw).ok()?;
-    config.max_file_size_bytes
-}
-
 fn should_skip_directory(name: &str, relative_path: &str, options: &NativeIndexOptions) -> bool {
     if name == ".ai-index" {
         return true;
@@ -3362,7 +1825,7 @@ fn normalize_included_hidden_paths(values: &[String]) -> Vec<String> {
             .replace('\\', "/")
             .trim_start_matches('/')
             .to_string();
-        if normalized.is_empty() || normalized.contains("..") || !has_hidden_segment(&normalized) {
+        if normalized.is_empty() || !has_hidden_segment(&normalized) {
             continue;
         }
         if normalized == ".ai-index" || normalized.starts_with(".ai-index/") {
@@ -3425,111 +1888,84 @@ pub fn is_native_library_path_visible(
     if !hide_dot_files || !has_hidden_segment(&normalized) {
         return true;
     }
-    is_included_hidden_path(&normalized, &normalize_included_hidden_paths(included_hidden_paths))
+    is_included_hidden_path(
+        &normalized,
+        &normalize_included_hidden_paths(included_hidden_paths),
+    )
 }
 
 fn normalize_relative_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-fn resolve_target_scope(root_dir: &str, target_path: Option<&str>) -> Result<TargetScope, String> {
-    let Some(raw_target_path) = target_path.map(str::trim).filter(|value| !value.is_empty()) else {
-        return Ok(TargetScope::All);
+fn resolve_target_scope(root_dir: &str, target_path: Option<&str>) -> TargetScope {
+    let Some(target) = target_path
+        .map(str::trim)
+        .filter(|path| !path.is_empty() && *path != ".")
+    else {
+        return TargetScope::All;
     };
-    let raw_target = Path::new(raw_target_path);
-    if raw_target.is_absolute()
-        || raw_target
-            .components()
-            .any(|component| matches!(component, std::path::Component::ParentDir))
-    {
-        return Err("targetPath 超出文档库根目录，原生索引已拒绝执行".to_string());
-    }
-    let root = PathBuf::from(root_dir)
-        .canonicalize()
-        .map_err(|error| format!("解析文档库根目录失败 {}: {error}", root_dir))?;
-    let candidate = root.join(raw_target_path);
-    let normalized_target = normalize_relative_path(Path::new(raw_target_path))
+    let relative = normalize_relative_path(Path::new(target))
         .trim_end_matches('/')
         .to_string();
-    if candidate.exists() {
-        let canonical = candidate
-            .canonicalize()
-            .map_err(|error| format!("解析目标路径失败 {}: {error}", candidate.display()))?;
-        if !canonical.starts_with(&root) {
-            return Err("targetPath 超出文档库根目录，原生索引已拒绝执行".to_string());
+    let path = Path::new(root_dir).join(target);
+    if path.is_file() || (!path.exists() && path.extension().is_some()) {
+        TargetScope::Paths {
+            files: BTreeSet::from([relative]),
+            directories: BTreeSet::new(),
         }
-        let relative = normalize_relative_path(
-            canonical
-                .strip_prefix(&root)
-                .map_err(|_| "targetPath 超出文档库根目录，原生索引已拒绝执行".to_string())?,
-        );
-        if relative.is_empty() || relative == "." {
-            return Ok(TargetScope::All);
+    } else {
+        TargetScope::Paths {
+            files: BTreeSet::new(),
+            directories: BTreeSet::from([relative]),
         }
-        if canonical.is_file() {
-            return Ok(TargetScope::Exact(relative));
+    }
+}
+
+fn resolve_target_paths(root: &str, paths: &[String]) -> TargetScope {
+    let mut files = BTreeSet::new();
+    let mut directories = BTreeSet::new();
+    for path in paths {
+        match resolve_target_scope(root, Some(path)) {
+            TargetScope::All => return TargetScope::All,
+            TargetScope::Paths {
+                files: next_files,
+                directories: next_dirs,
+            } => {
+                files.extend(next_files);
+                directories.extend(next_dirs);
+            }
         }
-        return Ok(TargetScope::Prefix(relative));
     }
-    if normalized_target.is_empty() || normalized_target == "." {
-        return Ok(TargetScope::All);
-    }
-    if Path::new(&normalized_target).extension().is_some() {
-        return Ok(TargetScope::Exact(normalized_target));
-    }
-    Ok(TargetScope::Prefix(normalized_target))
+    let parents = directories.clone();
+    directories.retain(|path| {
+        !path
+            .rmatch_indices('/')
+            .any(|(index, _)| parents.contains(&path[..index]))
+    });
+    files.retain(|path| {
+        !directories.contains(path)
+            && !path
+                .rmatch_indices('/')
+                .any(|(index, _)| directories.contains(&path[..index]))
+    });
+    TargetScope::Paths { files, directories }
 }
 
 fn target_scope_matches_path(target_scope: &TargetScope, document_path: &str) -> bool {
     match target_scope {
         TargetScope::All => true,
-        TargetScope::Exact(value) => document_path == value,
-        TargetScope::Prefix(value) => {
-            document_path == value || document_path.starts_with(&format!("{value}/"))
+        TargetScope::Paths { files, directories } => {
+            files.contains(document_path)
+                || directories.contains(document_path)
+                || document_path
+                    .rmatch_indices('/')
+                    .any(|(index, _)| directories.contains(&document_path[..index]))
         }
     }
 }
 
-fn collect_deleted_paths(
-    root_dir: &str,
-    target_scope: &TargetScope,
-    seen_paths: &HashSet<String>,
-) -> Vec<String> {
-    let Some(previous_snapshot) = read_existing_snapshot(root_dir).ok().flatten() else {
-        return vec![];
-    };
-    previous_snapshot
-        .documents
-        .into_iter()
-        .filter(|document| {
-            is_native_summary_extension(&document_extension(&document.path))
-                && target_scope_matches_path(target_scope, &document.path)
-                && !seen_paths.contains(&document.path)
-        })
-        .map(|document| document.path)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect()
-}
-
-fn build_dirty_scope(
-    documents: &[ScannedDocument],
-    deleted_paths: &[String],
-    target_scope: &TargetScope,
-) -> DirtyScope {
-    if matches!(target_scope, TargetScope::All) {
-        return DirtyScope {
-            trigger: "full".to_string(),
-            changed_paths: vec![],
-            deleted_paths: vec![],
-            dirty_directories: vec![],
-            dirty_tag_paths: vec![],
-            dirty_meta_shards: vec![],
-            dirty_detail_shards: vec![],
-            dirty_posting_buckets: vec![],
-            dirty_relations: vec![],
-        };
-    }
+fn build_dirty_scope(documents: &[ScannedDocument], deleted_paths: &[String]) -> DirtyScope {
     let changed_documents = documents
         .iter()
         .filter(|document| !document.reused_previous)
@@ -4163,20 +2599,11 @@ fn write_runtime_status(root_dir: &str, payload: PersistedRuntimeStatus) -> Resu
     write_json_file(&path, &payload)
 }
 
-fn write_json_file<T>(path: &PathBuf, value: &T) -> Result<(), String>
-where
-    T: Serialize,
-{
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("创建目录失败 {}: {error}", parent.display()))?;
-    }
-    let mut buffer = serde_json::to_vec_pretty(value)
-        .map_err(|error| format!("序列化 JSON 失败 {}: {error}", path.display()))?;
-    buffer.push(b'\n');
-    fs::write(path, buffer).map_err(|error| format!("写入文件失败 {}: {error}", path.display()))
+fn write_json_file<T: Serialize>(path: &PathBuf, value: &T) -> Result<(), String> {
+    write_compact_json(path, value)
 }
 
+#[cfg(test)]
 fn read_json_file<T>(path: &PathBuf) -> Result<T, String>
 where
     T: for<'de> Deserialize<'de>,
@@ -4202,15 +2629,13 @@ mod tests {
     use crate::write_json_file;
 
     use super::{
-        append_indexed_document_journal, can_native_index_lightweight_set,
-        is_native_default_route_extension, is_native_skip_only_extension,
-        is_native_summary_extension, load_previous_native_index_state,
-        merge_partial_snapshot_documents, promote_directory_to_queue_front, read_text_summary,
-        read_xlsx_summary, resolve_reusable_previous_document, run_native_index_worker,
-        run_native_parser, run_native_summary_backfill_worker, write_runtime_mirror_snapshots,
-        ExportCatalogSnapshot, NativeIndexRequest, NativeParserRequest, ScanDocumentsResult,
-        ScannedDocument, ScannedFile, SnapshotDocument, TargetScope, SUMMARY_TEXT_MAX_BYTES,
-        SUMMARY_XLSX_MAX_SHEETS,
+        append_indexed_document_journal, is_native_skip_only_extension,
+        load_previous_native_index_state, merge_partial_snapshot_documents,
+        promote_directory_to_queue_front, read_text_summary, read_xlsx_summary,
+        resolve_reusable_previous_document, run_native_index_worker,
+        write_runtime_mirror_snapshots, ExportCatalogSnapshot, NativeIndexRequest,
+        ScanDocumentsResult, ScannedDocument, ScannedFile, SnapshotDocument, TargetScope,
+        SUMMARY_TEXT_MAX_BYTES, SUMMARY_XLSX_MAX_SHEETS,
     };
     use serde_json::Value;
     use std::collections::{BTreeMap, HashSet, VecDeque};
@@ -4222,43 +2647,15 @@ mod tests {
     use zip::ZipWriter;
 
     #[test]
-    fn default_desktop_extensions_can_stay_on_native_route() {
-        let extensions = vec![
-            ".md".to_string(),
-            ".markdown".to_string(),
-            ".txt".to_string(),
-            ".csv".to_string(),
-            ".pdf".to_string(),
-            ".doc".to_string(),
-            ".docx".to_string(),
-            ".xls".to_string(),
-            ".xlsx".to_string(),
-            ".ppt".to_string(),
-            ".pptx".to_string(),
-        ];
-
-        assert!(can_native_index_lightweight_set(&extensions));
-    }
-
-    #[test]
-    fn empty_allowed_extensions_means_default_supported_set_can_stay_on_native_route() {
-        assert!(can_native_index_lightweight_set(&[]));
-    }
-
-    #[test]
-    fn legacy_binary_office_extensions_are_skip_only_not_summary() {
+    fn legacy_binary_office_extensions_are_skip_only() {
         for extension in [".doc", ".wps", ".xls", ".et", ".numbers", ".ppt", ".key"] {
-            assert!(is_native_default_route_extension(extension));
             assert!(is_native_skip_only_extension(extension));
-            assert!(!is_native_summary_extension(extension));
         }
     }
 
     #[test]
-    fn opendocument_extensions_are_native_summary_extensions() {
+    fn opendocument_extensions_are_not_skip_only() {
         for extension in [".odt", ".ods", ".odp"] {
-            assert!(is_native_default_route_extension(extension));
-            assert!(is_native_summary_extension(extension));
             assert!(!is_native_skip_only_extension(extension));
         }
     }
@@ -4304,9 +2701,10 @@ mod tests {
             included_hidden_paths: vec![],
             hide_dot_files: true,
             hide_system_folders: true,
-            config_relative_path: ".ai-index/doc-semantic-index.config.json".to_string(),
+
             reason: "native_test".to_string(),
             target_path: None,
+            target_paths: Vec::new(),
         })
         .unwrap();
 
@@ -4372,9 +2770,10 @@ mod tests {
             included_hidden_paths: vec![],
             hide_dot_files: false,
             hide_system_folders: false,
-            config_relative_path: ".ai-index/doc-semantic-index.config.json".to_string(),
+
             reason: "native_test".to_string(),
             target_path: None,
+            target_paths: Vec::new(),
         })
         .unwrap();
 
@@ -4431,9 +2830,10 @@ mod tests {
             included_hidden_paths: vec![],
             hide_dot_files: true,
             hide_system_folders: true,
-            config_relative_path: ".ai-index/doc-semantic-index.config.json".to_string(),
+
             reason: "native_test".to_string(),
             target_path: None,
+            target_paths: Vec::new(),
         })
         .unwrap();
 
@@ -4469,10 +2869,10 @@ mod tests {
     }
 
     #[test]
-    fn index_only_只写入文件属性不读取正文摘要() {
+    fn index_only_一次写入文件属性和正文摘要() {
         let root_dir = make_temp_dir("x-file-native-index-metadata-only");
         fs::create_dir_all(root_dir.join(".ai-index")).unwrap();
-        fs::write(root_dir.join("a.md"), "# A\n\n正文摘要不应在首轮出现").unwrap();
+        fs::write(root_dir.join("a.md"), "# A\n\n正文摘要在首轮可用").unwrap();
 
         run_native_index_worker(NativeIndexRequest {
             root_dir: root_dir.to_string_lossy().to_string(),
@@ -4480,9 +2880,10 @@ mod tests {
             included_hidden_paths: vec![],
             hide_dot_files: true,
             hide_system_folders: true,
-            config_relative_path: ".ai-index/doc-semantic-index.config.json".to_string(),
+
             reason: "native_test".to_string(),
             target_path: None,
+            target_paths: Vec::new(),
         })
         .unwrap();
 
@@ -4497,128 +2898,17 @@ mod tests {
         fs::remove_dir_all(&root_dir).ok();
 
         assert_eq!(document.get("title").and_then(Value::as_str), Some("a"));
-        assert_eq!(document.get("summary").and_then(Value::as_str), Some(""));
-    }
-
-    #[test]
-    fn summary_backfill_后台补齐摘要并记录断点状态() {
-        let root_dir = make_temp_dir("x-file-native-summary-backfill");
-        fs::create_dir_all(root_dir.join(".ai-index")).unwrap();
-        fs::write(root_dir.join("a.md"), "# A\n\n后台摘要内容").unwrap();
-
-        run_native_index_worker(NativeIndexRequest {
-            root_dir: root_dir.to_string_lossy().to_string(),
-            allowed_extensions: vec![".md".to_string()],
-            included_hidden_paths: vec![],
-            hide_dot_files: true,
-            hide_system_folders: true,
-            config_relative_path: ".ai-index/doc-semantic-index.config.json".to_string(),
-            reason: "native_test".to_string(),
-            target_path: None,
-        })
-        .unwrap();
-        let result = run_native_summary_backfill_worker(NativeIndexRequest {
-            root_dir: root_dir.to_string_lossy().to_string(),
-            allowed_extensions: vec![".md".to_string()],
-            included_hidden_paths: vec![],
-            hide_dot_files: true,
-            hide_system_folders: true,
-            config_relative_path: ".ai-index/doc-semantic-index.config.json".to_string(),
-            reason: "native_test".to_string(),
-            target_path: None,
-        })
-        .unwrap();
-
-        let snapshot_path = root_dir.join(".ai-index/runtime/export-catalog-snapshot.json");
-        let snapshot: Value =
-            serde_json::from_str(&fs::read_to_string(snapshot_path).unwrap()).unwrap();
-        let document = snapshot
-            .get("documents")
-            .and_then(Value::as_array)
-            .and_then(|items| items.first())
-            .unwrap();
-        let state_path = root_dir.join(".ai-index/runtime/summary-backfill-state.json");
-        let state: Value = serde_json::from_str(&fs::read_to_string(state_path).unwrap()).unwrap();
-        fs::remove_dir_all(&root_dir).ok();
-
-        assert!(document
-            .get("summary")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .contains("后台摘要内容"));
-        assert_eq!(
-            state.get("files").and_then(Value::as_array).map(Vec::len),
-            Some(1)
-        );
-        assert_eq!(
-            result
-                .get("changedPaths")
-                .and_then(Value::as_array)
-                .map(Vec::len),
-            Some(1)
-        );
-    }
-
-    #[test]
-    fn summary_backfill_完成后会写入可见进度状态() {
-        let root_dir = make_temp_dir("x-file-native-summary-backfill-status");
-        fs::create_dir_all(root_dir.join(".ai-index")).unwrap();
-        fs::write(root_dir.join("a.md"), "# A\n\n后台摘要内容").unwrap();
-        fs::write(root_dir.join("b.md"), "# B\n\n已有摘要").unwrap();
-
-        run_native_index_worker(NativeIndexRequest {
-            root_dir: root_dir.to_string_lossy().to_string(),
-            allowed_extensions: vec![".md".to_string()],
-            included_hidden_paths: vec![],
-            hide_dot_files: true,
-            hide_system_folders: true,
-            config_relative_path: ".ai-index/doc-semantic-index.config.json".to_string(),
-            reason: "native_test".to_string(),
-            target_path: None,
-        })
-        .unwrap();
-
-        let snapshot_path = root_dir.join(".ai-index/runtime/export-catalog-snapshot.json");
-        let mut snapshot: Value =
-            serde_json::from_str(&fs::read_to_string(&snapshot_path).unwrap()).unwrap();
-        snapshot["documents"][1]["summary"] = Value::String("已有摘要".to_string());
-        fs::write(
-            &snapshot_path,
-            format!("{}\n", serde_json::to_string_pretty(&snapshot).unwrap()),
-        )
-        .unwrap();
-
-        run_native_summary_backfill_worker(NativeIndexRequest {
-            root_dir: root_dir.to_string_lossy().to_string(),
-            allowed_extensions: vec![".md".to_string()],
-            included_hidden_paths: vec![],
-            hide_dot_files: true,
-            hide_system_folders: true,
-            config_relative_path: ".ai-index/doc-semantic-index.config.json".to_string(),
-            reason: "native_test".to_string(),
-            target_path: None,
-        })
-        .unwrap();
-
-        let status_path = root_dir.join(".ai-index").join("runtime-status.json");
-        let status: Value =
-            serde_json::from_str(&fs::read_to_string(status_path).unwrap()).unwrap();
-        let progress = status.get("progress").and_then(Value::as_object).unwrap();
-        fs::remove_dir_all(&root_dir).ok();
-
-        assert_eq!(status.get("state").and_then(Value::as_str), Some("cooldown"));
-        assert!(status.get("lastCompletedAt").and_then(Value::as_str).is_some());
-        assert_eq!(progress.get("totalCount").and_then(Value::as_u64), Some(2));
-        assert_eq!(progress.get("indexedCount").and_then(Value::as_u64), Some(1));
-        assert_eq!(progress.get("unchangedCount").and_then(Value::as_u64), Some(1));
-        assert_eq!(progress.get("completedTaskCount").and_then(Value::as_u64), Some(2));
+        assert!(document["summary"]
+            .as_str()
+            .unwrap()
+            .contains("正文摘要在首轮可用"));
     }
 
     #[test]
     fn partial_snapshot_merge_preserves_previous_unprocessed_documents() {
         let previous = ExportCatalogSnapshot {
             version: 1,
-            generated_at: "2026-06-30T00:00:00Z".to_string(),
+            generated_at: Some("2026-06-30T00:00:00Z".to_string()),
             tags: vec![],
             documents: vec![
                 SnapshotDocument {
@@ -4718,7 +3008,7 @@ mod tests {
             &snapshot_path,
             &ExportCatalogSnapshot {
                 version: 1,
-                generated_at: "2026-06-30T10:00:00Z".to_string(),
+                generated_at: Some("2026-06-30T10:00:00Z".to_string()),
                 tags: vec![],
                 documents: vec![SnapshotDocument {
                     document_id: "doc_a".to_string(),
@@ -4838,237 +3128,163 @@ mod tests {
     }
 
     #[test]
-    fn native_docx_parser_payload_matches_default_contract() {
-        let root_dir = make_temp_dir("x-file-native-parser-docx");
-        let file_path = root_dir.join("sample.docx");
-        write_zip_file(
-            &file_path,
-            &[
-                (
-                    "word/document.xml",
-                    r#"<?xml version="1.0" encoding="UTF-8"?>
-                <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-                  <w:body>
-                    <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>文档标题</w:t></w:r></w:p>
-                    <w:p><w:r><w:t>第一段正文</w:t></w:r></w:p>
-                    <w:p><w:r><w:t>第二段正文</w:t></w:r></w:p>
-                  </w:body>
-                </w:document>"#,
-                ),
-                (
-                    "docProps/core.xml",
-                    r#"<?xml version="1.0" encoding="UTF-8"?>
-                <cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties"
-                  xmlns:dc="http://purl.org/dc/elements/1.1/">
-                  <dc:title>文档核心标题</dc:title>
-                </cp:coreProperties>"#,
-                ),
-            ],
-        );
-
-        let parsed = run_native_parser(NativeParserRequest {
-            file_path: file_path.to_string_lossy().to_string(),
-            extension: ".docx".to_string(),
-        })
-        .unwrap();
-
-        assert_eq!(parsed.get("parser").and_then(Value::as_str), Some("docx"));
+    fn 恢复日志中的完整文档会提交到正式快照() {
+        let root = make_temp_dir("x-file-journal-resume");
+        let request = NativeIndexRequest {
+            root_dir: root.to_string_lossy().to_string(),
+            allowed_extensions: vec![],
+            included_hidden_paths: vec![],
+            hide_dot_files: true,
+            hide_system_folders: true,
+            reason: "test".to_string(),
+            target_path: None,
+            target_paths: Vec::new(),
+        };
+        fs::write(root.join("a.md"), "alpha").unwrap();
+        run_native_index_worker(request.clone()).unwrap();
+        let file_path = root.join("b.md");
+        fs::write(&file_path, "bravo").unwrap();
+        let metadata = fs::metadata(&file_path).unwrap();
+        let file = ScannedFile {
+            relative_path: "b.md".to_string(),
+            full_path: file_path,
+            extension: ".md".to_string(),
+            size: metadata.len(),
+            mtime: chrono::DateTime::<chrono::Utc>::from(metadata.modified().unwrap()).to_rfc3339(),
+        };
+        let document = super::index_document(file, None);
+        append_indexed_document_journal(&request.root_dir, &document).unwrap();
+        let result = run_native_index_worker(request.clone()).unwrap();
+        assert_eq!(result["index"]["indexedCount"], 0);
+        assert_eq!(result["index"]["unchangedCount"], 2);
+        let snapshot = super::read_existing_snapshot(&request.root_dir)
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.documents.len(), 2);
         assert_eq!(
-            parsed.get("title").and_then(Value::as_str),
-            Some("文档核心标题")
+            snapshot
+                .documents
+                .iter()
+                .find(|document| document.path == "b.md")
+                .unwrap()
+                .summary,
+            "bravo"
         );
-        assert!(parsed
-            .get("text")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .contains("第一段正文"));
-        assert_eq!(
-            parsed
-                .get("structured")
-                .and_then(|value| value.get("stats"))
-                .and_then(|value| value.get("headingCount"))
-                .and_then(Value::as_u64),
-            Some(1),
-        );
+        assert!(!super::indexed_document_journal_path(&request.root_dir).exists());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn native_xlsx_parser_payload_matches_default_contract() {
-        let root_dir = make_temp_dir("x-file-native-parser-xlsx");
-        let file_path = root_dir.join("sheet.xlsx");
+    fn 办公文档摘要仍使用原生提取() {
+        let root = make_temp_dir("x-file-office-summaries");
+        let docx = root.join("a.docx");
         write_zip_file(
-            &file_path,
-            &[
-                (
-                    "xl/workbook.xml",
-                    r#"<?xml version="1.0" encoding="UTF-8"?>
-                <workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-                  <sheets>
-                    <sheet name="Sheet1" r:id="rId1"/>
-                  </sheets>
-                </workbook>"#,
-                ),
-                (
-                    "xl/_rels/workbook.xml.rels",
-                    r#"<?xml version="1.0" encoding="UTF-8"?>
-                <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-                  <Relationship Id="rId1" Target="worksheets/sheet1.xml"/>
-                </Relationships>"#,
-                ),
-                (
-                    "xl/worksheets/sheet1.xml",
-                    r#"<?xml version="1.0" encoding="UTF-8"?>
-                <worksheet>
-                  <sheetData>
-                    <row r="1">
-                      <c r="A1" t="inlineStr"><is><t>姓名</t></is></c>
-                      <c r="B1" t="inlineStr"><is><t>分数</t></is></c>
-                    </row>
-                    <row r="2">
-                      <c r="A2" t="inlineStr"><is><t>张三</t></is></c>
-                      <c r="B2"><v>95</v></c>
-                    </row>
-                  </sheetData>
-                </worksheet>"#,
-                ),
-            ],
+            &docx,
+            &[(
+                "word/document.xml",
+                "<w:document><w:p><w:r><w:t>Word 正文</w:t></w:r></w:p></w:document>",
+            )],
         );
-
-        let parsed = run_native_parser(NativeParserRequest {
-            file_path: file_path.to_string_lossy().to_string(),
-            extension: ".xlsx".to_string(),
-        })
-        .unwrap();
-
-        assert_eq!(parsed.get("parser").and_then(Value::as_str), Some("xlsx"));
-        assert!(parsed
-            .get("text")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .contains("Sheet1"));
-        assert_eq!(
-            parsed
-                .get("structured")
-                .and_then(|value| value.get("stats"))
-                .and_then(|value| value.get("sheetCount"))
-                .and_then(Value::as_u64),
-            Some(1),
+        assert!(super::read_docx_summary(&docx).contains("Word 正文"));
+        let pptx = root.join("a.pptx");
+        write_zip_file(
+            &pptx,
+            &[(
+                "ppt/slides/slide1.xml",
+                "<p:sld><a:r><a:t>PPT 正文</a:t></a:r></p:sld>",
+            )],
         );
+        assert!(super::read_pptx_summary(&pptx).contains("PPT 正文"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn native_pptx_parser_payload_matches_default_contract() {
-        let root_dir = make_temp_dir("x-file-native-parser-pptx");
-        let file_path = root_dir.join("slides.pptx");
-        write_zip_file(
-            &file_path,
-            &[
-                (
-                    "ppt/presentation.xml",
-                    r#"<?xml version="1.0" encoding="UTF-8"?>
-                <p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
-                  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-                  <p:sldIdLst>
-                    <p:sldId id="256" r:id="rId1"/>
-                  </p:sldIdLst>
-                </p:presentation>"#,
-                ),
-                (
-                    "ppt/_rels/presentation.xml.rels",
-                    r#"<?xml version="1.0" encoding="UTF-8"?>
-                <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-                  <Relationship Id="rId1" Target="slides/slide1.xml"/>
-                </Relationships>"#,
-                ),
-                (
-                    "ppt/slides/slide1.xml",
-                    r#"<?xml version="1.0" encoding="UTF-8"?>
-                <p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
-                  xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
-                  <p:cSld>
-                    <p:spTree>
-                      <p:sp><p:txBody><a:p><a:r><a:t>第一页标题</a:t></a:r></a:p></p:txBody></p:sp>
-                    </p:spTree>
-                  </p:cSld>
-                </p:sld>"#,
-                ),
-            ],
-        );
-
-        let parsed = run_native_parser(NativeParserRequest {
-            file_path: file_path.to_string_lossy().to_string(),
-            extension: ".pptx".to_string(),
-        })
-        .unwrap();
-
-        assert_eq!(parsed.get("parser").and_then(Value::as_str), Some("pptx"));
-        assert!(parsed
-            .get("text")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .contains("Slide 1"));
+    fn 无变化刷新保留活动快照和目录快照版本() {
+        let root = make_temp_dir("x-file-no-change-versions");
+        fs::write(root.join("a.md"), "alpha").unwrap();
+        fs::write(root.join("old.doc"), "legacy").unwrap();
+        let request = NativeIndexRequest {
+            root_dir: root.to_string_lossy().to_string(),
+            allowed_extensions: vec![],
+            included_hidden_paths: vec![],
+            hide_dot_files: true,
+            hide_system_folders: true,
+            reason: "test".to_string(),
+            target_path: None,
+            target_paths: vec![],
+        };
+        run_native_index_worker(request.clone()).unwrap();
+        let paths = [
+            super::active_file_state_snapshot_path(&request.root_dir),
+            super::export_catalog_snapshot_path(&request.root_dir),
+            super::index_state_snapshot_path(&request.root_dir),
+        ];
+        let before = paths
+            .iter()
+            .map(|path| super::file_version(path))
+            .collect::<Vec<_>>();
+        let result = run_native_index_worker(request).unwrap();
+        assert_eq!(result["index"]["indexedCount"], 0);
         assert_eq!(
-            parsed
-                .get("structured")
-                .and_then(|value| value.get("stats"))
-                .and_then(|value| value.get("slideCount"))
-                .and_then(Value::as_u64),
-            Some(1),
+            before,
+            paths
+                .iter()
+                .map(|path| super::file_version(path))
+                .collect::<Vec<_>>()
         );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn native_pdf_parser_payload_matches_default_contract() {
-        let root_dir = make_temp_dir("x-file-native-parser-pdf");
-        let file_path = root_dir.join("pages.pdf");
-        fs::write(
-            &file_path,
-            r#"%PDF-1.4
-1 0 obj
-<< /Type /Catalog /Pages 2 0 R >>
-endobj
-2 0 obj
-<< /Type /Pages /Kids [3 0 R] /Count 1 >>
-endobj
-3 0 obj
-<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>
-endobj
-4 0 obj
-<< /Length 40 >>
-stream
-BT
-/F1 12 Tf
-72 720 Td
-(Hello PDF Page) Tj
-ET
-endstream
-endobj
-trailer
-<< /Root 1 0 R >>
-%%EOF"#,
-        )
-        .unwrap();
-
-        let parsed = run_native_parser(NativeParserRequest {
-            file_path: file_path.to_string_lossy().to_string(),
-            extension: ".pdf".to_string(),
-        })
-        .unwrap();
-
-        assert_eq!(parsed.get("parser").and_then(Value::as_str), Some("pdf"));
-        assert!(parsed
-            .get("text")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .contains("Hello PDF Page"));
+    fn 多路径扫描只处理指定文件并保留范围外记录() {
+        let root = make_temp_dir("x-file-target-paths");
+        for dir in ["a", "b", "c"] {
+            fs::create_dir(root.join(dir)).unwrap();
+            fs::write(root.join(dir).join("file.md"), dir).unwrap();
+        }
+        let mut request = NativeIndexRequest {
+            root_dir: root.to_string_lossy().to_string(),
+            allowed_extensions: vec![],
+            included_hidden_paths: vec![],
+            hide_dot_files: true,
+            hide_system_folders: true,
+            reason: "test".to_string(),
+            target_path: None,
+            target_paths: vec![],
+        };
+        run_native_index_worker(request.clone()).unwrap();
+        fs::write(root.join("a/file.md"), "updated alpha").unwrap();
+        fs::write(root.join("b/file.md"), "updated beta").unwrap();
+        request.target_paths = vec!["a/file.md".to_string(), "b/file.md".to_string()];
+        let result = run_native_index_worker(request.clone()).unwrap();
+        assert_eq!(result["index"]["scannedCount"], 2);
+        assert_eq!(result["index"]["indexedCount"], 2);
         assert_eq!(
-            parsed
-                .get("structured")
-                .and_then(|value| value.get("stats"))
-                .and_then(|value| value.get("pageCount"))
-                .and_then(Value::as_u64),
-            Some(1),
+            super::read_catalog(&request.root_dir)
+                .unwrap()
+                .unwrap()
+                .documents
+                .len(),
+            3
         );
+        fs::remove_file(root.join("a/file.md")).unwrap();
+        let result = run_native_index_worker(request.clone()).unwrap();
+        assert_eq!(
+            result["index"]["deletedPaths"],
+            serde_json::json!(["a/file.md"])
+        );
+        assert_eq!(
+            super::read_catalog(&request.root_dir)
+                .unwrap()
+                .unwrap()
+                .documents
+                .len(),
+            2
+        );
+        request.target_paths = vec!["b".to_string(), "b/file.md".to_string()];
+        let result = run_native_index_worker(request).unwrap();
+        assert_eq!(result["index"]["scannedCount"], 1);
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn make_temp_dir(prefix: &str) -> PathBuf {

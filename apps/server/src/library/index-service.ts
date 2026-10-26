@@ -1,3 +1,4 @@
+import { runLibraryIndexOnce as runNativeIndex } from "@x-file/indexer";
 import type { LibraryBinding, LibraryIndexProgress, LibraryIndexStatus, LibraryRefreshResult } from "@x-file/shared";
 
 import { IndexRuntimeStore } from "../storage/index-runtime-store.js";
@@ -17,11 +18,13 @@ interface LibraryIndexTaskInput {
   binding: LibraryBinding;
   reason: string;
   targetPath: string | null;
+  targetPaths?: string[];
 }
 
 interface RunLibraryIndexOnceOptions {
   rootDir: string;
   targetPath?: string;
+  targetPaths?: string[];
   allowedExtensions?: string[];
   includedHiddenPaths?: string[];
   hideDotFiles?: boolean;
@@ -36,6 +39,7 @@ type RunLibraryIndexOnce = (options: RunLibraryIndexOnceOptions) => Promise<unkn
 
 export class LibraryIndexService {
   private readonly runtimeStatusStore: LibraryRuntimeStatusStore;
+  private readonly pending = new Map<string, LibraryIndexTaskInput>();
 
   constructor(
     private readonly taskManager: TaskManager,
@@ -51,6 +55,16 @@ export class LibraryIndexService {
     const reason = input.reason?.trim() || "manual_refresh";
     const targetPath = input.targetPath?.trim() || null;
     this.runtimeStore.markDirty(binding.rootDir, reason, targetPath);
+
+    const next = { binding, reason, targetPath, targetPaths: targetPath ? [targetPath] : [] };
+    const previous = this.pending.get(binding.rootDir);
+    this.pending.set(binding.rootDir, previous ? {
+      ...next,
+      targetPath: previous.targetPath === next.targetPath ? next.targetPath : null,
+      targetPaths: previous.targetPaths?.length && next.targetPaths.length
+        ? [...new Set([...previous.targetPaths, ...next.targetPaths])]
+        : [],
+    } : next);
 
     const task = this.taskManager.enqueue<LibraryIndexTaskInput, void>(LIBRARY_INDEX_TASK_TYPE, {
       key: binding.rootDir,
@@ -125,11 +139,10 @@ export class LibraryIndexService {
     }
   }
 
-  /** 统一写入：内存缓存 + 磁盘持久化，保证重启后面板仍能读取进度与时间线。 */
+  /** 宿主只维护队列视图，磁盘状态统一由持有根目录锁的原生任务写入。 */
   private applyStatus(rootDir: string, status: LibraryIndexStatus): void {
     const nextStatus = this.withRuntimeIndexState(rootDir, status);
     this.runtimeStore.setStatus(rootDir, nextStatus);
-    this.runtimeStatusStore.write(rootDir, nextStatus);
   }
 
   private withRuntimeIndexState(rootDir: string, status: LibraryIndexStatus): LibraryIndexStatus {
@@ -157,34 +170,41 @@ export class LibraryIndexService {
         }));
 
         try {
-          const runLibraryIndexOnce = this.runLibraryIndexOnceOverride ?? await loadRunLibraryIndexOnce();
-          await runLibraryIndexOnce({
-            rootDir: input.binding.rootDir,
-            targetPath: input.targetPath ?? undefined,
-            allowedExtensions: input.binding.allowedExtensions,
-            includedHiddenPaths: input.binding.includedHiddenPaths,
-            hideDotFiles: input.binding.hideDotFiles,
-            hideSystemFolders: input.binding.hideSystemFolders,
-            reason: input.reason,
-            signal: context.signal,
-            onStageChange: context.setStage,
-            onProgress: (progress) => {
-              latestProgress = progress;
-              context.setProgress(progress);
-            }
-          });
+          const runLibraryIndexOnce = this.runLibraryIndexOnceOverride ?? runNativeIndex;
+          let work = this.pending.get(input.binding.rootDir);
+          while (work) {
+            this.pending.delete(input.binding.rootDir);
+            await runLibraryIndexOnce({
+              rootDir: work.binding.rootDir,
+              targetPath: work.targetPath ?? undefined,
+              ...(work.targetPaths && work.targetPaths.length > 1 ? { targetPaths: work.targetPaths } : {}),
+              allowedExtensions: work.binding.allowedExtensions,
+              includedHiddenPaths: work.binding.includedHiddenPaths,
+              hideDotFiles: work.binding.hideDotFiles,
+              hideSystemFolders: work.binding.hideSystemFolders,
+              reason: work.reason,
+              signal: context.signal,
+              onStageChange: context.setStage,
+              onProgress: (progress) => {
+                latestProgress = progress;
+                context.setProgress(progress);
+              }
+            });
+            work = this.pending.get(input.binding.rootDir);
+          }
 
           this.runtimeStore.clearDirty(input.binding.rootDir);
           const completedAt = new Date();
+          const persisted = this.runtimeStatusStore.read(input.binding.rootDir);
           this.applyStatus(input.binding.rootDir, createStatus("cooldown", {
             lastRequestedAt: context.queuedAt,
             lastStartedAt: context.startedAt(),
-            lastCompletedAt: completedAt.toISOString(),
-            nextAllowedAt: new Date(completedAt.getTime() + INDEX_COOLDOWN_MS).toISOString(),
-            progress: latestProgress
+            lastCompletedAt: persisted?.lastCompletedAt ?? completedAt.toISOString(),
+            nextAllowedAt: persisted?.nextAllowedAt ?? new Date(completedAt.getTime() + INDEX_COOLDOWN_MS).toISOString(),
+            progress: latestProgress ?? persisted?.progress ?? null
           }));
         } catch (error) {
-          // 失败状态也持久化到磁盘，重启后面板仍能展示失败原因与进度
+          // 任务失败保留在宿主队列中，原生任务负责自己的磁盘状态。
           this.applyStatus(input.binding.rootDir, createStatus("failed", {
             lastRequestedAt: context.queuedAt,
             lastStartedAt: context.startedAt(),
@@ -211,14 +231,6 @@ export class LibraryIndexService {
       progress: (task.progress as LibraryIndexProgress | null) ?? null
     });
   }
-}
-
-async function loadRunLibraryIndexOnce(): Promise<RunLibraryIndexOnce> {
-  const importIndexer = new Function("specifier", "return import(specifier)") as (
-    specifier: string
-  ) => Promise<{ runLibraryIndexOnce: RunLibraryIndexOnce }>;
-  const indexer = await importIndexer("@x-file/indexer");
-  return indexer.runLibraryIndexOnce;
 }
 
 function createStatus(
