@@ -1011,6 +1011,9 @@ function buildLibraryListSignature(
       ].join("\u001c"),
     )
     .join("\u001b");
+  const tagFacetSignature = JSON.stringify(
+    Object.entries(documents.tagFacetCounts ?? {}).sort(([left], [right]) => left.localeCompare(right)),
+  );
 
   return [
     documents.total,
@@ -1022,6 +1025,7 @@ function buildLibraryListSignature(
     files.limit ?? "",
     documentSignature,
     fileSignature,
+    tagFacetSignature,
   ].join("\u001a");
 }
 

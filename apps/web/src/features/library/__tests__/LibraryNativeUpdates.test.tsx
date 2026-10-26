@@ -2,6 +2,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   createDocumentList,
+  createDocumentRecord,
   createFileList,
   createLibrarySnapshot,
   installLibraryApiMock,
@@ -70,5 +71,36 @@ it("忽略其他资料库的事件", async () => {
   const update = native.listen.mock.calls.at(-1)![0] as (root: string) => void;
   await act(async () => update("/another-library"));
   expect(native.snapshot).toHaveBeenCalledTimes(previousCalls);
+  unmount();
+});
+
+it("原生更新仅改变标签交叉计数时仍刷新，并在清空计数后移除旧值", async () => {
+  const page = createDocumentList([
+    createDocumentRecord({ documentId: "visible", tags: ["工作/售前"] }),
+  ], {
+    total: 153,
+    tagFacetCounts: { "工作/售前": 153, "客户/麦迪格": 4 },
+  });
+  native.documents.mockResolvedValue(page);
+  const { useLibraryState } = await import("../useLibraryState");
+  const { result, unmount } = renderHook(() => useLibraryState());
+  await waitFor(() => expect(result.current.documentPage).toEqual(page));
+  act(() => result.current.selectTag("工作/售前"));
+  await waitFor(() => expect(native.documents).toHaveBeenLastCalledWith(
+    expect.objectContaining({ selectedTagPaths: ["工作/售前"] }),
+  ));
+  await waitFor(() => expect(result.current.documentsLoading).toBe(false));
+
+  for (const tagFacetCounts of [
+    { "工作/售前": 153, "客户/麦迪格": 60, "客户/东岳": 93 },
+    {},
+  ]) {
+    native.documents.mockResolvedValue({ ...page, tagFacetCounts });
+    const update = native.listen.mock.calls.at(-1)![0] as (root: string) => void;
+    await act(async () => update(result.current.snapshot!.binding!.rootDir));
+    await waitFor(() => expect(result.current.documentPage?.tagFacetCounts).toEqual(tagFacetCounts));
+    expect(result.current.documentPage?.items).toEqual(page.items);
+    expect(result.current.documentPage?.total).toBe(153);
+  }
   unmount();
 });
