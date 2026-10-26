@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { t } from "../../i18n";
+import { SettingsModule } from "./SettingsModule";
 
 // 与 Rust apps/desktop/src-tauri/src/updater.rs 的返回类型对齐（serde camelCase）。
 interface ReleaseManifest {
@@ -43,12 +44,7 @@ function describeError(err: unknown, fallback: string): string {
   return String(err ?? fallback);
 }
 
-/**
- * 设置页「版本更新」面板。
- * 复用全局类名 .settings-section / .settings-appearance-grid / .settings-appearance-card /
- * .button-row / .primary-button / .secondary-button / .settings-current / .inline-note /
- * .inline-alert / .inline-success / .modal-empty-state，不引入局部魔法值。
- */
+/** 版本更新面板复用通用可折叠设置模块和全局控件样式。 */
 export function UpdatePanel() {
   const desktop = isDesktopContext();
   const [channel, setChannel] = useState<Channel>("stable");
@@ -144,13 +140,12 @@ export function UpdatePanel() {
 
   if (!desktop) {
     return (
-      <section className="settings-section">
-        <h2>{t("settingsUpdatesTitle")}</h2>
+      <SettingsModule title={t("settingsUpdatesTitle")}>
         <div className="modal-empty-state" data-compact="true">
           <strong className="modal-empty-state-title">{t("settingsUpdatesNotDesktopTitle")}</strong>
           <p className="modal-empty-state-description">{t("settingsUpdatesNotDesktopDescription")}</p>
         </div>
-      </section>
+      </SettingsModule>
     );
   }
 
@@ -160,8 +155,8 @@ export function UpdatePanel() {
   const busy = checking || downloading || installing;
 
   return (
-    <section className="settings-section">
-      <h2>{t("settingsUpdatesTitle")}</h2>
+    <SettingsModule title={t("settingsUpdatesTitle")}
+      status={currentVersion}>
 
       <div className="settings-appearance-grid">
         <div className="settings-appearance-card">
@@ -234,10 +229,10 @@ export function UpdatePanel() {
             {t("settingsUpdatesAvailable", { version: manifest.version })}
           </div>
           {manifest.notes ? (
-            <details>
-              <summary>{t("settingsUpdatesNotes")}</summary>
-              <pre>{manifest.notes}</pre>
-            </details>
+            <section className="settings-module-group" aria-label={t("settingsUpdatesNotes")}>
+              <h4 className="settings-module-title">{t("settingsUpdatesNotes")}</h4>
+              <pre className="settings-code-block">{manifest.notes}</pre>
+            </section>
           ) : null}
           <div className="button-row">
             <button
@@ -255,6 +250,6 @@ export function UpdatePanel() {
           </div>
         </>
       ) : null}
-    </section>
+    </SettingsModule>
   );
 }

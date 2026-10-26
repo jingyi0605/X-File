@@ -31,6 +31,8 @@ import { ThemeSwitcher } from "../../shared/theme/ThemeSwitcher";
 import { formatDateTime } from "../../shared/format";
 import { DesktopModal, ModalActions } from "../../shared/modal";
 import { UpdatePanel } from "./UpdatePanel";
+import { AgentIntegrationSettings } from "./AgentIntegrationSettings";
+import { SettingsModule } from "./SettingsModule";
 import { getRuntimeConfigSnapshot, updateRuntimeConfig } from "../../runtime/runtime-config-store";
 import { clearNativeApplicationData, requestNativeAppRestart } from "../../runtime/native-library-bridge";
 
@@ -597,198 +599,195 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
 
   const tabPanels: Record<SettingsTabId, ReactNode> = {
     appearance: (
-      <section className="settings-section settings-appearance-section">
+      <section className="settings-module-stack">
         <h2>{t("settingsAppearanceTitle")}</h2>
-        <div className="settings-appearance-grid">
-          <div className="settings-appearance-card">
-            <h3>{t("settingsLanguageTitle")}</h3>
-            <p>{t("settingsLanguageDescription")}</p>
-            <LanguageSwitcher />
-          </div>
-          <div className="settings-appearance-card">
-            <h3>{t("settingsThemeTitle")}</h3>
-            <p>{t("settingsThemeDescription")}</p>
-            <ThemeSwitcher />
-          </div>
-        </div>
+        <SettingsModule title={t("settingsLanguageTitle")} description={t("settingsLanguageDescription")}>
+          <LanguageSwitcher />
+        </SettingsModule>
+        <SettingsModule title={t("settingsThemeTitle")} description={t("settingsThemeDescription")}>
+          <ThemeSwitcher />
+        </SettingsModule>
       </section>
     ),
     library: (
       <section className="settings-grid">
-        <form className="settings-section" onSubmit={(event) => void submitBinding(event)}>
-          <h2>{t("settingsBindingTitle")}</h2>
-          <p className="settings-helper-text">
-            {isMirrorMode ? t("settingsMirrorBindingDescription") : t("settingsLocalBindingDescription")}
-          </p>
-          <div className="settings-runtime-mode-switcher">
-            <button type="button" className={runtimeForm.mode === "local" ? "primary-button" : "secondary-button"} onClick={() => setRuntimeForm((current) => ({ ...current, mode: "local" }))}>
-              {t("runtimeModeLocal")}
-            </button>
-            <button type="button" className={runtimeForm.mode === "mirror" ? "primary-button" : "secondary-button"} onClick={() => setRuntimeForm((current) => ({ ...current, mode: "mirror" }))}>
-              {t("runtimeModeMirror")}
-            </button>
-          </div>
-          {isMirrorMode ? (
-            <>
-              <label>
-                <span>{t("runtimeRemoteApiBaseUrl")}</span>
-                <input value={runtimeForm.remoteApiBaseUrl} placeholder={t("runtimeRemoteApiBaseUrlPlaceholder")} onChange={(event) => setRuntimeForm((current) => ({ ...current, remoteApiBaseUrl: event.target.value }))} />
-                <small>{t("settingsMirrorSourceApiDescription")}</small>
-              </label>
-              <label>
-                <span>{t("runtimeMirrorRootDir")}</span>
-                <div className="library-init-path-row">
-                  <input value={runtimeForm.localRootDir} placeholder={t("runtimeMirrorRootDirPlaceholder")} onChange={(event) => setRuntimeForm((current) => ({ ...current, localRootDir: event.target.value }))} />
-                  <button type="button" className="secondary-button" onClick={openDirectoryBrowser}>
-                    {t("hostDirectoryBrowseAction")}
-                  </button>
-                </div>
-                <small>{t("settingsMirrorLocalDirDescription")}</small>
-              </label>
-            </>
-          ) : (
-            <>
-              <label>
-                <span>{t("settingsRootDir")}</span>
-                <div className="library-init-path-row">
-                  <input value={bindingForm.rootDir} onChange={(event) => setBindingForm({ rootDir: event.target.value })} placeholder={t("settingsRootDirPlaceholder")} />
-                  <button type="button" className="secondary-button" onClick={openDirectoryBrowser}>
-                    {t("hostDirectoryBrowseAction")}
-                  </button>
-                </div>
-              </label>
-              <LibraryIndexStatusCard binding={binding} status={libraryIndexStatus} />
-            </>
-          )}
-          <button type="submit" className="primary-button">{t("settingsSaveBinding")}</button>
-        </form>
-
-        <form className="settings-section" onSubmit={(event) => void submitConfig(event)}>
-          <h2>{t("settingsConfigTitle")}</h2>
-          {isMirrorMode ? (
-            <div className="settings-remote-owner-note" data-tone="danger">
-              <strong>{t("settingsRemoteOwnerTitle")}</strong>
-              <span>{t("settingsMirrorConfigRemoteNotice")}</span>
-            </div>
-          ) : null}
-          {configUnavailable ? <div className="inline-note">{t("settingsConfigUnavailable")} {configUnavailable}</div> : null}
-          <div className="affairs-library-settings-form">
-            <section className="affairs-library-config-section">
-              <div className="affairs-library-behavior-switch-header">
-                <span className="affairs-library-behavior-switch-title">{t("settingsFolderOpenBehavior")}</span>
-                <div className="affairs-library-behavior-segmented" role="group" aria-label={t("settingsFolderOpenBehavior")}>
-                  <button
-                    type="button"
-                    className={configForm.folderOpenBehavior === "single_click" ? "active" : ""}
-                    aria-pressed={configForm.folderOpenBehavior === "single_click"}
-                    onClick={() => setConfigForm((current) => ({ ...current, folderOpenBehavior: "single_click" }))}
-                  >
-                    {t("settingsSingleClick")}
-                  </button>
-                  <button
-                    type="button"
-                    className={configForm.folderOpenBehavior === "double_click" ? "active" : ""}
-                    aria-pressed={configForm.folderOpenBehavior === "double_click"}
-                    onClick={() => setConfigForm((current) => ({ ...current, folderOpenBehavior: "double_click" }))}
-                  >
-                    {t("settingsDoubleClick")}
-                  </button>
-                </div>
-              </div>
-            </section>
-            <section className="affairs-library-config-section affairs-library-filter-switches">
-              <div className="affairs-library-filter-switch-row">
-                <div className="affairs-library-filter-switch-copy">
-                  <span>{t("settingsHideDotFiles")}</span>
-                  <small>{t("settingsHideDotFilesHint")}</small>
-                </div>
-                <MacSwitch
-                  checked={configForm.hideDotFiles}
-                  label={t("settingsHideDotFiles")}
-                  onChange={(checked) => setConfigForm((current) => ({ ...current, hideDotFiles: checked }))}
-                />
-              </div>
-              <div className="affairs-library-filter-switch-row">
-                <div className="affairs-library-filter-switch-copy">
-                  <span>{t("settingsHideSystemFolders")}</span>
-                  <small>{t("settingsHideSystemFoldersHint")}</small>
-                </div>
-                <MacSwitch
-                  checked={configForm.hideSystemFolders}
-                  label={t("settingsHideSystemFolders")}
-                  onChange={(checked) => setConfigForm((current) => ({ ...current, hideSystemFolders: checked }))}
-                />
-              </div>
-            </section>
-            <label>
-              <span>{t("settingsIncludedHiddenPaths")}</span>
-              <textarea
-                value={configForm.includedHiddenPaths}
-                placeholder={t("settingsIncludedHiddenPathsHint")}
-                rows={4}
-                onChange={(event) => setConfigForm((current) => ({ ...current, includedHiddenPaths: event.target.value }))}
-              />
-            </label>
-            <label>
-              <span>{t("settingsAllowedExtensions")}</span>
-              <div className="affairs-extension-chip-list">
-                {buildAllowedExtensionOptions(configForm.allowedExtensions).map((extension) => {
-                  const selected = configForm.allowedExtensions.includes(extension);
-                  const preset = LIBRARY_PRESET_EXTENSIONS.includes(extension as typeof LIBRARY_PRESET_EXTENSIONS[number]);
-                  return (
-                    <button
-                      key={extension}
-                      type="button"
-                      className={selected ? "affairs-extension-chip active" : "affairs-extension-chip"}
-                      aria-pressed={selected}
-                      data-selected={selected ? "true" : "false"}
-                      onClick={() => toggleAllowedExtension(extension)}
-                    >
-                      <span>{extension}</span>
-                      {!preset ? <span className="affairs-extension-chip-badge">{t("settingsAllowedExtensionsCustomBadge")}</span> : null}
-                    </button>
-                  );
-                })}
-              </div>
-            </label>
-            <div className="affairs-extension-manual-row">
-              <input
-                value={configForm.manualExtension}
-                placeholder={t("settingsAllowedExtensionsCustomPlaceholder")}
-                onChange={(event) => setConfigForm((current) => ({ ...current, manualExtension: event.target.value }))}
-              />
-              <button type="button" className="secondary-button" onClick={addManualExtension}>
-                {t("settingsAllowedExtensionsCustomAdd")}
+        <SettingsModule title={t("settingsBindingTitle")}
+          description={isMirrorMode ? t("settingsMirrorBindingDescription") : t("settingsLocalBindingDescription")}
+          status={runtimeModeLabel}>
+          <form className="settings-module-form" onSubmit={(event) => void submitBinding(event)}>
+            <div className="settings-runtime-mode-switcher">
+              <button type="button" className={runtimeForm.mode === "local" ? "primary-button" : "secondary-button"} onClick={() => setRuntimeForm((current) => ({ ...current, mode: "local" }))}>
+                {t("runtimeModeLocal")}
+              </button>
+              <button type="button" className={runtimeForm.mode === "mirror" ? "primary-button" : "secondary-button"} onClick={() => setRuntimeForm((current) => ({ ...current, mode: "mirror" }))}>
+                {t("runtimeModeMirror")}
               </button>
             </div>
-          </div>
-          <button type="submit" className="primary-button" disabled={Boolean(configUnavailable)}>
-            {t("settingsSaveConfig")}
-          </button>
-        </form>
+            {isMirrorMode ? (
+              <>
+                <label>
+                  <span>{t("runtimeRemoteApiBaseUrl")}</span>
+                  <input value={runtimeForm.remoteApiBaseUrl} placeholder={t("runtimeRemoteApiBaseUrlPlaceholder")} onChange={(event) => setRuntimeForm((current) => ({ ...current, remoteApiBaseUrl: event.target.value }))} />
+                  <small>{t("settingsMirrorSourceApiDescription")}</small>
+                </label>
+                <label>
+                  <span>{t("runtimeMirrorRootDir")}</span>
+                  <div className="library-init-path-row">
+                    <input value={runtimeForm.localRootDir} placeholder={t("runtimeMirrorRootDirPlaceholder")} onChange={(event) => setRuntimeForm((current) => ({ ...current, localRootDir: event.target.value }))} />
+                    <button type="button" className="secondary-button" onClick={openDirectoryBrowser}>
+                      {t("hostDirectoryBrowseAction")}
+                    </button>
+                  </div>
+                  <small>{t("settingsMirrorLocalDirDescription")}</small>
+                </label>
+              </>
+            ) : (
+              <>
+                <label>
+                  <span>{t("settingsRootDir")}</span>
+                  <div className="library-init-path-row">
+                    <input value={bindingForm.rootDir} onChange={(event) => setBindingForm({ rootDir: event.target.value })} placeholder={t("settingsRootDirPlaceholder")} />
+                    <button type="button" className="secondary-button" onClick={openDirectoryBrowser}>
+                      {t("hostDirectoryBrowseAction")}
+                    </button>
+                  </div>
+                </label>
+                <LibraryIndexStatusCard binding={binding} status={libraryIndexStatus} />
+              </>
+            )}
+            <button type="submit" className="primary-button">{t("settingsSaveBinding")}</button>
+          </form>
+        </SettingsModule>
+
+        <SettingsModule title={t("settingsConfigTitle")} description={t("settingsTabLibraryDescription")}>
+          <form className="settings-module-form" onSubmit={(event) => void submitConfig(event)}>
+            {isMirrorMode ? (
+              <div className="settings-remote-owner-note" data-tone="danger">
+                <strong>{t("settingsRemoteOwnerTitle")}</strong>
+                <span>{t("settingsMirrorConfigRemoteNotice")}</span>
+              </div>
+            ) : null}
+            {configUnavailable ? <div className="inline-note">{t("settingsConfigUnavailable")} {configUnavailable}</div> : null}
+            <div className="affairs-library-settings-form">
+              <section className="affairs-library-config-section">
+                <div className="affairs-library-behavior-switch-header">
+                  <span className="affairs-library-behavior-switch-title">{t("settingsFolderOpenBehavior")}</span>
+                  <div className="affairs-library-behavior-segmented" role="group" aria-label={t("settingsFolderOpenBehavior")}>
+                    <button
+                      type="button"
+                      className={configForm.folderOpenBehavior === "single_click" ? "active" : ""}
+                      aria-pressed={configForm.folderOpenBehavior === "single_click"}
+                      onClick={() => setConfigForm((current) => ({ ...current, folderOpenBehavior: "single_click" }))}
+                    >
+                      {t("settingsSingleClick")}
+                    </button>
+                    <button
+                      type="button"
+                      className={configForm.folderOpenBehavior === "double_click" ? "active" : ""}
+                      aria-pressed={configForm.folderOpenBehavior === "double_click"}
+                      onClick={() => setConfigForm((current) => ({ ...current, folderOpenBehavior: "double_click" }))}
+                    >
+                      {t("settingsDoubleClick")}
+                    </button>
+                  </div>
+                </div>
+              </section>
+              <section className="affairs-library-config-section affairs-library-filter-switches">
+                <div className="affairs-library-filter-switch-row">
+                  <div className="affairs-library-filter-switch-copy">
+                    <span>{t("settingsHideDotFiles")}</span>
+                    <small>{t("settingsHideDotFilesHint")}</small>
+                  </div>
+                  <MacSwitch
+                    checked={configForm.hideDotFiles}
+                    label={t("settingsHideDotFiles")}
+                    onChange={(checked) => setConfigForm((current) => ({ ...current, hideDotFiles: checked }))}
+                  />
+                </div>
+                <div className="affairs-library-filter-switch-row">
+                  <div className="affairs-library-filter-switch-copy">
+                    <span>{t("settingsHideSystemFolders")}</span>
+                    <small>{t("settingsHideSystemFoldersHint")}</small>
+                  </div>
+                  <MacSwitch
+                    checked={configForm.hideSystemFolders}
+                    label={t("settingsHideSystemFolders")}
+                    onChange={(checked) => setConfigForm((current) => ({ ...current, hideSystemFolders: checked }))}
+                  />
+                </div>
+              </section>
+              <label>
+                <span>{t("settingsIncludedHiddenPaths")}</span>
+                <textarea
+                  value={configForm.includedHiddenPaths}
+                  placeholder={t("settingsIncludedHiddenPathsHint")}
+                  rows={4}
+                  onChange={(event) => setConfigForm((current) => ({ ...current, includedHiddenPaths: event.target.value }))}
+                />
+              </label>
+              <label>
+                <span>{t("settingsAllowedExtensions")}</span>
+                <div className="affairs-extension-chip-list">
+                  {buildAllowedExtensionOptions(configForm.allowedExtensions).map((extension) => {
+                    const selected = configForm.allowedExtensions.includes(extension);
+                    const preset = LIBRARY_PRESET_EXTENSIONS.includes(extension as typeof LIBRARY_PRESET_EXTENSIONS[number]);
+                    return (
+                      <button
+                        key={extension}
+                        type="button"
+                        className={selected ? "affairs-extension-chip active" : "affairs-extension-chip"}
+                        aria-pressed={selected}
+                        data-selected={selected ? "true" : "false"}
+                        onClick={() => toggleAllowedExtension(extension)}
+                      >
+                        <span>{extension}</span>
+                        {!preset ? <span className="affairs-extension-chip-badge">{t("settingsAllowedExtensionsCustomBadge")}</span> : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              </label>
+              <div className="affairs-extension-manual-row">
+                <input
+                  value={configForm.manualExtension}
+                  placeholder={t("settingsAllowedExtensionsCustomPlaceholder")}
+                  onChange={(event) => setConfigForm((current) => ({ ...current, manualExtension: event.target.value }))}
+                />
+                <button type="button" className="secondary-button" onClick={addManualExtension}>
+                  {t("settingsAllowedExtensionsCustomAdd")}
+                </button>
+              </div>
+            </div>
+            <button type="submit" className="primary-button" disabled={Boolean(configUnavailable)}>
+              {t("settingsSaveConfig")}
+            </button>
+          </form>
+        </SettingsModule>
       </section>
     ),
     integration: (
-      <section className="settings-section settings-integration-section">
+      <section className="settings-integration-section">
         <div className="settings-integration-header">
           <div>
             <h2>{t("settingsIntegrationHubTitle")}</h2>
           </div>
-          {isMirrorMode ? (
-            <div className="settings-remote-owner-note" data-tone="danger">
-              <strong>{t("settingsRemoteOwnerTitle")}</strong>
-              <span>{t("settingsMirrorOnlyOfficeRemoteNotice")}</span>
-            </div>
-          ) : null}
         </div>
 
         <div className="settings-integration-cards" role="list" aria-label={t("settingsIntegrationHubTitle")}>
-          <article className="settings-section settings-onlyoffice-card" role="listitem" data-health={onlyOfficeStatus?.state ?? "unknown"}>
-            <div className="settings-heading-row">
-              <div>
-                <h3>{t("settingsOnlyOfficeTitle")}</h3>
+          <AgentIntegrationSettings mirrorMode={isMirrorMode} />
+          <SettingsModule
+            title={t("settingsOnlyOfficeTitle")}
+            description={t("settingsOnlyOfficeDescription")}
+            status={onlyOfficeForm.enabled ? t("settingsIntegrationEnabled") : t("settingsIntegrationDisabled")}
+            listItem
+            defaultExpanded={false}
+          >
+            {isMirrorMode ? (
+              <div className="settings-remote-owner-note" data-tone="danger">
+                <strong>{t("settingsRemoteOwnerTitle")}</strong>
+                <span>{t("settingsMirrorOnlyOfficeRemoteNotice")}</span>
               </div>
-            </div>
+            ) : null}
             <div className="settings-current">
               <span>{t("settingsOnlyOfficeEnabled")}</span>
               <strong>{onlyOfficeForm.enabled ? t("settingsIntegrationEnabled") : t("settingsIntegrationDisabled")}</strong>
@@ -831,67 +830,69 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
                 {onlyOfficeModal.refreshing ? t("healthChecking") : t("settingsOnlyOfficeRefreshStatus")}
               </button>
             </div>
-          </article>
+          </SettingsModule>
 
         </div>
       </section>
     ),
     network: (
-      <form className="settings-section" onSubmit={(event) => void submitServer(event)}>
-        <h2>{t("settingsServerTitle")}</h2>
-        {isMirrorMode ? (
-          <div className="settings-remote-owner-note" data-tone="danger">
-            <strong>{t("settingsRemoteOwnerTitle")}</strong>
-            <span>{t("settingsMirrorServerRemoteNotice")}</span>
+      <SettingsModule title={t("settingsServerTitle")} description={t("settingsTabNetworkDescription")}
+        status={t(serverState?.running ? "settingsServerRunning" : "settingsServerStopped")}>
+        <form className="settings-module-form" onSubmit={(event) => void submitServer(event)}>
+          {isMirrorMode ? (
+            <div className="settings-remote-owner-note" data-tone="danger">
+              <strong>{t("settingsRemoteOwnerTitle")}</strong>
+              <span>{t("settingsMirrorServerRemoteNotice")}</span>
+            </div>
+          ) : null}
+          {serverUnavailable ? <div className="inline-note">{t("settingsServerUnavailable")} {serverUnavailable}</div> : null}
+          <label className="switch-row">
+            <span>{t("settingsServerEnabled")}</span>
+            <MacSwitch
+              checked={serverForm.enabled}
+              label={t("settingsServerEnabled")}
+              onChange={(checked) => setServerForm((current) => ({ ...current, enabled: checked }))}
+            />
+          </label>
+          <label className="switch-row">
+            <span>{t("settingsServerPersistent")}</span>
+            <MacSwitch
+              checked={serverForm.persistent}
+              label={t("settingsServerPersistent")}
+              onChange={(checked) => setServerForm((current) => ({ ...current, persistent: checked }))}
+            />
+          </label>
+          <label>
+            <span>{t("settingsServerPort")}</span>
+            <input
+              type="number"
+              min="1"
+              max="65535"
+              value={serverForm.port}
+              onChange={(event) => setServerForm((current) => ({ ...current, port: event.target.value }))}
+            />
+          </label>
+          <ServerStatus state={serverState} />
+          <div className="button-row">
+            <button type="submit" className="primary-button" disabled={Boolean(serverUnavailable)}>
+              {t("settingsServerSave")}
+            </button>
+            <button type="button" className="secondary-button" onClick={() => void getHttpServerState().then(applyServerState).catch((err) => setServerUnavailable(toApiErrorMessage(err)))}>
+              {t("settingsServerRefresh")}
+            </button>
           </div>
-        ) : null}
-        {serverUnavailable ? <div className="inline-note">{t("settingsServerUnavailable")} {serverUnavailable}</div> : null}
-        <label className="switch-row">
-          <span>{t("settingsServerEnabled")}</span>
-          <MacSwitch
-            checked={serverForm.enabled}
-            label={t("settingsServerEnabled")}
-            onChange={(checked) => setServerForm((current) => ({ ...current, enabled: checked }))}
-          />
-        </label>
-        <label className="switch-row">
-          <span>{t("settingsServerPersistent")}</span>
-          <MacSwitch
-            checked={serverForm.persistent}
-            label={t("settingsServerPersistent")}
-            onChange={(checked) => setServerForm((current) => ({ ...current, persistent: checked }))}
-          />
-        </label>
-        <label>
-          <span>{t("settingsServerPort")}</span>
-          <input
-            type="number"
-            min="1"
-            max="65535"
-            value={serverForm.port}
-            onChange={(event) => setServerForm((current) => ({ ...current, port: event.target.value }))}
-          />
-        </label>
-        <ServerStatus state={serverState} />
-        <div className="button-row">
-          <button type="submit" className="primary-button" disabled={Boolean(serverUnavailable)}>
-            {t("settingsServerSave")}
-          </button>
-          <button type="button" className="secondary-button" onClick={() => void getHttpServerState().then(applyServerState).catch((err) => setServerUnavailable(toApiErrorMessage(err)))}>
-            {t("settingsServerRefresh")}
-          </button>
-        </div>
-      </form>
+        </form>
+      </SettingsModule>
     ),
     updates: (
-      <>
+      <div className="settings-module-stack">
         <UpdatePanel />
         <ResetApplicationSection
           binding={binding}
           isDesktopContext={isDesktopContext}
           onReset={openResetApplicationModal}
         />
-      </>
+      </div>
     )
   };
 
@@ -934,6 +935,7 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
       {error ? <section className="inline-alert">{error}</section> : null}
 
       <section
+        key={activeTab}
         id={`settings-panel-${activeTab}`}
         className="settings-tab-panel"
         role="tabpanel"
@@ -1239,9 +1241,7 @@ function ResetApplicationSection({
   const libraryIndexDir = resolveLibraryIndexDir(binding);
 
   return (
-    <section className="settings-section settings-reset-card">
-      <h2>{t("settingsResetTitle")}</h2>
-      <p>{t("settingsResetDescription")}</p>
+    <SettingsModule title={t("settingsResetTitle")} description={t("settingsResetDescription")}>
       <div className="settings-remote-owner-note" data-tone="danger">
         <strong>{t("settingsResetModalTitle")}</strong>
         <span>{t("settingsResetWarning")}</span>
@@ -1268,7 +1268,7 @@ function ResetApplicationSection({
           {t("settingsResetAction")}
         </button>
       </div>
-    </section>
+    </SettingsModule>
   );
 }
 

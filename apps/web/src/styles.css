@@ -1,4 +1,9 @@
 :root {
+  --settings-module-surface: var(--bg-primary);
+  --settings-module-header-surface: var(--glass-control-surface, var(--panel-bg));
+  --settings-module-padding: var(--space-7);
+  --settings-module-title-size: 13px;
+  --settings-module-description-size: 12px;
   --space-1: 4px;
   --space-2: 6px;
   --space-3: 8px;
@@ -3411,7 +3416,8 @@ mark {
   color: color-mix(in srgb, var(--danger-fg) 84%, var(--text-primary));
 }
 
-.settings-section label {
+.settings-section label,
+.settings-module label {
   display: grid;
   gap: 5px;
   margin-top: 10px;
@@ -3421,11 +3427,15 @@ mark {
 }
 .settings-section input,
 .settings-section select,
-.settings-section textarea {
+.settings-section textarea,
+.settings-module input,
+.settings-module select,
+.settings-module textarea {
   padding: 0 10px;
   min-height: 32px;
 }
-.settings-section textarea {
+.settings-section textarea,
+.settings-module textarea {
   padding-top: 8px;
   min-height: 74px;
   resize: vertical;
@@ -18754,3 +18764,176 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
   }
 
   }
+
+/* 设置模块使用单层折叠，内部分类使用普通分隔线。 */
+.settings-module-stack,
+.settings-module-body,
+.settings-module-form,
+.settings-module-group,
+.settings-agent-form {
+  display: grid;
+  min-width: 0;
+  align-items: start;
+  align-content: start;
+  gap: var(--section-gap);
+}
+
+.settings-module-group + .settings-module-group {
+  padding-block-start: var(--settings-module-padding);
+  border-top: 1px solid var(--glass-control-border, var(--border-primary));
+}
+
+.settings-module-group h4 {
+  margin: 0;
+}
+
+.settings-module {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--glass-control-border, var(--border-primary));
+  border-radius: var(--radius-control);
+  background: var(--settings-module-surface);
+  box-shadow: var(--glass-control-shadow, var(--panel-shadow));
+}
+
+.settings-module-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  background: var(--settings-module-header-surface);
+}
+
+.settings-module-heading {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+}
+
+.settings-module-toggle {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--settings-module-padding);
+  text-align: start;
+}
+
+.settings-module-toggle:hover {
+  background: var(--bg-hover);
+}
+
+.settings-module-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: var(--radius-control);
+}
+
+.settings-module-chevron {
+  flex: 0 0 auto;
+  width: var(--space-7);
+  height: var(--space-7);
+  color: var(--text-secondary);
+}
+
+.settings-module-toggle[aria-expanded="true"] .settings-module-chevron {
+  transform: rotate(90deg);
+}
+
+.settings-module-copy {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-1);
+  overflow-wrap: anywhere;
+}
+
+.settings-module-title {
+  color: var(--text-primary);
+  font-size: var(--settings-module-title-size);
+  font-weight: 600;
+}
+
+.settings-module-description,
+.settings-module-status {
+  color: var(--text-secondary);
+  font-size: var(--settings-module-description-size);
+  font-weight: 400;
+  line-height: 1.55;
+}
+
+.settings-module-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding-inline-end: var(--settings-module-padding);
+}
+
+.settings-module-actions .mac-switch {
+  flex-shrink: 0;
+}
+
+.settings-module-body {
+  padding: var(--settings-module-padding);
+  border-top: 1px solid var(--glass-control-border, var(--border-primary));
+}
+
+.settings-module-body[hidden] {
+  display: none;
+}
+
+.settings-module p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--settings-module-description-size);
+  line-height: 1.55;
+}
+
+.settings-module-feedback {
+  padding: var(--space-3) var(--settings-module-padding);
+}
+
+.settings-module-form > .primary-button {
+  justify-self: start;
+}
+
+.settings-module .settings-heading-row {
+  flex-wrap: wrap;
+}
+
+.settings-code-block {
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  padding: var(--panel-padding);
+  overflow: auto;
+  border: 1px solid var(--glass-control-border, var(--border-primary));
+  border-radius: var(--radius-control);
+  background: var(--code-block-surface);
+  color: var(--code-block-text);
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+
+.settings-module label {
+  margin-top: 0;
+  font-weight: 500;
+}
+
+@media (max-width: 640px) {
+  .settings-module {
+    --settings-module-padding: var(--space-5);
+  }
+
+  .settings-module-header {
+    flex-wrap: wrap;
+    gap: 0;
+  }
+
+  .settings-module-actions {
+    margin-inline-start: auto;
+    padding-inline-start: var(--settings-module-padding);
+    padding-block-end: var(--space-3);
+  }
+}

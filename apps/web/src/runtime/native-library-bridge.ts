@@ -1,4 +1,7 @@
 import type {
+  AgentIntegrationSettings,
+  AgentIntegrationSettingsSaved,
+  SaveAgentIntegrationSettingsInput,
   HttpServerState,
   HostDirectoryBrowseResult,
   LibraryBinding,
@@ -23,6 +26,16 @@ import type {
   SaveLibraryConfigInput,
   UpdateOnlyOfficeSettingsInput,
 } from "@x-file/shared";
+
+export async function getNativeAgentIntegrationSettings(): Promise<AgentIntegrationSettings | null> {
+  return invokeOptional<AgentIntegrationSettings>("native_get_agent_integration_settings");
+}
+
+export async function saveNativeAgentIntegrationSettings(
+  input: SaveAgentIntegrationSettingsInput,
+): Promise<AgentIntegrationSettingsSaved | null> {
+  return invokeOptional<AgentIntegrationSettingsSaved>("native_save_agent_integration_settings", { input });
+}
 
 export interface NativeLibraryWatcherStatus {
   active: boolean;

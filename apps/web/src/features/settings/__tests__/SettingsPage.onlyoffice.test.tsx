@@ -55,6 +55,9 @@ describe("SettingsPage OnlyOffice 设置区", () => {
 
     await userEvent.click(await screen.findByRole("tab", { name: /集成服务/ }));
 
+    const onlyOfficeModule = screen.getByRole("button", { name: "OnlyOffice" });
+    expect(onlyOfficeModule).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(onlyOfficeModule);
     expect(await screen.findByText("Office 集成")).toBeInTheDocument();
     expect(screen.getAllByText("可用").length).toBeGreaterThan(0);
     expect(screen.getByText("ONLYOFFICE 服务地址")).toBeInTheDocument();
@@ -86,6 +89,7 @@ describe("SettingsPage OnlyOffice 设置区", () => {
     expect((await screen.findAllByText("镜像模式", { selector: ".settings-runtime-badge" })).length).toBeGreaterThan(0);
 
     await userEvent.click(await screen.findByRole("tab", { name: /集成服务/ }));
+    await userEvent.click(screen.getByRole("button", { name: "OnlyOffice" }));
     expect(screen.getByText("主服务端设置")).toBeInTheDocument();
     expect(
       screen.getByText(
