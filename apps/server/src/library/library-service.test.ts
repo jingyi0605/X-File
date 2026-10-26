@@ -422,6 +422,39 @@ test("最近时间标签按当前本地日期计算，旧标签、分页和跨�
   assert.deepEqual(query(recentTags[0]!).items.map((item) => item.path), ["day--1.md", "day-0.md"]);
 });
 
+test("近期筛选优先读取原生运行时快照，兼容旧导出滞后或缺失", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date(2026, 9, 26, 12) });
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "x-file-runtime-recent-"));
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+  const rootDir = path.join(tempDir, "library");
+  writeExportFixture(rootDir);
+  const runtimeDir = path.join(rootDir, ".ai-index/runtime");
+  fs.mkdirSync(runtimeDir, { recursive: true });
+  fs.writeFileSync(path.join(runtimeDir, "export-catalog-snapshot.json"), JSON.stringify({
+    version: 1, generatedAt: new Date().toISOString(), tags: [],
+    documents: [{
+      documentId: "recent", path: "recent.md", title: "近期文件", summary: "",
+      mtime: new Date(2026, 9, 26, 10).toISOString(), tags: [], derivedTags: [],
+    }],
+  }));
+  const service = new LibraryService(
+    new LibraryBindingStore({ dataDir: path.join(tempDir, "data") }),
+    new LibraryExportReader(),
+    null,
+  );
+  service.saveBinding({ rootDir, completeInitialization: true });
+  const verify = () => {
+    const list = service.listDocuments({ browseMode: "tag", selectedTagPath: "时间/最近3天" });
+    assert.deepEqual(list.items.map((item) => item.path), ["recent.md"]);
+    const snapshot = service.getSnapshot();
+    assert.equal(snapshot.documentCount, 1);
+    assert.equal(snapshot.tags.find((tag) => tag.path === "时间/最近3天")?.documentCount, 1);
+  };
+  verify();
+  fs.unlinkSync(path.join(rootDir, ".ai-index/exports/manifest.json"));
+  verify();
+});
+
 test("listDocuments 对当前页文档补全大小与创建时间（对齐父仓库 stat 补全）", () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "x-file-library-stats-"));
   const rootDir = path.join(tempDir, "library");

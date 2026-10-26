@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { readCatalogSnapshot, type CatalogSnapshot } from "@x-file/indexer";
 
 import type {
   LibraryBinding,
@@ -108,7 +109,6 @@ interface SearchManifestFile {
 }
 
 const searchTermViews = new WeakMap<SearchBucketFile, Map<string, SearchBucketPosting>>();
-
 const RECENT_TIME_TAGS = [
   { path: "时间/最近3天", days: 3 },
   { path: "时间/最近7天", days: 7 },
@@ -116,7 +116,7 @@ const RECENT_TIME_TAGS = [
 ] as const;
 
 export class LibraryExportReader {
-  private readonly documentViews = new WeakMap<ManifestFile, LibraryDocumentRecord[]>();
+  private readonly documentViews = new WeakMap<ManifestFile | CatalogSnapshot, LibraryDocumentRecord[]>();
   readSnapshot(
     binding: LibraryBinding | null,
     fallbackStatus: LibraryIndexStatus,
@@ -138,9 +138,10 @@ export class LibraryExportReader {
     }
 
     const exportDir = resolveExportDir(binding.rootDir);
+    const catalog = readCatalogSnapshot(binding.rootDir);
     const manifest = readJson<ManifestFile>(
       path.join(exportDir, "manifest.json"),
-    );
+    ) ?? (catalog ? { generated_at: catalog.generatedAt } : null);
     if (!manifest) {
       return emptySnapshot(binding, fallbackStatus, favorites);
     }
@@ -148,9 +149,9 @@ export class LibraryExportReader {
     const statusFile = readJson<StatusFile>(
       path.join(exportDir, manifest.entries?.status ?? "status.json"),
     );
-    const documents = refreshRecentTimeTags(this.readDocumentsFromManifest(exportDir, manifest));
+    const documents = refreshRecentTimeTags(this.readDocuments(exportDir, manifest, catalog));
     const tagCounts = countTags(documents);
-    const documentCount = statusFile?.document_count ?? documents.length;
+    const documentCount = catalog?.documents.length ?? statusFile?.document_count ?? documents.length;
     return {
       binding,
       defaultRootDir: resolveDefaultLibraryRootDir(),
@@ -160,6 +161,7 @@ export class LibraryExportReader {
         ...fallbackStatus,
         lastCompletedAt:
           fallbackStatus.lastCompletedAt ??
+          catalog?.generatedAt ??
           statusFile?.exported_at ??
           manifest.generated_at ??
           null,
@@ -169,7 +171,7 @@ export class LibraryExportReader {
         dirtyReasons: fallbackStatus.dirtyReasons,
         runtimeIndexState: fallbackStatus.runtimeIndexState ?? null,
       },
-      tags: readTags(exportDir, manifest, tagCounts),
+      tags: readTags(exportDir, manifest, tagCounts, catalog),
       favorites,
       folders: readFolders(exportDir, manifest),
       documentCount,
@@ -186,14 +188,15 @@ export class LibraryExportReader {
     }
 
     const exportDir = resolveExportDir(binding.rootDir);
+    const catalog = readCatalogSnapshot(binding.rootDir);
     const manifest = readJson<ManifestFile>(
       path.join(exportDir, "manifest.json"),
-    );
+    ) ?? (catalog ? { generated_at: catalog.generatedAt } : null);
     if (!manifest) {
       return emptyDocumentList(input);
     }
 
-    const allDocuments = refreshRecentTimeTags(this.readDocumentsFromManifest(exportDir, manifest));
+    const allDocuments = refreshRecentTimeTags(this.readDocuments(exportDir, manifest, catalog));
     const searchMatch = readOfflineSearchMatchState(exportDir, input.keyword);
     const filtered = filterDocuments(
       markFavoriteDocuments(allDocuments, input.favorites ?? []),
@@ -219,21 +222,40 @@ export class LibraryExportReader {
         state: "fresh",
         source: "snapshot",
         lastRequestedAt: null,
-        lastCompletedAt: manifest.generated_at ?? null,
+        lastCompletedAt: catalog?.generatedAt ?? manifest.generated_at ?? null,
         lastFailedAt: null,
         runningTaskId: null,
         errorSummary: null,
-        generatedAt: manifest.generated_at ?? null,
+        generatedAt: catalog?.generatedAt ?? manifest.generated_at ?? null,
       },
     };
   }
 
-  private readDocumentsFromManifest(
+  private readDocuments(
     exportDir: string,
     manifest: ManifestFile,
+    catalog: CatalogSnapshot | null,
   ): LibraryDocumentRecord[] {
-    const cached = this.documentViews.get(manifest);
+    const source = catalog ?? manifest;
+    const cached = this.documentViews.get(source);
     if (cached) return cached;
+    // 与桌面端使用同一份原生快照，避免旧导出分片的修改时间和标签滞后。
+    if (catalog) {
+      const documents = catalog.documents.map((document): LibraryDocumentRecord => ({
+        documentId: document.documentId,
+        path: normalizeDocumentPath(document.path),
+        title: document.title?.trim() || path.posix.basename(document.path),
+        summary: document.summary ?? "",
+        updatedAt: document.mtime ?? catalog.generatedAt ?? new Date(0).toISOString(),
+        createdAt: null,
+        sizeBytes: null,
+        tags: document.tags ?? [],
+        derivedTags: document.derivedTags ?? [],
+        isFavorite: false,
+      })).sort((left, right) => left.path.localeCompare(right.path, "zh-Hans-CN"));
+      this.documentViews.set(source, documents);
+      return documents;
+    }
     const documents: LibraryDocumentRecord[] = [];
     for (const shard of manifest.meta_shards ?? []) {
       const shardFile = readJson<MetaShardFile>(
@@ -260,7 +282,7 @@ export class LibraryExportReader {
       }
     }
     documents.sort((left, right) => left.path.localeCompare(right.path, "zh-Hans-CN"));
-    this.documentViews.set(manifest, documents);
+    this.documentViews.set(source, documents);
     return documents;
   }
 }
@@ -348,11 +370,15 @@ function readTags(
   exportDir: string,
   manifest: ManifestFile,
   tagCounts: Record<string, number>,
+  catalog: CatalogSnapshot | null,
 ): LibraryTagNode[] {
-  const taxonomy = readJson<TaxonomyFile>(
+  const taxonomy = catalog ? null : readJson<TaxonomyFile>(
     path.join(exportDir, manifest.entries?.taxonomy ?? "taxonomy.json"),
   );
-  const tags: LibraryTagNode[] = (taxonomy?.nodes ?? []).map((node) => ({
+  const tags: LibraryTagNode[] = catalog ? catalog.tags.map((node) => ({
+    ...node,
+    documentCount: tagCounts[node.path] ?? 0,
+  })) : (taxonomy?.nodes ?? []).map((node) => ({
     path: node.path,
     name: node.name,
     rootType: node.root_type,
