@@ -3282,6 +3282,8 @@ fn read_local_library_documents(
         _ => items.sort_by(|left, right| left.path.cmp(&right.path)),
     }
     let total = items.len();
+    // 标签树统计完整筛选结果，避免计数和可见节点随分页变化。
+    let tag_facet_counts = count_document_tag_facets(&items);
     let mut paged_items = items
         .into_iter()
         .skip(offset)
@@ -3293,8 +3295,6 @@ fn read_local_library_documents(
             item.size_bytes = Some(metadata.len());
         }
     }
-    let tag_facet_counts = count_document_tag_facets(&paged_items);
-
     Ok(LocalLibraryDocumentList {
         total,
         visible_entry_total: total,
@@ -6238,6 +6238,112 @@ mod tests {
                 paths.extend(page.items.into_iter().map(|item| item.path));
             }
             assert_eq!(paths, expected);
+        }
+    }
+
+    #[test]
+    fn native_标签交叉计数覆盖完整交集且不随分页变化() {
+        let _guard = test_env_lock().lock().expect("测试环境锁被污染");
+        let temp_root = env::temp_dir().join(format!("x-file-tag-facets-{}", epoch_millis()));
+        let data_dir = temp_root.join("data");
+        let library_root = temp_root.join("library");
+        fs::create_dir_all(&data_dir).expect("创建测试数据目录失败");
+        write_json_file(
+            &data_dir.join("library-binding.json"),
+            &json!({
+                "libraryId": "default", "rootDir": library_root.to_string_lossy(),
+                "enabled": true, "allowedExtensions": [".md"], "includedHiddenPaths": [],
+                "folderOpenBehavior": "double_click",
+                "configRelativePath": ".ai-index/doc-semantic-index.config.json",
+                "exportMode": "v2", "initialized": true,
+                "initializedAt": "2026-10-26T00:00:00Z", "updatedAt": "2026-10-26T00:00:00Z"
+            }),
+        ).expect("写入测试绑定失败");
+        let work = "工作/售前";
+        let maidige = "客户/麦迪格";
+        let dongyue = "客户/东岳";
+        let documents = (0..654).map(|index| {
+            let presales = index < 60 || index >= 501;
+            let mut tags = Vec::new();
+            let mut derived_tags = vec!["类型/文本/Markdown"];
+            if presales {
+                tags.push(work);
+                derived_tags.push(work);
+            }
+            if (56..501).contains(&index) {
+                tags.push(maidige);
+            } else if index >= 501 {
+                tags.push(dongyue);
+            }
+            json!({
+                "documentId": format!("doc-{index:04}"), "path": format!("{index:04}.md"),
+                "title": "测试", "summary": "", "mtime": "2026-10-26T00:00:00Z",
+                "tags": tags, "derivedTags": derived_tags
+            })
+        }).collect::<Vec<_>>();
+        write_json_file(
+            &library_root.join(".ai-index/runtime/export-catalog-snapshot.json"),
+            &json!({
+                "version": 1, "generatedAt": "2026-10-26T00:00:00Z",
+                "tags": [], "documents": documents
+            }),
+        ).expect("写入测试快照失败");
+
+        let previous_data_dir = env::var("X_FILE_DATA_DIR").ok();
+        unsafe { env::set_var("X_FILE_DATA_DIR", &data_dir); }
+        let mut results = Vec::new();
+        for (selected, total, maidige_count, dongyue_count, work_count) in [
+            (vec![], 654, 445, 153, 213),
+            (vec![work], 213, 4, 153, 213),
+            (vec![work, maidige], 4, 4, 0, 4),
+            (vec![dongyue], 153, 0, 153, 153),
+            (vec![work, dongyue], 153, 0, 153, 153),
+        ] {
+            for limit in [17, 60] {
+                let mut pages = Vec::new();
+                for offset in (0..total + limit).step_by(limit) {
+                    let request = serde_json::from_value(json!({
+                        "browseMode": "tag", "selectedTagPaths": selected,
+                        "offset": offset, "limit": limit
+                    })).expect("解析测试请求失败");
+                    pages.push(read_local_library_documents(request));
+                }
+                results.push((selected.clone(), total, maidige_count, dongyue_count, work_count, pages));
+            }
+        }
+        match previous_data_dir {
+            Some(value) => unsafe { env::set_var("X_FILE_DATA_DIR", value); },
+            None => unsafe { env::remove_var("X_FILE_DATA_DIR"); },
+        }
+        fs::remove_dir_all(&temp_root).ok();
+
+        for (selected, total, maidige_count, dongyue_count, work_count, pages) in results {
+            let mut first_counts = None;
+            let mut ids = HashSet::new();
+            for page in pages {
+                let page = page.expect("读取测试分页失败");
+                assert_eq!(page.total, total);
+                assert!(page.items.len() <= page.limit);
+                for (path, expected) in [
+                    (maidige, maidige_count), (dongyue, dongyue_count), (work, work_count),
+                    ("客户", maidige_count + dongyue_count), ("工作", work_count),
+                    ("类型", total), ("类型/文本", total),
+                ] {
+                    assert_eq!(page.tag_facet_counts.get(path).copied().unwrap_or(0), expected, "{selected:?}: {path}");
+                }
+                if let Some(counts) = &first_counts {
+                    assert_eq!(&page.tag_facet_counts, counts);
+                } else {
+                    first_counts = Some(page.tag_facet_counts.clone());
+                }
+                for document in page.items {
+                    assert!(selected.iter().all(|path| {
+                        document.tags.iter().chain(document.derived_tags.iter()).any(|tag| tag == path)
+                    }));
+                    assert!(ids.insert(document.document_id));
+                }
+            }
+            assert_eq!(ids.len(), total);
         }
     }
 
