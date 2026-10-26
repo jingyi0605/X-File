@@ -1748,8 +1748,9 @@ function LibraryTagTreeNode({
   depth?: number;
 }) {
   const hasChildren = node.children.length > 0;
+  const isGroupRoot = LIBRARY_TAG_TREE_DEFAULT_ROOTS.has(node.path);
   const expanded = forceExpanded || (hasChildren && expandedPaths.includes(node.path));
-  const active = selectedTagPaths.includes(node.path);
+  const active = !isGroupRoot && selectedTagPaths.includes(node.path);
   const showAllChildren = forceExpanded || expandedMorePaths.includes(node.path);
   const visibleChildren = showAllChildren
     ? node.children
@@ -1780,7 +1781,8 @@ function LibraryTagTreeNode({
           <button
             type="button"
             className="affairs-sidebar-item-button affairs-sidebar-item-button-content"
-            onClick={() => onSelect(node.path)}
+            aria-expanded={isGroupRoot && hasChildren ? expanded : undefined}
+            onClick={() => isGroupRoot ? onToggleExpand(node.path) : onSelect(node.path)}
           >
             <div className="affairs-sidebar-item-row">
               <span className="affairs-sidebar-item-title" title={node.label}>{node.label}</span>

@@ -50,6 +50,87 @@ describe("第 8 批：标签筛选树、多选过滤、徽标计数、排序、�
     expect(within(tree).queryByRole("button", { name: /状态/ })).not.toBeInTheDocument();
   });
 
+  it.each([
+    ["时间", "time"],
+    ["类型", "type"],
+    ["time", "time"],
+    ["type", "type"],
+  ] as const)("%s 根标签点击仅切换展开状态，并保留子标签筛选", async (root, rootType) => {
+    const childPath = `${root}/分组`;
+    mockTags([
+      tag(root, 2, { rootType }),
+      tag(childPath, 2, { rootType, parentPath: root, depth: 1 }),
+      tag(`${childPath}/文档`, 1, { rootType, parentPath: childPath, depth: 2 }),
+    ]);
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={() => undefined} platformData={platformData} />);
+
+    const tree = await screen.findByRole("tree", { name: "标签树" });
+    const rootItem = within(tree).getByRole("treeitem", { name: root });
+    const rootButton = within(rootItem).getByRole("button", { name: `${root} 2` });
+    const initialRequestCount = libraryApiMock.listLibraryDocuments.mock.calls.length;
+
+    expect(rootButton).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(rootButton);
+    expect(rootItem).toHaveAttribute("aria-expanded", "true");
+    expect(rootButton).toHaveAttribute("aria-expanded", "true");
+    expect(within(rootItem).getByRole("button", { name: "分组 2" })).toBeInTheDocument();
+
+    await userEvent.click(rootButton);
+    expect(rootItem).toHaveAttribute("aria-expanded", "false");
+    expect(within(rootItem).queryByRole("group")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("清除标签筛选")).not.toBeInTheDocument();
+    expect(libraryApiMock.listLibraryDocuments).toHaveBeenCalledTimes(initialRequestCount);
+
+    await userEvent.click(within(rootItem).getByRole("button", { name: "展开标签" }));
+    await userEvent.click(within(rootItem).getByRole("button", { name: "分组 2" }));
+    await waitFor(() => {
+      expect(libraryApiMock.listLibraryDocuments).toHaveBeenLastCalledWith(expect.objectContaining({
+        browseMode: "tag",
+        selectedTagPaths: [childPath],
+      }));
+    });
+
+    const filteredRequestCount = libraryApiMock.listLibraryDocuments.mock.calls.length;
+    await userEvent.click(rootButton);
+    expect(rootItem).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByLabelText("清除标签筛选")).toBeInTheDocument();
+
+    rootButton.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(rootItem).toHaveAttribute("aria-expanded", "true");
+    expect(rootButton.closest(".affairs-sidebar-item")).not.toHaveClass("active");
+    expect(within(rootItem).getByRole("button", { name: /分组/ }).closest(".affairs-sidebar-item"))
+      .toHaveClass("active");
+    expect(libraryApiMock.listLibraryDocuments).toHaveBeenCalledTimes(filteredRequestCount);
+  });
+
+  it("自定义根标签仍可点击筛选", async () => {
+    mockTags([
+      tag("项目", 2),
+      tag("项目/时间", 1, { parentPath: "项目", depth: 1 }),
+    ]);
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={() => undefined} platformData={platformData} />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "项目 2" }));
+    await waitFor(() => {
+      expect(libraryApiMock.listLibraryDocuments).toHaveBeenLastCalledWith(expect.objectContaining({
+        browseMode: "tag",
+        selectedTagPaths: ["项目"],
+      }));
+    });
+    await expandTag("项目");
+    await userEvent.click(screen.getByRole("button", { name: /时间/ }));
+    await waitFor(() => {
+      expect(libraryApiMock.listLibraryDocuments).toHaveBeenLastCalledWith(expect.objectContaining({
+        selectedTagPaths: ["项目/时间"],
+      }));
+    });
+  });
+
   it("标签树路径会在面包屑里显示每一级标签名称", async () => {
     mockTags([
       tag("项目", 3),
