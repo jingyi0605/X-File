@@ -16,7 +16,7 @@ const DETAIL_MIN = 240;
 const MAIN_MIN = 420;
 
 // 未自定义时的默认宽度，需与 styles.css 里 .workbench-window 的默认列宽一致。
-export const DEFAULT_SIDEBAR = 272;
+export const DEFAULT_SIDEBAR = 240;
 export const DEFAULT_DETAIL = 340;
 
 const STORAGE_KEY = "x-file.library.panel-sizes";
