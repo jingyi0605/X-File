@@ -58,4 +58,4 @@ pnpm --filter @x-file/desktop build
 - 外部后端托管入口依赖调用方提供的 Node 运行时；正式包不携带 Node runtime 或内置助手插件。
 - `scripts/archive/20260616/prepare-bundled-server.mjs` 会清理旧 Node 资源与内置助手插件，并写出 `apps/desktop/src-tauri/resources/x-file-resource-boundary.json`，用于记录主包资源边界和宿主查找优先级。
 
-桌面端不再提供内置 AI / 文件助手，已删除供应商检测、会话入口和助手专用插件管理命令。后续外部 Agent 将通过 MCP、CLI 与 SKILL 接入；本轮尚未实现完整工具面。
+桌面端不再提供内置 AI / 文件助手，已删除供应商检测、会话入口和助手专用插件管理命令。原生可执行文件新增 `cli` 和 `mcp` 子命令，提供 31 项共享工具及内嵌 SKILL；这两个入口不启动桌面窗口或 Node 服务。在设置的「集成服务」配置 API Key 并启用外部 Agent（默认关闭），调用进程使用 `X_FILE_AGENT_API_KEY` 环境变量；同页提供 MCP/CLI 配置和 SKILL 安装命令。接入说明见根目录 `docs/20261026-外部Agent工具接入说明.md`。

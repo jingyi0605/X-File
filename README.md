@@ -117,9 +117,17 @@ PUT /api/server/state
 
 X-File 不再提供内置 AI 助手或文件助手，也不再内置 Codex、Claude Code 的对话、会话、权限审批和供应商插件。已有文档管理、预览、索引、标签及 ONLYOFFICE 功能继续保留；本次移除不会主动清理用户磁盘上的历史助手数据。
 
-后续将提供完整 MCP 工具和 CLI 工具，并通过 SKILL 描述工具发现、参数、结果和错误处理，让外部 Agent 直接调用文档库能力。完整 MCP / CLI / SKILL 接入尚未实现；当前原生 CLI 主要用于索引任务，现有 HTTP 集成状态接口也不等同于 MCP server。
+已提供 31 项原生工具，通过 CLI 和 MCP stdio 共用工具目录、JSON Schema、结果格式与业务实现。覆盖资料库配置、检索、文件、标签、收藏、索引和 ONLYOFFICE；配套 `skills/x-file/SKILL.md` 帮助外部 Agent 发现和调用能力。无需启动图形窗口或 Node 后端。
 
-范围与验收见 `specs/spec004-X-File移除内置助手与外部Agent接入/`。
+```bash
+apps/desktop/src-tauri/target/debug/x-file-desktop cli list
+apps/desktop/src-tauri/target/debug/x-file-desktop cli call xfile_status
+apps/desktop/src-tauri/target/debug/x-file-desktop mcp
+```
+
+在「设置 → 集成服务 → 外部 Agent 接入」配置 API Key 并启用（默认关闭）。CLI/MCP 使用 `X_FILE_AGENT_API_KEY` 环境变量；设置页提供只读配置模板和 SKILL 安装命令。
+
+构建和接入说明见 `docs/20261026-外部Agent工具接入说明.md`。范围与验收见 `specs/spec004-X-File移除内置助手与外部Agent接入/`。本阶段不提供远程 MCP HTTP 或远程认证。
 
 ## CodingNS 集成入口
 

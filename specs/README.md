@@ -6,7 +6,8 @@
 
 - `spec004-X-File移除内置助手与外部Agent接入`
   - 移除内置 AI / 文件助手及专用运行时和打包资源。
-  - 后续通过 MCP、CLI 与 SKILL 为外部 Agent 提供工具，本轮不实现完整外部工具。
+  - 提供 31 项原生共享工具，覆盖 CLI、MCP stdio 与可分发/内嵌 SKILL；扩展方案与验收继续记录在本 Spec。
+  - 设置支持接入开关、API Key 管理、推荐配置和 SKILL 安装指引；本机 CLI/MCP 强制校验。
 
 - `spec002-X-File内置文档引擎与集成插件化`
   - 把 X-File 的文档库重任务收进内置 sidecar，同时把 assistant / CLI 改成可选 Integration Plugin。
