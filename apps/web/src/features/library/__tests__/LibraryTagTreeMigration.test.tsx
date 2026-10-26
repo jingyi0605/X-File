@@ -188,6 +188,30 @@ describe("第 8 批：标签筛选树、多选过滤、徽标计数、排序、�
     expect(projectChildren[0]).toContain("高频");
   });
 
+  it("年份和月份按数字降序排列，不受文档数量和输入顺序影响", async () => {
+    mockTags([
+      tag("时间", 60, { rootType: "time" }),
+      ...["2024", "2025", "2026"].map((year, index) =>
+        tag(`时间/${year}`, 30 - index * 10, { rootType: "time", parentPath: "时间", depth: 1 }),
+      ),
+      ...["02", "12", "9"].map((month, index) =>
+        tag(`时间/2026/${month}`, 3 - index, { rootType: "time", parentPath: "时间/2026", depth: 2 }),
+      ),
+    ]);
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={() => undefined} platformData={platformData} />);
+
+    await expandTag("时间");
+    const timeRoot = screen.getByRole("treeitem", { name: "时间" });
+    const timeChildren = timeRoot.querySelectorAll(":scope > [role=group] > [role=treeitem]");
+    expect(Array.from(timeChildren, (child) => child.getAttribute("aria-label")))
+      .toEqual(["2026", "2025", "2024"]);
+
+    await expandTag("2026");
+    expect(childTitlesOf("2026")).toEqual(["122", "91", "023"]);
+  });
+
   it("每层标签默认最多显示 5 个，并记住展开更多状态", async () => {
     mockTags([
       tag("项目", 21),

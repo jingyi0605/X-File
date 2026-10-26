@@ -9027,7 +9027,8 @@ function buildLibraryTagTree(tags: LibraryTagNode[]): LibraryTagTreeNodeRecord[]
       return leftOrder - rightOrder;
     }
     if (isTimeLibraryTagPath(left.path) && isTimeLibraryTagPath(right.path)) {
-      return getTimeTagOrder(left.label) - getTimeTagOrder(right.label);
+      return getTimeTagOrder(left.label) - getTimeTagOrder(right.label)
+        || right.label.localeCompare(left.label, "zh-CN", { numeric: true });
     }
     if (left.count !== right.count) {
       return right.count - left.count;
