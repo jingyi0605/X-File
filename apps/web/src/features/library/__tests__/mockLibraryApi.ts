@@ -34,6 +34,8 @@ export const libraryApiMock = {
   listLibraryFiles: vi.fn(),
   listLibraryTagDetails: vi.fn(),
   listLibraryTags: vi.fn(),
+  listLibraryTasks: vi.fn(),
+  listenLibraryTaskUpdates: vi.fn(),
   operateLibraryFile: vi.fn(),
   requestLibraryRefresh: vi.fn(),
   requestLibraryTagRecompute: vi.fn(),
@@ -67,10 +69,15 @@ export function resetLibraryApiMock(): void {
     lifecycleState: "disabled",
     startedAt: null,
     lastError: null,
+    authEnabled: false,
+    authConfigured: false,
+    authUsername: null,
   });
   libraryApiMock.getOnlyOfficeSettings.mockResolvedValue(createOnlyOfficeSettings());
   libraryApiMock.getOnlyOfficeStatus.mockResolvedValue(createOnlyOfficeStatus());
   libraryApiMock.listLibraryTags.mockResolvedValue([]);
+  libraryApiMock.listLibraryTasks.mockResolvedValue([]);
+  libraryApiMock.listenLibraryTaskUpdates.mockResolvedValue(() => {});
   libraryApiMock.listLibraryDocuments.mockResolvedValue(createDocumentList());
   libraryApiMock.listLibraryFiles.mockResolvedValue(createFileList());
   libraryApiMock.getDocumentTagDetails.mockResolvedValue(createDocumentTagDetails());

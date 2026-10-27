@@ -737,3 +737,20 @@ export interface LibraryTagRecomputeTask {
   runningStage: string | null;
   deduped?: boolean;
 }
+import type { LibraryTask } from "@x-file/shared";
+import { listNativeLibraryTasks, listenNativeLibraryTasks } from "../runtime/native-library-bridge";
+
+export async function listenLibraryTaskUpdates(onUpdate: (task: LibraryTask) => void): Promise<() => void> {
+  return shouldUseNativeLibraryBridge() ? listenNativeLibraryTasks(onUpdate) : () => {};
+}
+
+export async function listLibraryTasks(): Promise<LibraryTask[]> {
+  if (shouldUseNativeLibraryBridge()) {
+    const tasks = await listNativeLibraryTasks();
+    if (tasks === null) {
+      throw new Error("本地模式缺少 native_list_library_tasks");
+    }
+    return tasks;
+  }
+  return apiRequest<LibraryTask[]>("/api/library/tasks");
+}

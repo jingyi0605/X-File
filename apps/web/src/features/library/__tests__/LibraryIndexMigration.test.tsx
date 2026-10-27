@@ -68,33 +68,36 @@ describe("第 6 批：索引状态、刷新策略和缓存替换", () => {
     const { LibraryPage } = await import("../LibraryPage");
     render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
 
-    const indicator = await screen.findByRole("button", { name: /索引状态.*正在刷新/ });
-    expect(screen.queryByText("文档库索引器状态")).not.toBeInTheDocument();
+    const indicator = await screen.findByRole("button", { name: /任务中心.*正在刷新/ });
+    expect(screen.queryByRole("dialog", { name: "任务中心" })).not.toBeInTheDocument();
 
     // 顶部索引状态按钮不再展示长句进度说明
     expect(screen.queryByText("已处理 12，其中新增索引 3，失败 0")).not.toBeInTheDocument();
 
     await userEvent.hover(indicator);
 
-    const popover = await screen.findByRole("dialog", { name: "文档库索引器状态" });
-    expect(within(popover).getByText("当前状态")).toBeInTheDocument();
-    expect(within(popover).getByText("正在刷新")).toBeInTheDocument();
-    expect(within(popover).getByText("运行阶段")).toBeInTheDocument();
-    expect(within(popover).getByText("导出搜索索引")).toBeInTheDocument();
+    const popover = await screen.findByRole("dialog", { name: "任务中心" });
+    expect(within(popover).queryByText("索引总数")).not.toBeInTheDocument();
+    await userEvent.click(within(popover).getByRole("button", { name: "文档库索引" }));
+    const indexDetails = within(popover).getByRole("region", { name: "文档库索引器状态" });
+    expect(within(indexDetails).getByText("当前状态")).toBeInTheDocument();
+    expect(within(indexDetails).getByText("正在刷新")).toBeInTheDocument();
+    expect(within(indexDetails).getByText("运行阶段")).toBeInTheDocument();
+    expect(within(indexDetails).getByText("导出搜索索引")).toBeInTheDocument();
     // 错误摘要出现在主信息区（始终可见）
-    expect(within(popover).getByText("错误摘要")).toBeInTheDocument();
-    expect(within(popover).getByText("测试错误摘要")).toBeInTheDocument();
+    expect(within(indexDetails).getByText("错误摘要")).toBeInTheDocument();
+    expect(within(indexDetails).getByText("测试错误摘要")).toBeInTheDocument();
 
     // 摘要指标四栏：已扫描数量 / 已索引数量 等标签可见
-    expect(within(popover).getByText("已扫描数量")).toBeInTheDocument();
-    expect(within(popover).getByText("已索引数量")).toBeInTheDocument();
+    expect(within(indexDetails).getByText("已扫描数量")).toBeInTheDocument();
+    expect(within(indexDetails).getByText("已索引数量")).toBeInTheDocument();
 
     // 技术详情默认折叠，点击展开后才显示时间线
-    const technicalToggle = within(popover).getByRole("button", { name: "技术详情" });
-    expect(within(popover).queryByText("最近完成")).not.toBeInTheDocument();
+    const technicalToggle = within(indexDetails).getByRole("button", { name: "技术详情" });
+    expect(within(indexDetails).queryByText("最近完成")).not.toBeInTheDocument();
     await userEvent.click(technicalToggle);
 
-    const technical = within(popover).getByText("最近完成");
+    const technical = within(indexDetails).getByText("最近完成");
     expect(technical).toBeInTheDocument();
   });
 
@@ -127,9 +130,9 @@ describe("第 6 批：索引状态、刷新策略和缓存替换", () => {
     const { LibraryPage } = await import("../LibraryPage");
     render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
 
-    const indicator = await screen.findByRole("button", { name: /索引状态.*正在刷新/ });
+    const indicator = await screen.findByRole("button", { name: /任务中心.*正在刷新/ });
     expect(await screen.findByText("正在初始化文档库")).toBeInTheDocument();
-    expect(within(indicator).getByText("45%")).toBeInTheDocument();
+    expect(within(indicator).queryByText("45%")).not.toBeInTheDocument();
     expect(screen.getByText("索引进度 45%")).toBeInTheDocument();
     expect(screen.getByText("已处理 45 / 100（其中新增索引 32）")).toBeInTheDocument();
     expect(screen.getByText("已处理 45，其中新增索引 32，失败 0")).toBeInTheDocument();
@@ -259,21 +262,25 @@ describe("第 6 批：索引状态、刷新策略和缓存替换", () => {
     const { LibraryPage } = await import("../LibraryPage");
     render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
 
-    const indicator = await screen.findByRole("button", { name: /索引状态.*已就绪/ });
+    const indicator = await screen.findByRole("button", { name: /任务中心.*已就绪/ });
     await userEvent.hover(indicator);
 
-    const popover = await screen.findByRole("dialog", { name: "文档库索引器状态" });
+    const popover = await screen.findByRole("dialog", { name: "任务中心" });
+    expect(within(popover).getByText("17,316 / 17,316")).toBeInTheDocument();
+    expect(within(popover).queryByText("索引总数")).not.toBeInTheDocument();
+    await userEvent.click(within(popover).getByRole("button", { name: "文档库索引" }));
+    const indexDetails = within(popover).getByRole("region", { name: "文档库索引器状态" });
     // progress 缺失时摘要网格不再空白：四栏标签全部出现
-    expect(within(popover).getByText("索引总数")).toBeInTheDocument();
-    expect(within(popover).getByText("已扫描数量")).toBeInTheDocument();
-    expect(within(popover).getByText("问题数量")).toBeInTheDocument();
-    expect(within(popover).getByText("已索引数量")).toBeInTheDocument();
+    expect(within(indexDetails).getByText("索引总数")).toBeInTheDocument();
+    expect(within(indexDetails).getByText("已扫描数量")).toBeInTheDocument();
+    expect(within(indexDetails).getByText("问题数量")).toBeInTheDocument();
+    expect(within(indexDetails).getByText("已索引数量")).toBeInTheDocument();
     // 用 documentCount 兜底后，“索引总数 / 已扫描数量 / 已索引数量”都会回到文档计数。
-    expect(within(popover).getAllByText("17316").length).toBeGreaterThanOrEqual(2);
+    expect(within(indexDetails).getAllByText("17316").length).toBeGreaterThanOrEqual(2);
     // 当前概览补充目录状态两行（对齐父仓库图2）
-    expect(within(popover).getByText("当前目录")).toBeInTheDocument();
-    expect(within(popover).getByText("根目录")).toBeInTheDocument();
-    expect(within(popover).getByText("目录刷新状态")).toBeInTheDocument();
+    expect(within(indexDetails).getByText("当前目录")).toBeInTheDocument();
+    expect(within(indexDetails).getByText("根目录")).toBeInTheDocument();
+    expect(within(indexDetails).getByText("目录刷新状态")).toBeInTheDocument();
   });
 
   it("进入文档库视图时不会仅因为快照较旧自动发起刷新", async () => {
@@ -326,14 +333,14 @@ describe("第 6 批：索引状态、刷新策略和缓存替换", () => {
     render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
 
     expect(await screen.findByText("运行中.md")).toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: /索引状态.*正在刷新/ })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /任务中心.*正在刷新/ })).toBeInTheDocument();
 
     await act(async () => {
       await new Promise((resolve) => window.setTimeout(resolve, 4300));
     });
 
     await waitFor(() => expect(libraryApiMock.getLibrarySnapshot).toHaveBeenCalledTimes(2));
-    expect(await screen.findByRole("button", { name: /索引状态.*已就绪/ })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /任务中心.*已就绪/ })).toBeInTheDocument();
     expect(await screen.findByText("完成后.md")).toBeInTheDocument();
   }, 10_000);
 

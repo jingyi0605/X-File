@@ -16,6 +16,7 @@ import type {
   LibrarySnapshot,
   LibraryTagDetailWithRules,
   LibraryTagListResult,
+  LibraryTask,
   SaveLibraryFolderTagsInput,
   SaveLibraryTagDefinitionInput,
   SaveLibraryTagsInput,
@@ -171,6 +172,16 @@ async function invokeOptional<T>(
 
 export async function fetchNativeLibraryHealth(): Promise<LibraryHealth | null> {
   return invokeOptional<LibraryHealth>("native_fetch_library_health");
+}
+
+export async function listNativeLibraryTasks(): Promise<LibraryTask[] | null> {
+  return invokeOptional<LibraryTask[]>("native_list_library_tasks");
+}
+
+export async function listenNativeLibraryTasks(onUpdate: (task: LibraryTask) => void): Promise<() => void> {
+  if (!isDesktopTauriRuntime()) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<LibraryTask>("x-file-library-task-updated", ({ payload }) => onUpdate(payload));
 }
 
 export async function fetchNativeLibrarySnapshot(): Promise<NativeLibrarySnapshotResponse | null> {
