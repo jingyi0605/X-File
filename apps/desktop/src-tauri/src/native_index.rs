@@ -1,3 +1,4 @@
+use crate::native_core::task_center;
 use crate::native_core::catalog::{
     read_catalog, write_catalog, ExportCatalogSnapshot, SnapshotDocument, SnapshotTag,
 };
@@ -240,6 +241,7 @@ pub fn run_native_index_worker(request: NativeIndexRequest) -> Result<Value, Str
             &target_scope,
             previous_state.as_deref(),
             |progress| {
+                task_center::progress(progress.scanned_count, progress.total_count);
                 let progress_updated_at = iso_now();
                 write_runtime_status(
                     &root_dir,
@@ -506,7 +508,11 @@ fn scan_documents(
     mut progress_reporter: impl FnMut(IndexProgress) -> Result<(), String>,
 ) -> Result<ScanDocumentsResult, String> {
     let root = PathBuf::from(root_dir);
-    let files = discover_scannable_files(root_dir, &root, options, target_scope)?;
+    task_center::stage("scan_files");
+    let files = task_center::run_new(root_dir, "library.file_scan", "index_discovery", None, || {
+        discover_scannable_files(root_dir, &root, options, target_scope)
+    })?;
+    task_center::stage("index_text");
     let mut progress = ScanProgressStats {
         total_count: Some(files.len()),
         ..ScanProgressStats::default()
@@ -608,6 +614,7 @@ fn discover_scannable_files(
     let mut visited = HashSet::new();
     let mut discovered_files = Vec::new();
     let mut last_hint = 0;
+    let mut last_progress = std::time::Instant::now();
 
     while let Some(current) = queue.pop_front() {
         let current_key = directory_queue_key(root, &current);
@@ -663,10 +670,15 @@ fn discover_scannable_files(
                 ScanFileOutcome::Ignored
             ) {
                 discovered_files.push(file_path);
+                if last_progress.elapsed().as_millis() >= 100 {
+                    task_center::progress(discovered_files.len(), None);
+                    last_progress = std::time::Instant::now();
+                }
             }
         }
     }
 
+    task_center::progress(discovered_files.len(), Some(discovered_files.len()));
     Ok(discovered_files)
 }
 

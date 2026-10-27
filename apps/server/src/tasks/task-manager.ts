@@ -6,6 +6,7 @@ export interface TaskSummary {
   key: string;
   state: TaskState;
   source: string;
+  categoryTitle?: string | null;
   queuedAt: string;
   startedAt: string | null;
   completedAt: string | null;
@@ -36,6 +37,8 @@ export interface TaskRunContext {
 export interface EnqueueTaskInput<Input> {
   key: string;
   source: string;
+  categoryTitle?: string | null;
+  dedupe?: boolean;
   input: Input;
 }
 
@@ -58,6 +61,7 @@ export class TaskManager {
   private readonly definitions = new Map<string, TaskDefinition<unknown, unknown>>();
   private readonly inflight = new Map<string, TaskRecord>();
   private readonly latest = new Map<string, TaskRecord>();
+  private readonly history = new Map<string, TaskSummary>();
   private readonly queueTimeoutMs: number;
   private taskSequence = 0;
 
@@ -82,16 +86,18 @@ export class TaskManager {
       throw new Error(`Task type is not registered: ${taskType}`);
     }
 
-    const runtimeKey = buildRuntimeKey(taskType, input.key);
-    const existing = this.inflight.get(runtimeKey);
+    const baseKey = buildRuntimeKey(taskType, input.key);
+    const existing = input.dedupe === false ? undefined : this.inflight.get(baseKey);
     if (existing) {
-      return {
+      const deduped = {
         ...this.snapshotRecord(existing),
         deduped: true
       };
+      return deduped;
     }
 
     const taskId = `${taskType}:${hashKey(input.key)}:${Date.now().toString(36)}:${(this.taskSequence += 1).toString(36)}`;
+    const runtimeKey = input.dedupe === false ? `${baseKey}:${taskId}` : baseKey;
     const controller = new AbortController();
     const summary: TaskSummary = {
       taskId,
@@ -99,6 +105,7 @@ export class TaskManager {
       key: input.key,
       state: "queued",
       source: input.source,
+      categoryTitle: input.categoryTitle,
       queuedAt: new Date().toISOString(),
       startedAt: null,
       completedAt: null,
@@ -119,6 +126,7 @@ export class TaskManager {
       record.summary.failedAt = new Date().toISOString();
       record.summary.errorSummary = "任务排队超时";
       this.inflight.delete(runtimeKey);
+      this.pruneHistory();
       rejectTask(new Error("任务排队超时"));
     };
 
@@ -144,6 +152,7 @@ export class TaskManager {
               },
               setProgress: (progress) => {
                 record.progress = progress;
+                summary.progress = progress;
               }
             });
             summary.state = "fresh";
@@ -161,6 +170,7 @@ export class TaskManager {
               clearTimeout(record.timeout);
             }
             this.inflight.delete(runtimeKey);
+            this.pruneHistory();
           }
         });
       };
@@ -179,7 +189,8 @@ export class TaskManager {
       progress: null
     };
     this.inflight.set(runtimeKey, record as TaskRecord);
-    this.latest.set(runtimeKey, record as TaskRecord);
+    this.latest.set(baseKey, record as TaskRecord);
+    this.history.set(taskId, summary);
 
     if (this.queueTimeoutMs <= 0) {
       expireQueuedTask();
@@ -193,8 +204,33 @@ export class TaskManager {
 
   get(taskType: string, key: string): TaskSummary | null {
     const runtimeKey = buildRuntimeKey(taskType, key);
-    const record = this.inflight.get(runtimeKey) ?? this.latest.get(runtimeKey);
+    const record = this.latest.get(runtimeKey)
+      ?? [...this.inflight.values()].reverse()
+        .find((item) => item.summary.taskType === taskType && item.summary.key === key);
     return record ? this.snapshotRecord(record) : null;
+  }
+
+  list(key: string): TaskSummary[] {
+    this.pruneHistory();
+    const tasks = [...this.history.values()].filter((task) => task.key === key);
+    const active = tasks.filter((task) => task.state === "queued" || task.state === "running");
+    const finished = tasks.filter((task) => task.state !== "queued" && task.state !== "running")
+      .sort((left, right) => completionTime(right) - completionTime(left));
+    return [...active, ...finished].map((task) => ({ ...task }));
+  }
+
+  private pruneHistory(): void {
+    const finishedByKey = new Map<string, TaskSummary[]>();
+    for (const task of this.history.values()) {
+      if (task.state === "queued" || task.state === "running") continue;
+      const finished = finishedByKey.get(task.key) ?? [];
+      finished.push(task);
+      finishedByKey.set(task.key, finished);
+    }
+    for (const finished of finishedByKey.values()) {
+      finished.sort((left, right) => completionTime(right) - completionTime(left));
+      for (const task of finished.slice(5)) this.history.delete(task.taskId);
+    }
   }
 
   private snapshotRecord(record: TaskRecord): TaskSummary {
@@ -204,6 +240,11 @@ export class TaskManager {
       progress: record.progress
     };
   }
+}
+
+function completionTime(task: TaskSummary): number {
+  const time = Date.parse(task.completedAt ?? task.failedAt ?? task.queuedAt);
+  return Number.isNaN(time) ? 0 : time;
 }
 
 function buildRuntimeKey(taskType: string, key: string): string {

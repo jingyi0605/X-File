@@ -69,6 +69,8 @@ export interface SaveFolderTagsInput extends SaveDocumentTagsInput {
 }
 
 export class TagService {
+  private readonly recomputeQueues = new Map<string, Promise<LibraryTagRecomputeTaskResult>>();
+
   constructor(
     private readonly bindingStore: LibraryBindingStore,
     private readonly tagStore: TagStore,
@@ -88,13 +90,34 @@ export class TagService {
     >({
       taskType: LIBRARY_TAG_RECOMPUTE_TASK_TYPE,
       timeoutMs: 30 * 60 * 1000,
-      run: async (input, context) => {
-        context.setStage("recompute_tags");
-        return runNativeLibraryWorker<LibraryTagRecomputeTaskResult>("tags-only", {
-          rootDir: input.binding.rootDir,
-          reason: input.reason,
-          tagStore: this.readStoreForBinding(input.binding),
-        }, context.signal);
+      run: (input, context) => {
+        const root = input.binding.rootDir;
+        context.setStage("waiting_for_lock");
+        const previous = this.recomputeQueues.get(root);
+        // 同库按提交顺序执行，轮到当前任务时再读取最新标签存储。
+        const pending = (async () => {
+          await previous?.catch(() => {});
+          context.signal.throwIfAborted();
+          context.setStage("count_tag_files");
+          const result = await runNativeLibraryWorker<LibraryTagRecomputeTaskResult>("tags-only", {
+            rootDir: root,
+            reason: input.reason,
+            tagStore: this.readStoreForBinding(input.binding),
+            tagScope: input.scope,
+          }, context.signal, (progress) => {
+            context.setStage(progress.stage);
+            context.setProgress({
+              scannedCount: progress.processedCount, totalCount: progress.totalCount,
+              stageProgress: progress.stageProgress,
+            });
+          });
+          context.setProgress({ scannedCount: result.updatedCount, totalCount: result.scannedCount });
+          return result;
+        })();
+        this.recomputeQueues.set(root, pending);
+        return pending.finally(() => {
+          if (this.recomputeQueues.get(root) === pending) this.recomputeQueues.delete(root);
+        });
       },
     });
   }
@@ -661,12 +684,24 @@ export class TagService {
       return null;
     }
     this.registerTasks();
+    const data = this.readStoreForBinding(binding);
+    const scope = input.scope;
+    const tagIds = scope.kind === "folder"
+      ? data.folderTags.find((item) => item.folderPath === scope.folderPath)?.bindingTagIds
+      : scope.kind === "document"
+        ? data.documentTags.find((item) => item.documentId === scope.documentId)?.manualTagIds
+        : [];
+    const categoryTitle = (tagIds ?? []).map((id) => data.tags.find((tag) => tag.id === id)?.path)
+      .filter(Boolean).join("、");
     return this.taskManager.enqueue<
       LibraryTagRecomputeTaskInput,
       LibraryTagRecomputeTaskResult
     >(LIBRARY_TAG_RECOMPUTE_TASK_TYPE, {
       key: binding.rootDir,
       source: "library.tag_service",
+      categoryTitle: categoryTitle || null,
+      // 每次保存都有独立范围，按根目录去重会丢失后续目录或文件的更新。
+      dedupe: false,
       input: {
         binding,
         reason: input.reason,

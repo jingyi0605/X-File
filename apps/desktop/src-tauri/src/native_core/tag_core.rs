@@ -1,13 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 
+use super::{scheduler::lock_root, task_center};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
     file_name_from_path, iso_now, normalize_document_path, normalize_folder_path,
     normalize_optional_text, read_json_file, read_local_library_binding, read_optional_json_file,
-    resolve_runtime_export_catalog_snapshot_path, run_native_library_export_once, sha256_hex,
+    resolve_runtime_export_catalog_snapshot_path, sha256_hex,
     write_json_file, write_runtime_export_catalog_snapshot, x_file_data_dir, LocalLibraryBinding,
     LocalLibraryDocumentTagDetails, LocalLibraryFolderTagDetails, LocalLibraryTagDetailWithRules,
     LocalLibraryTagListResult, LocalLibraryTagListSummary, LocalLibraryTagRecommendation,
@@ -37,6 +38,85 @@ pub struct NativeSaveFolderTagsRequest {
     pub folder_path: Option<String>,
     pub tag_ids: Option<Vec<String>>,
     pub create_tag_paths: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum TagAssignmentScope {
+    #[default]
+    Full,
+    Document {
+        #[serde(rename = "documentId")]
+        document_id: String,
+    },
+    Folder {
+        #[serde(rename = "folderPath")]
+        folder_path: String,
+    },
+}
+
+impl TagAssignmentScope {
+    fn contains(&self, document: &LocalRuntimeSnapshotDocument) -> bool {
+        let path = normalize_document_path(&document.path);
+        match self {
+            Self::Full => true,
+            Self::Document { document_id } => document.document_id == document_id.trim()
+                || path == normalize_document_path(document_id),
+            Self::Folder { folder_path } => {
+                let folder = normalize_folder_path(folder_path);
+                folder == "." || path.starts_with(&format!("{folder}/"))
+            }
+        }
+    }
+}
+
+pub struct TagAssignmentPlan {
+    snapshot: LocalRuntimeExportCatalogSnapshot,
+    targets: Vec<usize>,
+    emit_progress: bool,
+}
+
+fn report_tag_progress(stage: &str, processed: usize, total: Option<usize>, emit: bool) {
+    task_center::stage(stage);
+    task_center::progress(processed, total);
+    if emit {
+        eprintln!("[x-file-tag-progress] {}", json!({
+            "stage": stage, "processedCount": processed, "totalCount": total,
+        }));
+    }
+}
+
+pub fn prepare_tag_assignment(
+    binding: &LocalLibraryBinding,
+    scope: &TagAssignmentScope,
+    emit_progress: bool,
+) -> Result<TagAssignmentPlan, String> {
+    report_tag_progress("count_tag_files", 0, None, emit_progress);
+    let snapshot = match read_runtime_export_catalog_snapshot_core(&binding.root_dir)? {
+        Some(snapshot) => snapshot,
+        None => {
+            let documents = read_local_tag_documents_core(binding)?.into_iter().map(|document| {
+                LocalRuntimeSnapshotDocument {
+                    title: document.title.unwrap_or_else(|| file_name_from_path(&document.path)),
+                    document_id: document.document_id,
+                    path: document.path,
+                    summary: document.summary.unwrap_or_default(),
+                    tags: document.direct_tags.unwrap_or_default(),
+                    derived_tags: document.derived_tags.unwrap_or_default(),
+                    mtime: document.mtime.unwrap_or_default(),
+                }
+            }).collect();
+            LocalRuntimeExportCatalogSnapshot {
+                version: 1, generated_at: None, generated_at_legacy: None,
+                tags: Vec::new(), documents,
+            }
+        }
+    };
+    let targets = snapshot.documents.iter().enumerate()
+        .filter_map(|(index, document)| scope.contains(document).then_some(index))
+        .collect::<Vec<_>>();
+    report_tag_progress("apply_tags", 0, Some(targets.len()), emit_progress);
+    Ok(TagAssignmentPlan { snapshot, targets, emit_progress })
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -90,8 +170,31 @@ pub fn get_native_library_tag_detail(tag_id: &str) -> Result<Value, String> {
         .map_err(|error| format!("序列化本地 tag detail 失败：{error}"))
 }
 
-pub fn ensure_native_library_tag(path: &str) -> Result<Value, String> {
+fn run_tag_mutation<T>(
+    source: &str,
+    target: Option<String>,
+    work: impl FnOnce(&LocalLibraryBinding) -> Result<T, String>,
+) -> Result<T, String> {
     let binding = read_local_library_binding()?.ok_or_else(|| "当前未绑定文档库".to_string())?;
+    run_tag_mutation_for_binding(&binding, source, target, work)
+}
+
+fn run_tag_mutation_for_binding<T>(
+    binding: &LocalLibraryBinding,
+    source: &str,
+    target: Option<String>,
+    work: impl FnOnce(&LocalLibraryBinding) -> Result<T, String>,
+) -> Result<T, String> {
+    task_center::run_new(&binding.root_dir, "library.tag_assignment", source, target, || {
+        task_center::stage("waiting_for_lock");
+        let _root_lock = lock_root(&binding.root_dir)?;
+        task_center::stage("save_tags");
+        work(&binding)
+    })
+}
+
+pub fn ensure_native_library_tag(path: &str) -> Result<Value, String> {
+    run_tag_mutation("external_agent_tag_ensured", None, |binding| {
     let mut store = read_local_library_tags_store(&binding)?;
     let count = store.tags.len();
     let id = ensure_local_tag_path(&mut store, path)?;
@@ -101,12 +204,13 @@ pub fn ensure_native_library_tag(path: &str) -> Result<Value, String> {
         sync_local_tag_exports_core(&binding, "external_agent_tag_ensured")?;
     }
     get_native_library_tag_detail(&id)
+    })
 }
 
 pub fn create_native_library_tag(
     request: NativeSaveLibraryTagDefinitionRequest,
 ) -> Result<Value, String> {
-    serde_json::to_value(save_local_library_tag(None, request)?)
+    serde_json::to_value(run_tag_mutation("native_tag_saved", None, |binding| save_local_library_tag(binding, None, request))?)
         .map_err(|error| format!("序列化本地 tag create 失败：{error}"))
 }
 
@@ -114,12 +218,12 @@ pub fn update_native_library_tag(
     tag_id: String,
     request: NativeSaveLibraryTagDefinitionRequest,
 ) -> Result<Value, String> {
-    serde_json::to_value(save_local_library_tag(Some(tag_id), request)?)
+    serde_json::to_value(run_tag_mutation("native_tag_saved", None, |binding| save_local_library_tag(binding, Some(tag_id), request))?)
         .map_err(|error| format!("序列化本地 tag update 失败：{error}"))
 }
 
 pub fn delete_native_library_tag(tag_id: &str) -> Result<Value, String> {
-    serde_json::to_value(delete_local_library_tag(tag_id)?)
+    serde_json::to_value(run_tag_mutation("native_tag_deleted", None, |binding| delete_local_library_tag(binding, tag_id))?)
         .map_err(|error| format!("序列化本地 tag delete 失败：{error}"))
 }
 
@@ -129,7 +233,7 @@ pub fn get_native_document_tag_details(document_id: &str) -> Result<Value, Strin
 }
 
 pub fn save_native_document_tags(request: NativeSaveDocumentTagsRequest) -> Result<Value, String> {
-    serde_json::to_value(save_local_document_tags(request)?)
+    serde_json::to_value(run_tag_mutation("native_document_tags_saved", Some(request.document_id.clone()), |binding| save_local_document_tags(binding, request))?)
         .map_err(|error| format!("序列化本地 document tags 失败：{error}"))
 }
 
@@ -139,13 +243,12 @@ pub fn get_native_folder_tag_details(folder_path: &str) -> Result<Value, String>
 }
 
 pub fn save_native_folder_tags(request: NativeSaveFolderTagsRequest) -> Result<Value, String> {
-    serde_json::to_value(save_local_folder_tags(request)?)
+    serde_json::to_value(run_tag_mutation("native_folder_tags_saved", request.folder_path.clone(), |binding| save_local_folder_tags(binding, request))?)
         .map_err(|error| format!("序列化本地 folder tags 失败：{error}"))
 }
 
 pub fn request_native_library_tag_recompute() -> Result<Value, String> {
-    let binding = read_local_library_binding()?.ok_or_else(|| "当前未绑定文档库".to_string())?;
-    let task = sync_local_tag_exports_core(&binding, "native_manual_tag_recompute")?;
+    let task = run_tag_mutation("native_manual_tag_recompute", None, |binding| sync_local_tag_exports_core(binding, "native_manual_tag_recompute"))?;
     Ok(json!({
         "taskId": task.task_id,
         "deduped": false,
@@ -337,10 +440,10 @@ pub fn read_local_library_tag_detail(
 }
 
 pub fn save_local_library_tag(
+    binding: &LocalLibraryBinding,
     override_tag_id: Option<String>,
     request: NativeSaveLibraryTagDefinitionRequest,
 ) -> Result<LocalLibraryTagDetailWithRules, String> {
-    let binding = read_local_library_binding()?.ok_or_else(|| "当前未绑定文档库".to_string())?;
     let mut store = read_local_library_tags_store(&binding)?;
     let now = iso_now();
     let tag_id = override_tag_id.clone().or(request.tag_id.clone());
@@ -457,8 +560,7 @@ fn replace_local_tag_rules(
     }
 }
 
-pub fn delete_local_library_tag(tag_id: &str) -> Result<Value, String> {
-    let binding = read_local_library_binding()?.ok_or_else(|| "当前未绑定文档库".to_string())?;
+pub fn delete_local_library_tag(binding: &LocalLibraryBinding, tag_id: &str) -> Result<Value, String> {
     let mut store = read_local_library_tags_store(&binding)?;
     let normalized = tag_id.trim();
     let mut deleted_ids = store
@@ -566,19 +668,18 @@ pub fn read_local_document_tag_details(
 }
 
 pub fn save_local_document_tags(
+    binding: &LocalLibraryBinding,
     request: NativeSaveDocumentTagsRequest,
 ) -> Result<LocalLibraryDocumentTagDetails, String> {
-    let binding = read_local_library_binding()?.ok_or_else(|| "当前未绑定文档库".to_string())?;
+    let plan = prepare_tag_assignment(binding, &TagAssignmentScope::Document {
+        document_id: request.document_id.clone(),
+    }, false)?;
     let mut store = read_local_library_tags_store(&binding)?;
-    let documents = read_local_tag_documents_core(&binding)?;
-    let target = documents
-        .iter()
-        .find(|item| {
-            item.document_id == request.document_id.trim()
-                || normalize_document_path(&item.path)
-                    == normalize_document_path(&request.document_id)
-        })
+    let target = plan.targets.first().map(|index| &plan.snapshot.documents[*index])
         .ok_or_else(|| "文档不存在".to_string())?;
+    let document_id = target.document_id.clone();
+    let normalized_path = normalize_document_path(&target.path);
+    let title = target.title.clone();
     let mut tag_ids = normalize_tag_ids(&store, request.tag_ids.unwrap_or_default());
     for tag_path in request.create_tag_paths.unwrap_or_default() {
         let created_id = ensure_local_tag_path(&mut store, &tag_path)?;
@@ -586,16 +687,12 @@ pub fn save_local_document_tags(
             tag_ids.push(created_id);
         }
     }
-    let normalized_path = normalize_document_path(&target.path);
-    let title = target
-        .title
-        .clone()
-        .unwrap_or_else(|| file_name_from_path(&normalized_path));
+    set_task_tag_category(&store, &tag_ids);
     store
         .document_tags
-        .retain(|item| item.document_id != target.document_id);
+        .retain(|item| item.document_id != document_id);
     store.document_tags.push(LocalStoredDocumentTagBinding {
-        document_id: target.document_id.clone(),
+        document_id: document_id.clone(),
         path: normalized_path.clone(),
         title,
         manual_tag_ids: tag_ids,
@@ -603,8 +700,8 @@ pub fn save_local_document_tags(
     });
     store.updated_at = iso_now();
     write_local_library_tags_store(&binding, &store)?;
-    let _ = sync_local_tag_exports_core(&binding, "native_document_tags_saved")?;
-    read_local_document_tag_details(&target.document_id)
+    let _ = sync_local_tag_exports_plan_core(binding, "native_document_tags_saved", &store, plan)?;
+    read_local_document_tag_details(&document_id)
 }
 
 pub fn read_local_folder_tag_details(
@@ -646,9 +743,12 @@ pub fn read_local_folder_tag_details(
 }
 
 pub fn save_local_folder_tags(
+    binding: &LocalLibraryBinding,
     request: NativeSaveFolderTagsRequest,
 ) -> Result<LocalLibraryFolderTagDetails, String> {
-    let binding = read_local_library_binding()?.ok_or_else(|| "当前未绑定文档库".to_string())?;
+    let plan = prepare_tag_assignment(binding, &TagAssignmentScope::Folder {
+        folder_path: request.folder_path.clone().unwrap_or_else(|| ".".to_string()),
+    }, false)?;
     let mut store = read_local_library_tags_store(&binding)?;
     let normalized_folder = normalize_folder_path(request.folder_path.as_deref().unwrap_or("."));
     let mut tag_ids = normalize_tag_ids(&store, request.tag_ids.unwrap_or_default());
@@ -658,6 +758,7 @@ pub fn save_local_folder_tags(
             tag_ids.push(created_id);
         }
     }
+    set_task_tag_category(&store, &tag_ids);
     store
         .folder_tags
         .retain(|item| normalize_folder_path(&item.folder_path) != normalized_folder);
@@ -668,8 +769,16 @@ pub fn save_local_folder_tags(
     });
     store.updated_at = iso_now();
     write_local_library_tags_store(&binding, &store)?;
-    let _ = sync_local_tag_exports_core(&binding, "native_folder_tags_saved")?;
+    let _ = sync_local_tag_exports_plan_core(binding, "native_folder_tags_saved", &store, plan)?;
     read_local_folder_tag_details(&normalized_folder)
+}
+
+fn set_task_tag_category(store: &LocalStoredLibraryTags, tag_ids: &[String]) {
+    let titles = tag_ids.iter()
+        .filter_map(|id| store.tags.iter().find(|tag| &tag.id == id))
+        .map(|tag| tag.path.as_str())
+        .collect::<Vec<_>>();
+    task_center::category_title(titles.join("、"));
 }
 
 fn normalize_tag_segment(value: &str) -> String {
@@ -830,7 +939,17 @@ pub fn sync_local_tag_exports_core(
     binding: &LocalLibraryBinding,
     reason: &str,
 ) -> Result<LocalLibraryTagRecomputeTask, String> {
-    let _root_lock = crate::native_core::scheduler::lock_root(&binding.root_dir)?;
+    let plan = prepare_tag_assignment(binding, &TagAssignmentScope::Full, false)?;
+    let store = read_local_library_tags_store(binding)?;
+    sync_local_tag_exports_plan_core(binding, reason, &store, plan)
+}
+
+fn sync_local_tag_exports_plan_core(
+    binding: &LocalLibraryBinding,
+    reason: &str,
+    store: &LocalStoredLibraryTags,
+    plan: TagAssignmentPlan,
+) -> Result<LocalLibraryTagRecomputeTask, String> {
     let task_id = format!(
         "library.tag_recompute:{}",
         sha256_hex(format!("{}:{}:{}", binding.library_id, binding.root_dir, iso_now()).as_bytes())
@@ -855,25 +974,8 @@ pub fn sync_local_tag_exports_core(
     task.running_stage = Some("write_snapshot".to_string());
     write_local_tag_recompute_task_core(binding, &task)?;
 
-    let store = read_local_library_tags_store(binding)?;
-    let snapshot = build_local_tag_snapshot_core(binding, &store)?;
-    write_runtime_export_catalog_snapshot(&binding.root_dir, &snapshot)?;
-
-    let dirty_scope = serde_json::json!({
-        "trigger": "full",
-        "changedPaths": [],
-        "deletedPaths": [],
-        "dirtyDirectories": [],
-        "dirtyTagPaths": [],
-        "dirtyMetaShards": [],
-        "dirtyDetailShards": [],
-        "dirtyPostingBuckets": [],
-        "dirtyRelations": [],
-    });
-
-    task.running_stage = Some("export_snapshot".to_string());
-    write_local_tag_recompute_task_core(binding, &task)?;
-    if let Err(error) = run_native_library_export_once(binding, reason, None, dirty_scope.clone()) {
+    let result = run_tag_assignment_core(binding, store, plan, reason);
+    if let Err(error) = result {
         task.state = "failed".to_string();
         task.failed_at = Some(iso_now());
         task.error_summary = Some(error.clone());
@@ -903,37 +1005,29 @@ pub fn read_runtime_export_catalog_snapshot_core(
     read_optional_json_file(&resolve_runtime_export_catalog_snapshot_path(root_dir))
 }
 
-pub fn build_local_tag_snapshot_core(
-    binding: &LocalLibraryBinding,
+fn apply_tag_assignment(
+    plan: &mut TagAssignmentPlan,
     store: &LocalStoredLibraryTags,
-) -> Result<LocalRuntimeExportCatalogSnapshot, String> {
-    let mut snapshot = read_runtime_export_catalog_snapshot_core(&binding.root_dir)?.unwrap_or(
-        LocalRuntimeExportCatalogSnapshot {
-            version: 1,
-            generated_at: None,
-            generated_at_legacy: None,
-            tags: Vec::new(),
-            documents: Vec::new(),
-        },
-    );
-    let active = store
-        .tags
-        .iter()
-        .filter(|tag| tag.status == "active")
-        .collect::<Vec<_>>();
-    for document in &mut snapshot.documents {
+    mut on_progress: impl FnMut(usize, usize),
+) {
+    let snapshot = &mut plan.snapshot;
+    let active = store.tags.iter().filter(|tag| tag.status == "active").collect::<Vec<_>>();
+    let rules_by_tag = active.iter().map(|tag| {
+        let mut rules = store.tag_rules.iter()
+            .filter(|rule| rule.enabled && rule.tag_id == tag.id).collect::<Vec<_>>();
+        rules.sort_by_key(|rule| rule.priority);
+        (tag.path.as_str(), rules)
+    }).collect::<Vec<_>>();
+    let total = plan.targets.len();
+    on_progress(0, total);
+    for (index, document_index) in plan.targets.iter().enumerate() {
+        let document = &mut snapshot.documents[*document_index];
         let mut tags =
             resolve_manual_tag_paths_core(store, &document.path, Some(&document.document_id))
                 .into_iter()
                 .chain(resolve_folder_tag_paths_core(store, &document.path))
                 .collect::<BTreeSet<_>>();
-        for tag in &active {
-            let mut rules = store
-                .tag_rules
-                .iter()
-                .filter(|rule| rule.enabled && rule.tag_id == tag.id)
-                .collect::<Vec<_>>();
-            rules.sort_by_key(|rule| rule.priority);
+        for (tag_path, rules) in &rules_by_tag {
             let mut has_positive = false;
             let mut matches = true;
             let mut or_matches = None;
@@ -954,10 +1048,11 @@ pub fn build_local_tag_snapshot_core(
                 }
             }
             if has_positive && matches && or_matches.unwrap_or(true) {
-                tags.insert(tag.path.clone());
+                tags.insert((*tag_path).to_string());
             }
         }
         document.tags = tags.into_iter().collect();
+        on_progress(index + 1, total);
     }
     let mut tags = BTreeMap::new();
     for tag in active {
@@ -970,7 +1065,63 @@ pub fn build_local_tag_snapshot_core(
     }
     snapshot.tags = tags.into_values().collect();
     snapshot.generated_at = Some(iso_now());
-    Ok(snapshot)
+}
+
+pub fn run_tag_assignment_core(
+    binding: &LocalLibraryBinding,
+    store: &LocalStoredLibraryTags,
+    mut plan: TagAssignmentPlan,
+    reason: &str,
+) -> Result<Value, String> {
+    let emit = plan.emit_progress;
+    let mut last_progress = std::time::Instant::now();
+    apply_tag_assignment(&mut plan, store, |processed, total| {
+        if processed == 0 || processed == total || last_progress.elapsed().as_millis() >= 100 {
+            report_tag_progress("apply_tags", processed, Some(total), emit);
+            last_progress = std::time::Instant::now();
+        }
+    });
+    let count = plan.targets.len();
+    report_tag_progress("save_tag_results", count, Some(count), emit);
+    write_runtime_export_catalog_snapshot(&binding.root_dir, &plan.snapshot)?;
+    let changed_paths = plan.targets.iter()
+        .map(|index| normalize_document_path(&plan.snapshot.documents[*index].path))
+        .collect::<BTreeSet<_>>();
+    let dirty_directories = changed_paths.iter()
+        .map(|value| value.rsplit_once('/').map_or_else(|| ".".to_string(), |(directory, _)| directory.to_string()))
+        .collect::<BTreeSet<_>>();
+    let dirty_tag_paths = plan.snapshot.tags.iter()
+        .map(|tag| tag.path.clone())
+        .collect::<BTreeSet<_>>();
+    let mut last_export_progress = std::time::Instant::now();
+    let mut last_stage = String::new();
+    let export = crate::native_export::run_tag_export_worker(crate::native_export::NativeExportRequest {
+        root_dir: binding.root_dir.clone(), reason: reason.to_string(), target_path: None,
+        dirty_scope: serde_json::json!({
+        "trigger": "tag_assignment",
+        "changedPaths": changed_paths, "deletedPaths": [],
+        "dirtyDirectories": dirty_directories, "dirtyTagPaths": dirty_tag_paths, "dirtyMetaShards": [],
+        "dirtyDetailShards": [], "dirtyPostingBuckets": [], "dirtyRelations": []
+        }),
+    }, &mut |stage, processed, total| {
+        if last_stage != stage || Some(processed) == total || last_export_progress.elapsed().as_millis() >= 100 {
+            task_center::stage_progress(stage, processed, total);
+            if emit {
+                eprintln!("[x-file-tag-progress] {}", json!({
+                    "stage": stage, "processedCount": count, "totalCount": count,
+                    "stageProgress": { "processedCount": processed, "totalCount": total },
+                }));
+            }
+            last_stage = stage.to_string();
+            last_export_progress = std::time::Instant::now();
+        }
+    })?;
+    Ok(json!({
+        "scannedCount": count, "updatedCount": count,
+        "directAssignedCount": plan.snapshot.documents.iter().map(|doc| doc.tags.len()).sum::<usize>(),
+        "derivedAssignedCount": plan.snapshot.documents.iter().map(|doc| doc.derived_tags.len()).sum::<usize>(),
+        "exportedAt": export["exportedAt"],
+    }))
 }
 
 fn matches_tag_rule(document: &LocalRuntimeSnapshotDocument, rule: &LocalStoredTagRule) -> bool {
@@ -1129,4 +1280,206 @@ pub fn count_local_tags(documents: &[MetaDocument]) -> HashMap<String, usize> {
         }
     }
     counts
+}
+
+#[cfg(test)]
+mod task_tests {
+    use super::*;
+
+    fn scope_fixture(name: &str, paths: Vec<String>) -> (LocalLibraryBinding, LocalStoredLibraryTags) {
+        let root = std::env::temp_dir().join(format!("x-file-tag-scope-{name}-{}", crate::epoch_millis()));
+        let mut binding = crate::default_local_library_binding();
+        binding.root_dir = root.to_string_lossy().to_string();
+        let snapshot = LocalRuntimeExportCatalogSnapshot {
+            version: 1, generated_at: Some(iso_now()), generated_at_legacy: None, tags: vec![],
+            documents: paths.into_iter().enumerate().map(|(index, path)| LocalRuntimeSnapshotDocument {
+                document_id: format!("doc-{index}"), title: file_name_from_path(&path), path,
+                summary: String::new(), tags: vec!["原有/标签".to_string()],
+                derived_tags: vec!["类型/Markdown".to_string()], mtime: iso_now(),
+            }).collect(),
+        };
+        write_runtime_export_catalog_snapshot(&binding.root_dir, &snapshot).unwrap();
+        let mut store = empty_local_library_tags_store(&binding);
+        let tag_id = ensure_local_tag_path(&mut store, "客户/目标客户").unwrap();
+        store.folder_tags.push(LocalStoredFolderTagBinding {
+            folder_path: "目标".to_string(), binding_tag_ids: vec![tag_id], updated_at: iso_now(),
+        });
+        (binding, store)
+    }
+
+    #[test]
+    fn 先统计目标目录四百四十五个文档再逐文件推进且不修改范围外文档() {
+        let mut paths = (0..445).map(|index| format!("目标/子目录/{index}.md")).collect::<Vec<_>>();
+        paths.extend(["目标同名/a.md".to_string(), "其他/b.md".to_string(), "根文件.md".to_string()]);
+        let (binding, store) = scope_fixture("folder", paths);
+        task_center::run_new(&binding.root_dir, "library.tag_assignment", "test", None, || {
+            let mut plan = prepare_tag_assignment(&binding, &TagAssignmentScope::Folder {
+                folder_path: "/目标/".to_string(),
+            }, false)?;
+            let before = task_center::list(&binding.root_dir);
+            assert_eq!(before[0].total_count, Some(445));
+            assert_eq!(before[0].processed_count, 0);
+            assert!(plan.snapshot.documents.iter().all(|document| document.tags == ["原有/标签"]));
+            let mut ticks = Vec::new();
+            apply_tag_assignment(&mut plan, &store, |processed, total| {
+                ticks.push((processed, total));
+                task_center::progress(processed, Some(total));
+            });
+            assert_eq!(ticks, (0..=445).map(|count| (count, 445)).collect::<Vec<_>>());
+            assert!(plan.snapshot.documents[..445].iter().all(|document| document.tags == ["客户/目标客户"]));
+            assert!(plan.snapshot.documents[445..].iter().all(|document| document.tags == ["原有/标签"]));
+            assert!(plan.snapshot.documents.iter().all(|document| document.derived_tags == ["类型/Markdown"]));
+            Ok(())
+        }).unwrap();
+        let task = &task_center::list(&binding.root_dir)[0];
+        assert_eq!(task.total_count, Some(445));
+        assert_eq!(task.processed_count, 445);
+        std::fs::remove_dir_all(&binding.root_dir).unwrap();
+    }
+
+    #[test]
+    fn 单文档按标识或路径都只处理一个文件() {
+        let (binding, mut store) = scope_fixture("document", vec!["目标/a.md".into(), "其他/b.md".into()]);
+        let tag_id = store.tags.last().unwrap().id.clone();
+        store.document_tags.push(LocalStoredDocumentTagBinding {
+            document_id: "doc-0".into(), path: "目标/a.md".into(), title: "a.md".into(),
+            manual_tag_ids: vec![tag_id], updated_at: iso_now(),
+        });
+        for document_id in ["doc-0", "目标\\a.md"] {
+            let mut plan = prepare_tag_assignment(&binding, &TagAssignmentScope::Document {
+                document_id: document_id.into(),
+            }, false).unwrap();
+            let mut ticks = Vec::new();
+            apply_tag_assignment(&mut plan, &store, |done, total| ticks.push((done, total)));
+            assert_eq!(ticks, vec![(0, 1), (1, 1)]);
+            assert_eq!(plan.snapshot.documents[1].tags, ["原有/标签"]);
+        }
+        std::fs::remove_dir_all(&binding.root_dir).unwrap();
+    }
+
+    #[test]
+    fn 空目录为零且根目录和全量重算仍覆盖全部文档() {
+        let (binding, store) = scope_fixture("empty-and-full", vec!["目标/a.md".into(), "其他/b.md".into()]);
+        let mut empty = prepare_tag_assignment(&binding, &TagAssignmentScope::Folder {
+            folder_path: "不存在".into(),
+        }, false).unwrap();
+        let mut ticks = Vec::new();
+        apply_tag_assignment(&mut empty, &store, |done, total| ticks.push((done, total)));
+        assert_eq!(ticks, [(0, 0)]);
+        assert!(empty.snapshot.documents.iter().all(|document| document.tags == ["原有/标签"]));
+        for scope in [TagAssignmentScope::Full, TagAssignmentScope::Folder { folder_path: ".".into() }] {
+            let plan = prepare_tag_assignment(&binding, &scope, false).unwrap();
+            assert_eq!(plan.targets.len(), 2);
+        }
+        std::fs::remove_dir_all(&binding.root_dir).unwrap();
+    }
+
+    #[test]
+    fn 文件处理后写入失败必须报告失败并保留准确的范围计数() {
+        let (binding, store) = scope_fixture("failure", vec!["目标/a.md".into(), "其他/b.md".into()]);
+        let plan = prepare_tag_assignment(&binding, &TagAssignmentScope::Folder { folder_path: "目标".into() }, false).unwrap();
+        let snapshot_path = resolve_runtime_export_catalog_snapshot_path(&binding.root_dir);
+        std::fs::remove_file(&snapshot_path).unwrap();
+        std::fs::create_dir(&snapshot_path).unwrap();
+        let result = task_center::run_new(&binding.root_dir, "library.tag_assignment", "test", None, || {
+            run_tag_assignment_core(&binding, &store, plan, "test")
+        });
+        assert!(result.is_err());
+        let tasks = task_center::list(&binding.root_dir);
+        assert_eq!(tasks[0].state, "failed");
+        assert_eq!(tasks[0].processed_count, 1);
+        assert_eq!(tasks[0].total_count, Some(1));
+        assert!(tasks[0].error_summary.is_some());
+        std::fs::remove_dir_all(&binding.root_dir).unwrap();
+    }
+
+    #[test]
+    fn 标签保存导出按真实文件推进且不覆盖索引任务完成时间() {
+        let (binding, store) = scope_fixture("export-progress", vec!["目标/a.md".into(), "其他/b.md".into()]);
+        let plan = prepare_tag_assignment(&binding, &TagAssignmentScope::Folder { folder_path: "目标".into() }, false).unwrap();
+        let status_path = super::super::state_store::runtime_status_path(&binding.root_dir);
+        let status = json!({ "state": "fresh", "lastCompletedAt": "2026-10-26T12:00:00Z" });
+        write_json_file(&status_path, &status).unwrap();
+        let result = task_center::run_new(&binding.root_dir, "library.tag_assignment", "test", None, || {
+            run_tag_assignment_core(&binding, &store, plan, "test")
+        }).unwrap();
+        assert_eq!(result["scannedCount"], 1);
+        assert_eq!(read_json_file::<Value>(&status_path).unwrap(), status);
+        let task = &task_center::list(&binding.root_dir)[0];
+        assert_eq!(task.state, "completed");
+        assert_eq!(task.total_count, Some(1));
+        assert!(task.stage_progress.is_none());
+
+        let request = crate::native_export::NativeExportRequest {
+            root_dir: binding.root_dir.clone(), reason: "test".into(), target_path: None,
+            dirty_scope: json!({
+                "trigger": "full", "changedPaths": [], "deletedPaths": [], "dirtyDirectories": [],
+                "dirtyTagPaths": [], "dirtyMetaShards": [], "dirtyDetailShards": [],
+                "dirtyPostingBuckets": [], "dirtyRelations": [],
+            }),
+        };
+        let mut ticks = Vec::new();
+        crate::native_export::run_tag_export_worker(request, &mut |stage, count, total| {
+            ticks.push((stage.to_string(), count, total));
+        }).unwrap();
+        let details = ticks.iter().filter(|(stage, _, _)| stage == "export_details")
+            .map(|(_, count, total)| (*count, *total)).collect::<Vec<_>>();
+        assert_eq!(details, vec![(0, Some(2)), (1, Some(2)), (2, Some(2))]);
+        assert!(ticks.iter().any(|(stage, _, _)| stage == "export_search"));
+        assert_eq!(ticks.last().unwrap().0, "publish_tag_results");
+        assert_eq!(read_json_file::<Value>(&status_path).unwrap(), status);
+        std::fs::remove_dir_all(&binding.root_dir).unwrap();
+    }
+
+    #[test]
+    fn 标签任务保存真实分类标题与数量供列表直接预览() {
+        let binding = crate::default_local_library_binding();
+        let mut store = empty_local_library_tags_store(&binding);
+        let tag_id = ensure_local_tag_path(&mut store, "客户/麦迪格").unwrap();
+        let root = "tag-category-preview";
+        task_center::run_new(root, "library.tag_assignment", "test", None, || {
+            set_task_tag_category(&store, &[tag_id]);
+            task_center::progress(445, Some(445));
+            Ok(())
+        }).unwrap();
+        let tasks = task_center::list(root);
+        let task = &tasks[0];
+        assert_eq!(task.category_title.as_deref(), Some("客户/麦迪格"));
+        assert_eq!(task.processed_count, 445);
+        assert_eq!(task.total_count, Some(445));
+        assert_eq!(serde_json::to_value(task).unwrap()["categoryTitle"], "客户/麦迪格");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn 等待根锁的后台标签任务不阻塞异步线程且写入串行() {
+        let root = std::env::temp_dir().join(format!("x-file-tag-task-{}", crate::epoch_millis()));
+        let mut binding = crate::default_local_library_binding();
+        binding.root_dir = root.to_string_lossy().to_string();
+        let held = lock_root(&binding.root_dir).unwrap();
+        let (started, received) = std::sync::mpsc::channel();
+        let workers = (0..2).map(|_| {
+            let binding = binding.clone();
+            let started = started.clone();
+            tokio::task::spawn_blocking(move || {
+                started.send(()).unwrap();
+                run_tag_mutation_for_binding(&binding, "test", None, |binding| {
+                    let path = PathBuf::from(&binding.root_dir).join("counter.json");
+                    let count: usize = read_optional_json_file(&path)?.unwrap_or(0);
+                    write_json_file(&path, &(count + 1))
+                })
+            })
+        }).collect::<Vec<_>>();
+        for _ in 0..2 {
+            received.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        }
+        assert!(tokio::spawn(async { true }).await.unwrap());
+        assert!(!workers.iter().any(|worker| worker.is_finished()));
+        drop(held);
+        for worker in workers {
+            worker.await.unwrap().unwrap();
+        }
+        assert_eq!(read_json_file::<usize>(&root.join("counter.json")).unwrap(), 2);
+        assert!(task_center::list(&binding.root_dir).iter().all(|task| task.state == "completed"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

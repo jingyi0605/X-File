@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import type { LibraryIndexProgress, LibraryTask } from "@x-file/shared";
 
 import { HttpServerManager, type HttpServerRuntimeState } from "../http-server-manager.js";
 import { PersistentBackendManager } from "../lifecycle/persistent-backend-manager.js";
@@ -134,6 +135,31 @@ export function registerLibraryCoreRoutes(
     ),
   );
   void registerTagRoutes(server, new TagController(tagService));
+  server.get("/api/library/tasks", async (): Promise<LibraryTask[]> => {
+    const binding = feature.libraryBindingStore.read();
+    if (!binding) return [];
+    return feature.taskManager.list(binding.rootDir).map((task) => {
+      const progress = task.progress as (LibraryIndexProgress & Pick<LibraryTask, "stageProgress">) | null;
+      return {
+        taskId: task.taskId,
+        taskType: task.taskType === "library.index_refresh" ? "library.index" : task.taskType,
+        rootDir: task.key,
+        targetPath: null,
+        categoryTitle: task.categoryTitle,
+        source: task.source,
+        state: task.state === "fresh" ? "completed"
+          : task.state === "queue_timeout" ? "failed" : task.state,
+        stage: task.runningStage,
+        totalCount: progress?.totalCount ?? null,
+        processedCount: progress?.scannedCount ?? 0,
+        stageProgress: progress?.stageProgress,
+        errorSummary: task.errorSummary,
+        queuedAt: task.queuedAt,
+        startedAt: task.startedAt,
+        completedAt: task.completedAt ?? task.failedAt,
+      };
+    });
+  });
   void registerHostDirectoryRoutes(server, new HostDirectoryBrowserService());
 }
 
@@ -211,6 +237,7 @@ function registerLibraryCoreRoutePlaceholders(server: FastifyInstance): void {
   server.get("/api/library/config", reject);
   server.put("/api/library/config", reject);
   server.get("/api/library/snapshot", reject);
+  server.get("/api/library/tasks", reject);
   server.get("/api/library/documents", reject);
   server.get("/api/library/files", reject);
   server.get("/api/library/preview", reject);

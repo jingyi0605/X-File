@@ -5,9 +5,11 @@ import { fileURLToPath } from "node:url";
 import { once } from "node:events";
 import type { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import type { LibraryIndexProgress } from "@x-file/shared";
+import { StringDecoder } from "node:string_decoder";
+import type { LibraryIndexProgress, LibraryTagAssignmentScope, LibraryTask } from "@x-file/shared";
 
 const workspaceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
+const TAG_PROGRESS_PREFIX = "[x-file-tag-progress] ";
 
 export interface DirtyScope {
   trigger: string;
@@ -32,6 +34,14 @@ export interface NativeLibraryRequest {
   reason?: string;
   dirtyScope?: DirtyScope;
   tagStore?: unknown;
+  tagScope?: LibraryTagAssignmentScope;
+}
+
+export interface NativeLibraryTaskProgress {
+  stage: string;
+  processedCount: number;
+  totalCount: number | null;
+  stageProgress?: LibraryTask["stageProgress"];
 }
 
 export interface NativeIndexResult {
@@ -67,9 +77,24 @@ export function resolveNativeCli(): string {
   return executable;
 }
 
-async function readStream(stream: Readable): Promise<string> {
+async function readStream(stream: Readable, onLine?: (line: string) => void): Promise<string> {
   const chunks: Buffer[] = [];
-  for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+  const decoder = new StringDecoder("utf8");
+  let pending = "";
+  for await (const chunk of stream) {
+    chunks.push(Buffer.from(chunk));
+    if (!onLine) continue;
+    pending += decoder.write(Buffer.from(chunk));
+    let boundary: number;
+    while ((boundary = pending.indexOf("\n")) !== -1) {
+      onLine(pending.slice(0, boundary));
+      pending = pending.slice(boundary + 1);
+    }
+  }
+  if (onLine) {
+    pending += decoder.end();
+    if (pending) onLine(pending);
+  }
   return Buffer.concat(chunks).toString("utf8");
 }
 
@@ -77,12 +102,40 @@ export async function runNativeLibraryWorker<T>(
   mode: "full" | "index-only" | "export-only" | "tags-only",
   input: NativeLibraryRequest,
   signal?: AbortSignal,
+  onProgress?: (progress: NativeLibraryTaskProgress) => void,
 ): Promise<T> {
   const child = spawn(resolveNativeCli(), ["library-worker", mode], { signal, stdio: ["pipe", "pipe", "pipe"] });
   const closed = once(child, "close");
   const written = pipeline([JSON.stringify(input)], child.stdin);
-  const [stdout, stderr, [code]] = await Promise.all([readStream(child.stdout), readStream(child.stderr), closed, written]);
-  if (code !== 0) throw new Error(stderr || `原生 worker 退出码：${code}`);
+  const reportProgress = (line: string) => {
+    if (!onProgress || !line.startsWith(TAG_PROGRESS_PREFIX)) return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line.slice(TAG_PROGRESS_PREFIX.length));
+    } catch {
+      return;
+    }
+    if (!parsed || typeof parsed !== "object") return;
+    const progress = parsed as NativeLibraryTaskProgress;
+    if (typeof progress.stage === "string" && Number.isSafeInteger(progress.processedCount) && progress.processedCount >= 0
+      && (progress.totalCount === null || (Number.isSafeInteger(progress.totalCount) && progress.totalCount >= progress.processedCount))) {
+      const detail = progress.stageProgress;
+      const stageProgress = detail && Number.isSafeInteger(detail.processedCount) && detail.processedCount >= 0
+        && (detail.totalCount === null || (Number.isSafeInteger(detail.totalCount) && detail.totalCount >= detail.processedCount))
+        ? { processedCount: detail.processedCount, totalCount: detail.totalCount } : undefined;
+      onProgress({
+        stage: progress.stage, processedCount: progress.processedCount, totalCount: progress.totalCount,
+        ...(stageProgress ? { stageProgress } : {}),
+      });
+    }
+  };
+  const [stdout, stderr, [code]] = await Promise.all([
+    readStream(child.stdout), readStream(child.stderr, reportProgress), closed, written,
+  ]);
+  if (code !== 0) {
+    const error = stderr.split("\n").filter((line) => !line.startsWith(TAG_PROGRESS_PREFIX)).join("\n").trim();
+    throw new Error(error || `原生 worker 退出码：${code}`);
+  }
   return JSON.parse(stdout) as T;
 }
 

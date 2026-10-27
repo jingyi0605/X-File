@@ -281,10 +281,35 @@ pub fn run_native_export_worker(request: NativeExportRequest) -> Result<Value, S
     }
 }
 
+// 标签导出属于标签任务，不得覆盖文档索引任务的完成时间和运行状态。
+pub fn run_tag_export_worker(
+    request: NativeExportRequest,
+    progress: &mut dyn FnMut(&str, usize, Option<usize>),
+) -> Result<Value, String> {
+    let scope: DirtyScope = serde_json::from_value(request.dirty_scope)
+        .map_err(|error| format!("标签导出 dirtyScope 无效：{error}"))?;
+    let snapshot = read_catalog(&request.root_dir)?.ok_or_else(|| "文档目录快照不存在".to_string())?;
+    let result = build_native_export_with_progress(&request.root_dir, &snapshot, &scope, progress)?;
+    Ok(json!({
+        "exportedAt": result.exported_at,
+        "manifestPath": result.manifest_path,
+        "filesWritten": result.files_written,
+    }))
+}
+
 fn build_native_export(
     root_dir: &str,
     snapshot: &ExportCatalogSnapshot,
     dirty_scope: &DirtyScope,
+) -> Result<ExportBuildResult, String> {
+    build_native_export_with_progress(root_dir, snapshot, dirty_scope, &mut |_, _, _| {})
+}
+
+fn build_native_export_with_progress(
+    root_dir: &str,
+    snapshot: &ExportCatalogSnapshot,
+    dirty_scope: &DirtyScope,
+    progress: &mut dyn FnMut(&str, usize, Option<usize>),
 ) -> Result<ExportBuildResult, String> {
     let export_dir = native_export_dir(root_dir);
     fs::create_dir_all(&export_dir).map_err(|error| error.to_string())?;
@@ -456,6 +481,8 @@ fn build_native_export(
     }
     let mut folders = BTreeMap::new();
     let mut by_directory = BTreeMap::<String, Vec<&SnapshotDocument>>::new();
+    let detail_count = snapshot.documents.iter().filter(|document| full || changed.contains(&document.path)).count();
+    progress("export_details", 0, Some(detail_count));
     for document in &snapshot.documents {
         let directory = normalize_directory(&document.path);
         bump_folder_counts(&mut folders, &directory);
@@ -487,8 +514,11 @@ fn build_native_export(
             document_path: document.path.clone(),
             path: relative,
         });
+        progress("export_details", files_written.len(), Some(detail_count));
     }
-    for (directory, mut documents) in by_directory {
+    let directory_count = by_directory.len();
+    progress("export_metadata", 0, Some(directory_count));
+    for (index, (directory, mut documents)) in by_directory.into_iter().enumerate() {
         documents.sort_by(|a, b| a.path.cmp(&b.path));
         let id = stable_id("meta", &directory);
         let relative = format!("meta/{id}.json");
@@ -512,7 +542,9 @@ fn build_native_export(
             path: relative,
             document_count: documents.len(),
         });
+        progress("export_metadata", index + 1, Some(directory_count));
     }
+    progress("export_tags", 0, None);
     let (new_tags, tag_files) = build_tag_shards(
         &export_dir,
         &exported_at,
@@ -526,6 +558,7 @@ fn build_native_export(
     }
     tag_shards.extend(new_tags);
     files_written.extend(tag_files);
+    progress("export_relations", 0, None);
     let (new_relations, relation_files) = build_relation_shards(
         &export_dir,
         &exported_at,
@@ -537,6 +570,7 @@ fn build_native_export(
     }
     relation_shards.extend(new_relations);
     files_written.extend(relation_files);
+    progress("export_search", 0, None);
     let (search_buckets, search_files) = build_search_index(
         &export_dir,
         &exported_at,
@@ -548,6 +582,7 @@ fn build_native_export(
     detail_shards.sort_by(|a, b| a.document_path.cmp(&b.document_path));
     tag_shards.sort_by(|a, b| a.root_type.cmp(&b.root_type));
     relation_shards.sort_by(|a, b| a.path.cmp(&b.path));
+    progress("publish_tag_results", 0, None);
     let taxonomy = build_taxonomy(&snapshot.tags);
     for (name, payload) in [
         (
