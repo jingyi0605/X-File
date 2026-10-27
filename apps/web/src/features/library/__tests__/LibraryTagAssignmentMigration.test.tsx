@@ -71,6 +71,138 @@ describe("第 10 批：文档与文件夹标签分配、推荐标签和任务进
     });
   });
 
+  it("选择单选组中的新子标签时替换当前兄弟标签", async () => {
+    const parent = createTagDetail({
+      id: "tag-status",
+      path: "项目状态",
+      childTagSelectionMode: "single",
+    });
+    const previous = createTagDetail({
+      id: "tag-talk",
+      path: "项目状态/方案沟通",
+      parentId: parent.id,
+      parentPath: parent.path,
+    });
+    const next = createTagDetail({
+      id: "tag-bid",
+      path: "项目状态/项目投标",
+      parentId: parent.id,
+      parentPath: parent.path,
+    });
+    libraryApiMock.listLibraryDocuments.mockResolvedValue(
+      createDocumentList([createDocumentRecord({ documentId: "doc-status", path: "docs/project.md" })]),
+    );
+    libraryApiMock.listLibraryTagDetails.mockResolvedValue([parent, previous, next]);
+    libraryApiMock.getDocumentTagDetails.mockResolvedValue(createDocumentTagDetails({
+      documentId: "doc-status",
+      manualTagIds: [previous.id],
+      resolvedTags: [resolvedTag(previous)],
+    }));
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
+    await openDocumentTagDialog("project.md");
+    const dialog = screen.getByRole("dialog", { name: "分配标签" });
+    await userEvent.type(within(dialog).getByLabelText("添加标签"), next.path);
+    await userEvent.keyboard("{Enter}");
+
+    await waitFor(() => {
+      expect(libraryApiMock.saveDocumentTags).toHaveBeenCalledWith("doc-status", {
+        tagIds: [next.id],
+        createTagPaths: [],
+      });
+    });
+  });
+
+  it("点击已分配的单选标签显示兄弟标签浮窗并可一键切换", async () => {
+    const parent = createTagDetail({
+      id: "tag-status",
+      path: "项目状态",
+      childTagSelectionMode: "single",
+    });
+    const current = createTagDetail({
+      id: "tag-talk",
+      path: "项目状态/方案沟通",
+      parentId: parent.id,
+      parentPath: parent.path,
+    });
+    const next = createTagDetail({
+      id: "tag-bid",
+      path: "项目状态/项目投标",
+      parentId: parent.id,
+      parentPath: parent.path,
+    });
+    const other = createTagDetail({
+      id: "tag-department",
+      path: "部门/工程",
+      parentId: "tag-department-root",
+      parentPath: "部门",
+    });
+    const otherExclusiveParent = createTagDetail({
+      id: "tag-department-root",
+      path: "部门",
+      childTagSelectionMode: "single",
+    });
+    const otherExclusiveSibling = createTagDetail({
+      id: "tag-sales",
+      path: "部门/销售",
+      parentId: otherExclusiveParent.id,
+      parentPath: otherExclusiveParent.path,
+    });
+    libraryApiMock.listLibraryDocuments.mockResolvedValue(
+      createDocumentList([createDocumentRecord({ documentId: "doc-switch", path: "docs/switch.md" })]),
+    );
+    libraryApiMock.listLibraryTagDetails.mockResolvedValue([
+      parent,
+      current,
+      next,
+      otherExclusiveParent,
+      other,
+      otherExclusiveSibling,
+    ]);
+    libraryApiMock.getDocumentTagDetails.mockResolvedValue(createDocumentTagDetails({
+      documentId: "doc-switch",
+      manualTagIds: [current.id, other.id],
+      resolvedTags: [resolvedTag(current), resolvedTag(other)],
+    }));
+    libraryApiMock.saveDocumentTags.mockResolvedValue(createDocumentTagDetails({
+      documentId: "doc-switch",
+      manualTagIds: [next.id, other.id],
+      resolvedTags: [resolvedTag(next), resolvedTag(other)],
+    }));
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
+    await openDocumentTagDialog("switch.md");
+
+    await userEvent.click(screen.getByRole("button", {
+      name: "切换互斥标签“项目状态/方案沟通”",
+    }));
+    const menu = screen.getByRole("menu", {
+      name: "切换“项目状态”下的标签",
+    });
+    expect(within(menu).getByRole("menuitemradio", { name: "项目状态/项目投标" })).toBeInTheDocument();
+    expect(within(menu).queryByRole("menuitemradio", { name: "部门/销售" })).not.toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", {
+      name: "切换互斥标签“项目状态/方案沟通”",
+    }));
+    const reopenedMenu = screen.getByRole("menu", {
+      name: "切换“项目状态”下的标签",
+    });
+
+    await userEvent.click(within(reopenedMenu).getByRole("menuitemradio", { name: "项目状态/项目投标" }));
+    await waitFor(() => {
+      expect(libraryApiMock.saveDocumentTags).toHaveBeenCalledWith("doc-switch", {
+        tagIds: [other.id, next.id],
+        createTagPaths: [],
+      });
+    });
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
   it("文档详情推荐标签收进推荐区域，最多显示 8 个并排除已分配标签", async () => {
     const assignedTag = createTagDetail({ id: "tag-assigned", path: "项目/已分配", rootType: "项目" });
     const assignableTags = Array.from({ length: 10 }, (_, index) =>

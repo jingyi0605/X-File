@@ -5776,7 +5776,14 @@ function LibraryQuickTagAssignmentEditor({
 }) {
   const [query, setQuery] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [recommendationsFocused, setRecommendationsFocused] = useState(false);
   const [pendingAction, setPendingAction] = useState<"assign" | "create" | "remove" | null>(null);
+  const recommendationAnchorRef = useRef<HTMLDivElement | null>(null);
+  const [openExclusiveTagId, setOpenExclusiveTagId] = useState<string | null>(null);
+  const [exclusivePopoverPosition, setExclusivePopoverPosition] = useState<{ left: number; top: number } | null>(null);
+  const exclusiveTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const exclusivePopoverRef = useRef<HTMLDivElement | null>(null);
+  const exclusivePopoverId = useId();
   const selectedTagIds = useMemo(() => new Set(assignedTagIds), [assignedTagIds]);
   const selectedTags = useMemo(
     () => assignableTags.filter((tag) => selectedTagIds.has(tag.id)),
@@ -5801,6 +5808,66 @@ function LibraryQuickTagAssignmentEditor({
     selectedTags.forEach((tag) => map.set(tag.path, tag));
     return map;
   }, [selectedTags]);
+  const openExclusiveTag = assignableTags.find((tag) => tag.id === openExclusiveTagId) ?? null;
+  const exclusiveSiblingTags = openExclusiveTag
+    ? resolveExclusiveSiblingTags(openExclusiveTag, assignableTags)
+    : [];
+
+  useLayoutEffect(() => {
+    if (!openExclusiveTagId || exclusiveSiblingTags.length === 0) return;
+
+    const updatePosition = () => {
+      const anchor = exclusiveTriggerRef.current;
+      const popover = exclusivePopoverRef.current;
+      if (!anchor || !popover) return;
+      const rect = anchor.getBoundingClientRect();
+      const rootStyle = window.getComputedStyle(document.documentElement);
+      const padding = Number.parseFloat(rootStyle.getPropertyValue("--space-3")) || 8;
+      const gap = Number.parseFloat(rootStyle.getPropertyValue("--space-2")) || 6;
+      const popoverRect = popover.getBoundingClientRect();
+      const left = Math.max(
+        padding,
+        Math.min(rect.left, window.innerWidth - popoverRect.width - padding),
+      );
+      const below = window.innerHeight - rect.bottom;
+      const top = below >= popoverRect.height + gap
+        ? rect.bottom + gap
+        : Math.max(padding, rect.top - popoverRect.height - gap);
+      setExclusivePopoverPosition({ left, top });
+    };
+
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    document.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      document.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [openExclusiveTagId, exclusiveSiblingTags.length]);
+
+  useEffect(() => {
+    if (!openExclusiveTagId) return;
+    const dismiss = (event: PointerEvent) => {
+      if (!(event.target instanceof Node)) return;
+      if (exclusivePopoverRef.current?.contains(event.target)) return;
+      if (exclusiveTriggerRef.current?.contains(event.target)) return;
+      setOpenExclusiveTagId(null);
+      setExclusivePopoverPosition(null);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      setOpenExclusiveTagId(null);
+      setExclusivePopoverPosition(null);
+      exclusiveTriggerRef.current?.focus();
+    };
+    document.addEventListener("pointerdown", dismiss);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", dismiss);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [openExclusiveTagId]);
   const normalizedQuery = normalizeTagPathInput(query);
   const normalizedQueryLower = normalizedQuery.toLowerCase();
   const matchedTags = useMemo(() => {

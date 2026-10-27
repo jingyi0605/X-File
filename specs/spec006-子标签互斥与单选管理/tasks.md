@@ -150,6 +150,24 @@
   - 主要改哪里：Spec 任务状态、验收记录和实际发现的相关缺口。
   - 这一步先不做什么：不追加无关标签功能，不启动开发服务器。
   - 怎么算完成：所有需求有测试或人工验收证据；未完成项/风险明确记录；既有工作区改动未被覆盖。
-  - 怎么验证：相关 Rust、服务端、前端测试及 typecheck/build；`git diff --check`；检查工作区差异。
+  - 结果：单选配置、替换行为、跨来源胜出与来源诊断均已实现；只提交了 Spec 规划文档，开发修改未提交，未覆盖已有品牌资产和其他工作区改动。
+  - 怎么验证：Rust 全部 76 项通过；Server typecheck/build 与 2 项定向测试通过；Web typecheck/build 与标签管理/赋值测试 22 项通过；`git diff --check` 通过。没有启动服务。
+  - 剩余验证限制：`cargo fmt --check` 未能执行，因为当前 stable toolchain 未安装 `rustfmt`；Web build 报告的 Tauri 动态导入及 bundle size 警告为既有构建提示。
   - 对应需求：需求 1—5
   - 对应设计：§6—§8
+
+## 体验扩展：已分配标签快速切换
+
+- [x] E1 点击单选标签打开兄弟标签浮窗并支持一键切换
+  - 状态：DONE
+  - 这一步到底做什么：点击已分配的单选子标签 chip 时，以该标签为锚点展示同一父标签的其他可分配子标签；选择后沿用现有保存流程替换标签。
+  - 做完你能看到什么：状态标签无需再搜索即可直接切换；× 仍独立执行移除；其他多选标签行为不变。
+  - 先依赖什么：3.1、3.2
+  - 开始前先看：`requirements.md` 需求 2、4；`design.md` §2.3.1、§7.3；`docs/20260609-前端开发规范.md`。
+  - 主要改哪里：`apps/web/src/features/library/LibraryPage.tsx`、`apps/web/src/styles.css`、`apps/web/src/i18n.ts`、`apps/web/src/features/library/__tests__/LibraryTagAssignmentMigration.test.tsx`。
+  - 这一步先不做什么：不扩展跨父级切换、不将低优先级派生标签作为手工赋值移除，也不改服务端互斥裁决。
+  - 怎么算完成：只有当前标签父节点为 single 时显示切换入口；弹层只列同父的其他 active、可分配子标签；选择一次即提交替换；Escape/外部点击关闭；× 仍能移除。
+  - 结果：浮窗使用 portal 与视口边界定位，视觉消费现有玻璃/控件 token，具备键盘 Escape、外部点击关闭和独立移除按钮。
+  - 怎么验证：`LibraryTagAssignmentMigration.test.tsx` 15 项通过，覆盖只列同组候选、Escape 关闭和一键保存；Web typecheck/build 与 `git diff --check` 通过。未启动服务。
+  - 对应需求：需求 2、4
+  - 对应设计：§2.3.1、§3.1、§7.3
