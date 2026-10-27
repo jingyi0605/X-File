@@ -17,6 +17,7 @@
   --library-task-pending-duration: 1.2s;
   --library-task-icon-size: 14px;
   --library-task-progress-gradient: linear-gradient(90deg, var(--accent), #6366f1);
+  --tag-recommendation-popover-max-height: 280px;
   --space-6: 14px;
   --space-8: 18px;
   --page-padding: 0;
@@ -6612,7 +6613,44 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding-top: 0;
+  position: absolute;
+  inset-inline: 0;
+  bottom: calc(100% + var(--space-2));
+  z-index: 1;
+  box-sizing: border-box;
+  max-height: min(var(--tag-recommendation-popover-max-height), calc(100dvh - 2 * var(--space-8)));
+  overflow-y: auto;
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--modal-panel-border) 82%, transparent);
+  border-radius: var(--radius-control);
+  background: var(--modal-panel-surface-strong);
+  box-shadow: var(--modal-panel-shadow);
+  backdrop-filter: var(--modal-panel-filter);
+  -webkit-backdrop-filter: var(--modal-panel-filter);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(var(--space-1));
+  transition: opacity 120ms ease, transform 120ms ease, visibility 120ms ease;
+}
+
+.affairs-document-tag-picker {
+  position: relative;
+}
+
+.affairs-document-tag-input-anchor {
+  position: relative;
+}
+
+.affairs-document-tag-input-anchor > input {
+  width: 100%;
+}
+
+.affairs-document-tag-input-anchor[data-focused="true"] > .affairs-document-tag-recommendations {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateY(0);
 }
 
 .affairs-document-tag-recommendations-title {
