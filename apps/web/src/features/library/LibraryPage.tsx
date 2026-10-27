@@ -15,6 +15,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 import type {
   HostDirectoryOption,
   LibraryDirectorySource,
@@ -1494,6 +1495,8 @@ function LibraryDesktopSidebar({
                         key={`${favorite.kind}:${favorite.path}`}
                         active={library.viewState.selectedFavoriteId === favorite.path}
                         title={favorite.label || favorite.path || t("libraryRootFolder")}
+                        hoverTitle={resolveFavoriteHoverTitle(favorite)}
+                        hoverTags={resolveFavoriteHoverTags(favorite)}
                         icon={favorite.kind === "folder" ? "folder" : "tag"}
                         onClick={() => library.selectFavorite(favorite)}
                         onRemoveFavorite={() => void library.toggleFavorite(favorite)}
@@ -1794,6 +1797,8 @@ function LibraryTagTreeNode({
 function SidebarPlainItem({
   active,
   title,
+  hoverTitle,
+  hoverTags = [],
   count,
   icon,
   onClick,
@@ -1801,6 +1806,8 @@ function SidebarPlainItem({
 }: {
   active: boolean;
   title: string;
+  hoverTitle?: string;
+  hoverTags?: string[];
   count?: string | number;
   icon: "folder" | "tag";
   onClick: () => void;
@@ -1808,17 +1815,129 @@ function SidebarPlainItem({
   onRemoveFavorite?: () => void;
 }) {
   const itemClassName = active ? "affairs-sidebar-item active" : "affairs-sidebar-item";
+  const resolvedHoverTitle = hoverTitle || title;
+  const hasHoverTags = hoverTags.length > 0;
+  const [tagPreviewPosition, setTagPreviewPosition] = useState<{ left: number; top: number } | null>(null);
+  const [tagPreviewVisible, setTagPreviewVisible] = useState(false);
+  const tagPreviewTimerRef = useRef<number | null>(null);
+  const tagPreviewId = useId();
+
+  function resolveTagPreviewPosition(clientX: number, clientY: number) {
+    if (!hasHoverTags || typeof window === "undefined") {
+      return null;
+    }
+    const previewWidth = Math.min(360, window.innerWidth - 24);
+    const previewHeight = Math.min(160, window.innerHeight - 24);
+    return {
+      left: Math.min(Math.max(clientX + 14, 12), window.innerWidth - previewWidth - 12),
+      top: Math.min(Math.max(clientY + 14, 12), window.innerHeight - previewHeight - 12),
+    };
+  }
+
+  function updateTagPreviewPosition(clientX: number, clientY: number): void {
+    const position = resolveTagPreviewPosition(clientX, clientY);
+    if (position) {
+      setTagPreviewPosition(position);
+    }
+  }
+
+  function startTagPreviewTimer(clientX: number, clientY: number): void {
+    if (!hasHoverTags) {
+      return;
+    }
+    const position = resolveTagPreviewPosition(clientX, clientY);
+    if (!position) {
+      return;
+    }
+    setTagPreviewPosition(position);
+    if (tagPreviewTimerRef.current !== null) {
+      window.clearTimeout(tagPreviewTimerRef.current);
+    }
+    tagPreviewTimerRef.current = window.setTimeout(() => {
+      tagPreviewTimerRef.current = null;
+      setTagPreviewVisible(true);
+    }, LIBRARY_FAVORITE_TAG_PREVIEW_DELAY_MS);
+  }
+
+  function showTagPreviewImmediately(target: HTMLElement): void {
+    if (!hasHoverTags) {
+      return;
+    }
+    if (tagPreviewTimerRef.current !== null) {
+      window.clearTimeout(tagPreviewTimerRef.current);
+      tagPreviewTimerRef.current = null;
+    }
+    const rect = target.getBoundingClientRect();
+    const position = resolveTagPreviewPosition(rect.right, rect.top + rect.height / 2);
+    if (position) {
+      setTagPreviewPosition(position);
+      setTagPreviewVisible(true);
+    }
+  }
+
+  function hideTagPreview(): void {
+    if (tagPreviewTimerRef.current !== null) {
+      window.clearTimeout(tagPreviewTimerRef.current);
+      tagPreviewTimerRef.current = null;
+    }
+    setTagPreviewVisible(false);
+  }
+
+  useEffect(() => () => {
+    if (tagPreviewTimerRef.current !== null) {
+      window.clearTimeout(tagPreviewTimerRef.current);
+    }
+  }, []);
+
+  const hoverPreview = hasHoverTags && tagPreviewVisible && tagPreviewPosition && typeof document !== "undefined"
+    ? createPortal(
+        <div
+          id={tagPreviewId}
+          className="affairs-favorite-tag-preview"
+          role="tooltip"
+          style={{
+            left: tagPreviewPosition.left,
+            top: tagPreviewPosition.top,
+          }}
+        >
+          <div className="affairs-favorite-tag-preview-list">
+            {hoverTags.map((tagPath) => (
+              <LibraryColorTag key={tagPath} label={tagPath} path={tagPath} />
+            ))}
+          </div>
+        </div>,
+        document.body,
+      )
+    : null;
 
   // 收藏项：左侧导航按钮 + 右侧取消收藏星标
   if (onRemoveFavorite) {
     return (
-      <div className={itemClassName}>
-        <button type="button" className="affairs-sidebar-item-button" onClick={onClick}>
+      <>
+        <div
+          className={itemClassName}
+          aria-describedby={hasHoverTags && tagPreviewVisible ? tagPreviewId : undefined}
+          onMouseEnter={(event) => startTagPreviewTimer(event.clientX, event.clientY)}
+          onMouseMove={(event) => updateTagPreviewPosition(event.clientX, event.clientY)}
+          onMouseLeave={hideTagPreview}
+          onFocusCapture={(event) => showTagPreviewImmediately(event.currentTarget)}
+          onBlurCapture={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+              hideTagPreview();
+            }
+          }}
+        >
+        <button
+          type="button"
+          className="affairs-sidebar-item-button"
+          title={hasHoverTags ? undefined : resolvedHoverTitle}
+          onClick={onClick}
+        >
           <span className="affairs-sidebar-item-row">
             <span className="affairs-sidebar-leading-icon" aria-hidden="true">
               {icon === "folder" ? renderMiniFolderIcon() : renderTagIcon()}
             </span>
-            <span className="affairs-sidebar-item-title" title={title}>
+            <span className="affairs-sidebar-item-title">
               {title}
             </span>
           </span>
@@ -1827,6 +1946,7 @@ function SidebarPlainItem({
           <button
             type="button"
             className="affairs-favorite-toggle active"
+            title={hasHoverTags ? undefined : resolvedHoverTitle}
             onClick={(e) => {
               e.stopPropagation();
               onRemoveFavorite();
@@ -1835,7 +1955,9 @@ function SidebarPlainItem({
             {renderFilledStarIcon()}
           </button>
         </div>
-      </div>
+        </div>
+        {hoverPreview}
+      </>
     );
   }
 
@@ -1844,6 +1966,7 @@ function SidebarPlainItem({
     <button
       type="button"
       className={itemClassName}
+      title={hasHoverTags ? undefined : resolvedHoverTitle}
       onClick={onClick}
     >
       <span className="affairs-sidebar-item-button">
@@ -3032,6 +3155,7 @@ const VIRTUAL_LIST_ROW_HEIGHT = 36;
 const VIRTUAL_OVERSCAN = 2;
 const VIRTUAL_LIST_OVERSCAN = 8;
 const LIBRARY_SELECTION_PRESS_ANIMATION_MS = 140;
+const LIBRARY_FAVORITE_TAG_PREVIEW_DELAY_MS = 2000;
 const LIBRARY_DETAIL_SETTLE_DELAY_MS = 500;
 
 type VirtualLibraryEntrySlot = {

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -83,6 +83,50 @@ describe("第 2 批：文件夹打开行为、目录选中与目录导航", () =
         favorites: [{ kind: "folder", path: "客户资料", label: "客户资料" }],
       });
     });
+  });
+
+  it("收藏列表悬停时显示目录完整路径和标签组合", async () => {
+    libraryApiMock.getLibrarySnapshot.mockResolvedValue(
+      createLibrarySnapshot({
+        favorites: [
+          { kind: "folder", path: "项目资料/合同签订", label: "合同签订" },
+          {
+            kind: "tag_filter",
+            path: "项目/实施|状态/进行中",
+            label: "实施中项目",
+            tagPaths: ["项目/实施", "状态/进行中"],
+          },
+        ],
+      }),
+    );
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
+
+    expect(await screen.findByRole("button", { name: "合同签订" })).toHaveAttribute(
+      "title",
+      "项目资料/合同签订",
+    );
+    const tagFavorite = await screen.findByRole("button", { name: "实施中项目" });
+    vi.useFakeTimers();
+    try {
+      fireEvent.mouseEnter(tagFavorite, { clientX: 320, clientY: 140 });
+      expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+
+      act(() => vi.advanceTimersByTime(1999));
+      expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+
+      act(() => vi.advanceTimersByTime(1));
+      const tagPreview = screen.getByRole("tooltip");
+      expect(within(tagPreview).getAllByText(/项目\/实施|状态\/进行中/)).toHaveLength(2);
+      expect(tagFavorite).not.toHaveAttribute("title");
+      expect(tagPreview).toHaveStyle({ left: "334px", top: "154px" });
+
+      fireEvent.mouseLeave(tagFavorite);
+      expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("网格目录星标可以收藏和取消收藏，且不会触发行选择", async () => {

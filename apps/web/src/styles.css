@@ -6024,6 +6024,36 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
   margin-left: auto;
 }
 
+.affairs-favorite-tag-preview {
+  position: fixed;
+  z-index: 1000;
+  width: max-content;
+  max-width: min(360px, calc(100vw - 24px));
+  padding: 9px 10px;
+  border: 1px solid var(--glass-control-border);
+  border-radius: var(--radius-control);
+  background: var(--modal-panel-surface-strong);
+  box-shadow: var(--modal-frame-shadow);
+  pointer-events: none;
+  will-change: left, top;
+  backdrop-filter: var(--workbench-inspector-blur);
+  -webkit-backdrop-filter: var(--workbench-inspector-blur);
+  animation: glass-reveal var(--transition-fast);
+}
+
+.affairs-favorite-tag-preview-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 100%;
+}
+
+.affairs-favorite-tag-preview .affairs-color-tag {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* 收藏切换按钮（实心星标，点击取消收藏） */
 
 .affairs-favorite-toggle {
