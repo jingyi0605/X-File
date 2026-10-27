@@ -233,6 +233,7 @@ type LibraryContextActionId =
   | "paste"
   | "delete"
   | "tags"
+  | "favorite"
   | "refresh"
   | "properties";
 
@@ -353,6 +354,7 @@ type StageLibraryState = Pick<
   | "snapshot"
   | "toggleDocumentSelection"
   | "toggleFolderEntrySelection"
+  | "toggleFavorite"
   | "viewState"
   | "visibleEntryTotal"
 >;
@@ -389,6 +391,7 @@ type DetailLibraryState = Pick<
   | "selectedFolderEntries"
   | "selectFolder"
   | "snapshot"
+  | "toggleFavorite"
   | "viewState"
 > & { tagRevision: number };
 
@@ -848,6 +851,11 @@ export function LibraryPage({
         }
         return;
       }
+      case "favorite":
+        if (target.kind === "folder") {
+          await toggleFolderFavorite(currentLibrary, target.entry);
+        }
+        return;
       case "refresh":
         await currentLibrary.reloadDocuments(true);
         return;
@@ -957,6 +965,7 @@ export function LibraryPage({
     snapshot: library.snapshot,
     toggleDocumentSelection: callLibraryToggleDocumentSelection,
     toggleFolderEntrySelection: callLibraryToggleFolderEntrySelection,
+    toggleFavorite: callLibraryToggleFavorite,
     viewState: library.viewState,
     visibleEntryTotal: library.visibleEntryTotal,
   }), [
@@ -970,6 +979,7 @@ export function LibraryPage({
     callLibrarySetViewState,
     callLibraryToggleDocumentSelection,
     callLibraryToggleFolderEntrySelection,
+    callLibraryToggleFavorite,
     library.documentPage,
     library.documentsLoading,
     library.entries,
@@ -1022,6 +1032,7 @@ export function LibraryPage({
     selectedFolderEntries: library.selectedFolderEntries,
     selectFolder: callLibrarySelectFolder,
     snapshot: library.snapshot,
+    toggleFavorite: callLibraryToggleFavorite,
     tagRevision,
     viewState: library.viewState,
   }), [
@@ -1031,6 +1042,7 @@ export function LibraryPage({
     callLibraryReload,
     callLibraryReloadDocuments,
     callLibrarySelectFolder,
+    callLibraryToggleFavorite,
     library.documentPage,
     library.entries,
     library.preview,
@@ -3094,6 +3106,7 @@ function VirtualLibraryGrid({
     height: 0,
     scrollTop: 0,
   });
+
   const [measuredItemHeight, setMeasuredItemHeight] = useState(
     VIRTUAL_GRID_ITEM_HEIGHT,
   );
@@ -3676,6 +3689,7 @@ function VirtualLibraryFinderList({
             />
           </span>
         ))}
+        <span className="affairs-finder-actions-cell" aria-hidden="true" />
       </div>
       <div
         ref={viewportRef}
@@ -4040,7 +4054,7 @@ function AffairsFinderPlaceholderRow({
   return (
     <div
       className="affairs-finder-row is-placeholder"
-      style={{ gridTemplateColumns }}
+      style={{ gridTemplateColumns: `${gridTemplateColumns} var(--control-height-md)` }}
       aria-hidden="true"
     >
       <span className="affairs-finder-name-cell">
@@ -4051,7 +4065,40 @@ function AffairsFinderPlaceholderRow({
       <span className="affairs-finder-placeholder-cell" />
       <span className="affairs-finder-placeholder-cell" />
       <span className="affairs-finder-placeholder-cell" />
+      <span className="affairs-finder-actions-cell" />
     </div>
+  );
+}
+
+function FolderFavoriteButton({
+  entry,
+  favorite,
+  onToggleFavorite,
+}: {
+  entry: LibraryFolderEntry;
+  favorite: boolean;
+  onToggleFavorite: LibraryState["toggleFavorite"];
+}) {
+  return (
+    <button
+      type="button"
+      className="affairs-favorite-toggle affairs-folder-favorite-toggle"
+      aria-label={t(favorite ? "libraryFavoriteRemove" : "libraryFavoriteAddFolder")}
+      aria-pressed={favorite}
+      title={t(favorite ? "libraryFavoriteRemoveFolderAction" : "libraryFavoriteAddFolderAction", { folder: entry.name })}
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        void onToggleFavorite({
+          kind: "folder",
+          path: entry.path,
+          label: entry.name || getPathName(entry.path),
+        });
+      }}
+    >
+      {favorite ? renderFilledStarIcon() : renderFavoriteIcon()}
+    </button>
   );
 }
 
@@ -4067,6 +4114,8 @@ function LibraryEntryCard({
   onVisualSelect,
   onOpenContextMenu,
   onOpenLibraryViewer,
+  onToggleFavorite,
+  isFavorite,
 }: {
   entry: LibraryEntry;
   active: boolean;
@@ -4082,6 +4131,8 @@ function LibraryEntryCard({
     target: LibraryContextMenuTarget,
   ) => void;
   onOpenLibraryViewer: (entry: LibraryDocumentEntry) => void;
+  onToggleFavorite: LibraryState["toggleFavorite"];
+  isFavorite: boolean;
 }) {
   function handlePointerSelection(event: ReactPointerEvent<HTMLButtonElement>): void {
     if (event.button !== 0 || event.ctrlKey || event.metaKey) {
@@ -4093,52 +4144,61 @@ function LibraryEntryCard({
 
   if (entry.kind !== "document") {
     return (
-      <button
-        type="button"
-        className={
-          active ? "affairs-doc-item grid active" : "affairs-doc-item grid"
-        }
-        onPointerDown={handlePointerSelection}
-        onClick={(event) => {
-          if (entry.kind !== "folder") {
-            return;
+      <div className="affairs-folder-grid-item">
+        {entry.kind === "folder" ? (
+          <FolderFavoriteButton
+            entry={entry}
+            favorite={isFavorite}
+            onToggleFavorite={onToggleFavorite}
+          />
+        ) : null}
+        <button
+          type="button"
+          className={
+            active ? "affairs-doc-item grid active" : "affairs-doc-item grid"
           }
-          if (folderOpenBehavior === "single_click") {
-            onSelectFolder(entry.path);
-            return;
-          }
-          if (!event.detail) {
-            onToggleFolderEntrySelection(entry.path);
-            return;
-          }
-          if (!event.metaKey && !event.ctrlKey) {
-            return;
-          }
-          onToggleFolderEntrySelection(entry.path, event.metaKey || event.ctrlKey);
-        }}
-        onDoubleClick={() => {
-          if (entry.kind === "folder") {
-            onSelectFolder(entry.path);
-          }
-        }}
-        onContextMenu={(event) => {
-          if (entry.kind !== "folder") {
-            return;
-          }
-          onSelectFolderEntry(entry.path);
-          onOpenContextMenu(event, { kind: "folder", entry });
-        }}
-      >
-        <div className="affairs-doc-icon">{renderFolderShape()}</div>
-        <div className="affairs-doc-title" title={entry.name}>
-          {entry.name}
-        </div>
-        <div className="affairs-doc-footer">
-          <span className="affairs-doc-muted">
-            {t("libraryCountDocuments", { count: entry.documentCount })}
-          </span>
-        </div>
-      </button>
+          onPointerDown={handlePointerSelection}
+          onClick={(event) => {
+            if (entry.kind !== "folder") {
+              return;
+            }
+            if (folderOpenBehavior === "single_click") {
+              onSelectFolder(entry.path);
+              return;
+            }
+            if (!event.detail) {
+              onToggleFolderEntrySelection(entry.path);
+              return;
+            }
+            if (!event.metaKey && !event.ctrlKey) {
+              return;
+            }
+            onToggleFolderEntrySelection(entry.path, event.metaKey || event.ctrlKey);
+          }}
+          onDoubleClick={() => {
+            if (entry.kind === "folder") {
+              onSelectFolder(entry.path);
+            }
+          }}
+          onContextMenu={(event) => {
+            if (entry.kind !== "folder") {
+              return;
+            }
+            onSelectFolderEntry(entry.path);
+            onOpenContextMenu(event, { kind: "folder", entry });
+          }}
+        >
+          <div className="affairs-doc-icon">{renderFolderShape()}</div>
+          <div className="affairs-doc-title" title={entry.name}>
+            {entry.name}
+          </div>
+          <div className="affairs-doc-footer">
+            <span className="affairs-doc-muted">
+              {t("libraryCountDocuments", { count: entry.documentCount })}
+            </span>
+          </div>
+        </button>
+      </div>
     );
   }
   return (
@@ -4200,6 +4260,8 @@ function LibraryFinderRow({
   gridTemplateColumns,
   onOpenContextMenu,
   onOpenLibraryViewer,
+  onToggleFavorite,
+  isFavorite,
 }: {
   entry: LibraryEntry;
   active: boolean;
@@ -4216,6 +4278,8 @@ function LibraryFinderRow({
     target: LibraryContextMenuTarget,
   ) => void;
   onOpenLibraryViewer: (entry: LibraryDocumentEntry) => void;
+  onToggleFavorite: LibraryState["toggleFavorite"];
+  isFavorite: boolean;
 }) {
   function handlePointerSelection(event: ReactPointerEvent<HTMLButtonElement>): void {
     if (event.button !== 0 || event.ctrlKey || event.metaKey) {
@@ -4500,7 +4564,7 @@ function LibraryDetail({
       ) : !selected && !selectedFolder ? (
         <div
           ref={detailScrollRef}
-          className="affairs-detail-scroll"
+          className="affairs-detail-scroll affairs-detail-scroll-empty"
           data-scrollbar="macos-thin"
         >
           <div className="affairs-detail-empty">{t("libraryNoSelection")}</div>
@@ -4672,6 +4736,7 @@ function LibraryDetail({
               preview={preview}
               loading={!deferredPreviewError && (deferredPreviewLoading || !preview)}
               error={deferredPreviewError}
+              localRootDir={allowLocalOpen ? library.snapshot?.binding?.rootDir || null : null}
               compact
             />
           </section>
@@ -9207,6 +9272,30 @@ function resolveFavoriteKindLabel(kind: LibraryFavoriteKind): string {
   return labels[kind];
 }
 
+function resolveFavoriteHoverTitle(favorite: LibraryFavoriteRecord): string {
+  if (favorite.kind === "folder") {
+    return favorite.path || favorite.label;
+  }
+  if (favorite.kind === "tag_filter") {
+    return favorite.tagPaths?.length
+      ? favorite.tagPaths.join("、")
+      : favorite.path || favorite.label;
+  }
+  return favorite.path || favorite.label;
+}
+
+function resolveFavoriteHoverTags(favorite: LibraryFavoriteRecord): string[] {
+  if (favorite.kind === "folder") {
+    return [];
+  }
+  if (favorite.kind === "tag_filter") {
+    return favorite.tagPaths?.length
+      ? favorite.tagPaths
+      : favorite.path.split("|").filter(Boolean);
+  }
+  return favorite.path ? [favorite.path] : [];
+}
+
 function resolveContextMenuPosition(
   point: { x: number; y: number },
   menu: { width: number; height: number },
@@ -9532,6 +9621,12 @@ function buildNativeLibraryContextMenuItems(
     items.push({ id: "delete", label: t("libraryContextDelete") });
     items.push({ id: "tags", label: t("libraryContextTags") });
   }
+  if (target.kind === "folder") {
+    items.push({
+      id: "favorite",
+      label: t("libraryFavoriteAction"),
+    });
+  }
   if (isBlankTarget) {
     items.push({ id: "refresh", label: t("libraryContextRefresh") });
   }
@@ -9592,7 +9687,10 @@ function resolveParentPath(pathValue: string): string | null {
   return normalized.slice(0, slashIndex);
 }
 
-function isFolderFavorite(library: LibraryState, path: string): boolean {
+function isFolderFavorite(
+  library: Pick<LibraryState, "snapshot">,
+  path: string,
+): boolean {
   return Boolean(
     library.snapshot?.favorites.some(
       (item) => item.kind === "folder" && item.path === path,

@@ -1562,6 +1562,34 @@ p {
   padding: 8px 6px 6px;
 }
 
+.affairs-folder-grid-item {
+  position: relative;
+  display: grid;
+  width: 108px;
+  align-content: start;
+  justify-self: center;
+  justify-items: center;
+}
+
+.affairs-folder-grid-item > .affairs-doc-item.grid {
+  width: 108px;
+}
+
+.affairs-folder-favorite-toggle {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  z-index: 1;
+  opacity: 0;
+  transition: opacity var(--transition-fast), color var(--transition-fast), background var(--transition-fast);
+}
+
+.affairs-folder-grid-item:hover .affairs-folder-favorite-toggle,
+.affairs-folder-grid-item:focus-within .affairs-folder-favorite-toggle,
+.affairs-folder-favorite-toggle[aria-pressed="true"] {
+  opacity: 1;
+}
+
 .affairs-doc-icon {
   display: inline-flex;
   width: 48px;
@@ -1871,6 +1899,25 @@ p {
   padding: 0 8px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.affairs-finder-actions-cell {
+  display: flex;
+  grid-column: 6;
+  grid-row: 1;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+}
+
+.affairs-finder-actions-cell > .affairs-folder-favorite-toggle {
+  opacity: 0;
+}
+
+.affairs-finder-directory-item:hover .affairs-finder-actions-cell > .affairs-folder-favorite-toggle,
+.affairs-finder-directory-item:focus-within .affairs-finder-actions-cell > .affairs-folder-favorite-toggle,
+.affairs-finder-actions-cell > .affairs-folder-favorite-toggle[aria-pressed="true"] {
+  opacity: 1;
 }
 
 .affairs-finder-header-cell {
@@ -6002,6 +6049,30 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
 .affairs-favorite-toggle svg {
   width: 14px;
   height: 14px;
+}
+
+.affairs-folder-favorite-toggle {
+  position: relative;
+  top: auto;
+  right: auto;
+  z-index: 1;
+  width: var(--control-height-sm);
+  height: var(--control-height-sm);
+  border-radius: var(--radius-control);
+  background: var(--glass-control-surface);
+  box-shadow: var(--glass-control-shadow);
+}
+
+.affairs-folder-grid-item > .affairs-folder-favorite-toggle {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+}
+
+@media (hover: none) {
+  .affairs-folder-favorite-toggle {
+    opacity: 1;
+  }
 }
 
 .affairs-sidebar-empty-plain {
