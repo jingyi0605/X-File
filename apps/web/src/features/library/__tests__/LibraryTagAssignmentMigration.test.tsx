@@ -105,6 +105,57 @@ describe("第 10 批：文档与文件夹标签分配、推荐标签和任务进
     expect(within(recommendations).queryByText("项目/已分配")).not.toBeInTheDocument();
   });
 
+  it("输入框聚焦时显示推荐浮层，输入搜索词后隐藏推荐并显示匹配项", async () => {
+    const recommendedTag = createTagDetail({
+      id: "tag-recommended-customer",
+      path: "客户/山东雄鹰轮胎集团有限公司",
+      rootType: "客户",
+    });
+    const matchingTag = createTagDetail({
+      id: "tag-search-match",
+      path: "客户/搜索匹配",
+      rootType: "客户",
+    });
+    libraryApiMock.listLibraryDocuments.mockResolvedValue(
+      createDocumentList([createDocumentRecord({
+        documentId: "doc-recommendation-focus",
+        path: "项目文档/GIXM0636-雄鹰轮胎机房建设项目/项目方案.md",
+      })]),
+    );
+    libraryApiMock.listLibraryTagDetails.mockResolvedValue([recommendedTag, matchingTag]);
+    libraryApiMock.getDocumentTagDetails.mockResolvedValue(createDocumentTagDetails({
+      documentId: "doc-recommendation-focus",
+      path: "项目文档/GIXM0636-雄鹰轮胎机房建设项目/项目方案.md",
+      recommendedTags: [{
+        tagId: recommendedTag.id,
+        path: recommendedTag.path,
+        name: recommendedTag.name,
+        reason: "name_match",
+        score: 92,
+        evidence: "雄鹰轮胎",
+      }],
+    }));
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
+
+    await openDocumentTagDialog("项目方案.md");
+    const dialog = screen.getByRole("dialog", { name: "分配标签" });
+    const input = within(dialog).getByLabelText("添加标签");
+    const recommendations = within(dialog).getByLabelText("推荐标签");
+
+    await userEvent.click(input);
+    expect(document.activeElement).toBe(input);
+    const inputAnchor = input.closest(".affairs-document-tag-input-anchor");
+    expect(inputAnchor).toContainElement(recommendations);
+    expect(inputAnchor).toHaveAttribute("data-focused", "true");
+    expect(within(recommendations).getByText(recommendedTag.path)).toBeInTheDocument();
+
+    await userEvent.type(input, "搜索");
+    expect(within(dialog).queryByLabelText("推荐标签")).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("listbox", { name: "可分配标签" })).toBeInTheDocument();
+  });
+
   it("文档标签请求提交后会立刻显示右上角进度入口", async () => {
     const tag = createTagDetail({ id: "tag-task", path: "项目/任务", rootType: "项目" });
     libraryApiMock.listLibraryDocuments.mockResolvedValue(
