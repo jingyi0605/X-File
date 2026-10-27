@@ -710,6 +710,7 @@ export interface SaveLibraryTagDefinitionInput {
   parentId?: string | null;
   description?: string | null;
   status?: "active" | "disabled";
+  childTagSelectionMode?: "multiple" | "single";
   smartRules?: LibraryTagRule[];
 }
 

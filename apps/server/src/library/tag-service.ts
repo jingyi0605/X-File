@@ -30,6 +30,7 @@ export interface CreateTagInput {
   parentId?: string | null;
   description?: string | null;
   status?: "active" | "disabled";
+  childTagSelectionMode?: "multiple" | "single";
   smartRules?: StoredTagRuleInput[];
 }
 
@@ -167,9 +168,17 @@ export class TagService {
     if (input.parentId && !parent) {
       throw new LibraryError(404, "INVALID_INPUT", "父标签不存在", "parentId");
     }
+    const childTagSelectionMode = input.childTagSelectionMode === undefined
+      ? undefined
+      : normalizeChildTagSelectionMode(input.childTagSelectionMode);
 
     const tagPath = parent ? `${parent.path}/${name}` : name;
     const tag = this.ensureTagInStore(data, tagPath, input.description ?? null);
+    if (childTagSelectionMode) {
+      tag.childTagSelectionMode = childTagSelectionMode;
+    } else {
+      tag.childTagSelectionMode ??= "multiple";
+    }
     if (input.status === "disabled") {
       tag.status = "disabled";
       tag.disabledAt = tag.disabledAt ?? new Date().toISOString();
@@ -184,7 +193,8 @@ export class TagService {
     this.scheduleTagRecompute(binding, {
       reason: `tag_definition_saved:${tag.id}`,
       scope: { kind: "full" },
-      shouldRecompute: Array.isArray(input.smartRules),
+      shouldRecompute:
+        Array.isArray(input.smartRules) || input.childTagSelectionMode !== undefined,
     });
     return this.toTagDetail(tag, data);
   }
@@ -212,6 +222,9 @@ export class TagService {
     const binding = this.requireCurrentBinding();
     const data = this.readStoreForBinding(binding);
     const tag = this.requireTag(data, tagId);
+    const childTagSelectionMode = input.childTagSelectionMode === undefined
+      ? tag.childTagSelectionMode ?? "multiple"
+      : normalizeChildTagSelectionMode(input.childTagSelectionMode);
     const name = normalizeTagSegment(input.name ?? tag.name);
     if (!name) {
       throw new LibraryError(400, "INVALID_INPUT", "标签名称不能为空", "name");
@@ -243,6 +256,7 @@ export class TagService {
     }
 
     const oldPath = tag.path;
+    const previousChildTagSelectionMode = tag.childTagSelectionMode ?? "multiple";
     const nextPath = parent ? `${parent.path}/${name}` : name;
     const duplicate = data.tags.find(
       (item) => item.id !== tag.id && item.path === nextPath,
@@ -266,6 +280,9 @@ export class TagService {
       tag.disabledAt = null;
     }
     tag.updatedAt = now;
+    tag.childTagSelectionMode = childTagSelectionMode;
+    const selectionModeChanged =
+      previousChildTagSelectionMode !== childTagSelectionMode;
 
     if (oldPath !== nextPath) {
       updateDescendantPaths(data.tags, tag.id, oldPath, nextPath);
@@ -332,18 +349,9 @@ export class TagService {
     const catalogResolved = catalogContext
       ? readCatalogResolvedTags(binding.rootDir, catalogContext.documentId, data)
       : [];
-
-    return {
-      documentId: normalizedDocumentId,
-      path: documentPath,
-      title:
-        catalogContext?.title ??
-        storedBinding?.title ??
-        path.basename(documentPath) ??
-        documentPath,
-      manualTagIds: storedBinding?.manualTagIds ?? [],
-      effectiveFolderBindings,
-      resolvedTags: mergeResolvedTagSources([
+    const tagResolution = resolveExclusiveTagSources(
+      data,
+      mergeResolvedTagSources([
         ...(storedBinding?.manualTagIds ?? []).map((tagId) =>
           this.toResolvedTagSource(
             data,
@@ -357,6 +365,21 @@ export class TagService {
         ),
         ...catalogResolved,
       ]).filter((item) => item.path.length > 0),
+      effectiveFolderBindings,
+    );
+
+    return {
+      documentId: normalizedDocumentId,
+      path: documentPath,
+      title:
+        catalogContext?.title ??
+        storedBinding?.title ??
+        path.basename(documentPath) ??
+        documentPath,
+      manualTagIds: storedBinding?.manualTagIds ?? [],
+      effectiveFolderBindings,
+      resolvedTags: tagResolution.resolved,
+      suppressedTags: tagResolution.suppressed,
       recommendedTags: buildTagRecommendations(data, {
         targetKind: "document",
         targetPath: documentPath,
@@ -386,6 +409,7 @@ export class TagService {
       ...(input.tagIds ?? []),
       ...createdTagIds,
     ]);
+    validateExclusiveChildTagSelection(data, manualTagIds);
     const existing = data.documentTags.find(
       (item) => item.documentId === normalizedDocumentId,
     );
@@ -461,6 +485,7 @@ export class TagService {
       ...(input.tagIds ?? []),
       ...createdTagIds,
     ]);
+    validateExclusiveChildTagSelection(data, bindingTagIds);
 
     data.folderTags = [
       ...data.folderTags.filter((item) => item.folderPath !== folderPath),
@@ -613,6 +638,7 @@ export class TagService {
   ): LibraryTagDetailWithRules {
     const node: LibraryTagNodeDetail = {
       ...tag,
+      childTagSelectionMode: tag.childTagSelectionMode ?? "multiple",
       documentCount: countTagDocuments(data, tag.id),
     };
     return {
@@ -798,6 +824,54 @@ function mergeResolvedTagSources<
   );
 }
 
+function resolveExclusiveTagSources(
+  data: StoredLibraryTags,
+  sources: LibraryResolvedTagSource[],
+  folderBindings: Array<{ id: string; folderPath: string; tagId: string; tagPath: string }>,
+) {
+  const byParent = new Map<string, typeof sources>();
+  const resolved = [] as typeof sources;
+  for (const source of sources) {
+    const tag = data.tags.find((item) => item.path === source.path);
+    const parent = tag?.parentId
+      ? data.tags.find((item) => item.id === tag.parentId)
+      : null;
+    if (parent?.childTagSelectionMode === "single" && tag?.parentId) {
+      const group = byParent.get(tag.parentId) ?? [];
+      group.push(source);
+      byParent.set(tag.parentId, group);
+    } else {
+      resolved.push(source);
+    }
+  }
+
+  const suppressed: Array<(typeof sources)[number] & { suppressedByPath: string }> = [];
+  for (const group of byParent.values()) {
+    group.sort((left, right) => {
+      const priority = right.priority - left.priority;
+      if (priority !== 0) return priority;
+      if (left.sourceType === "folder_binding" && right.sourceType === "folder_binding") {
+        const leftFolder = folderBindings.find((item) => item.id === left.sourceRef)?.folderPath ?? "";
+        const rightFolder = folderBindings.find((item) => item.id === right.sourceRef)?.folderPath ?? "";
+        if (leftFolder.length !== rightFolder.length) return rightFolder.length - leftFolder.length;
+      }
+      if (left.sourceType === "smart_rule" && right.sourceType === "smart_rule") {
+        const leftRule = data.tagRules.find((item) => item.id === left.sourceRef)?.priority ?? Number.MAX_SAFE_INTEGER;
+        const rightRule = data.tagRules.find((item) => item.id === right.sourceRef)?.priority ?? Number.MAX_SAFE_INTEGER;
+        if (leftRule !== rightRule) return leftRule - rightRule;
+      }
+      const leftId = data.tags.find((item) => item.path === left.path)?.id ?? left.path;
+      const rightId = data.tags.find((item) => item.path === right.path)?.id ?? right.path;
+      return leftId.localeCompare(rightId);
+    });
+    const [winner, ...losers] = group;
+    if (!winner) continue;
+    resolved.push(winner);
+    suppressed.push(...losers.map((source) => ({ ...source, suppressedByPath: winner.path })));
+  }
+  return { resolved, suppressed };
+}
+
 function normalizeTagPath(value: string): string {
   return value
     .replaceAll("\\", "/")
@@ -805,6 +879,53 @@ function normalizeTagPath(value: string): string {
     .map(normalizeTagSegment)
     .filter(Boolean)
     .join("/");
+}
+
+function normalizeChildTagSelectionMode(
+  value: string | undefined,
+): "multiple" | "single" {
+  if (value === undefined || value === "multiple") {
+    return "multiple";
+  }
+  if (value === "single") {
+    return "single";
+  }
+  throw new LibraryError(
+    400,
+    "INVALID_INPUT",
+    "子标签选择模式无效",
+    "childTagSelectionMode",
+  );
+}
+
+function validateExclusiveChildTagSelection(
+  data: StoredLibraryTags,
+  tagIds: string[],
+): void {
+  const selectedByParent = new Map<string, string[]>();
+  for (const tagId of tagIds) {
+    const tag = data.tags.find((item) => item.id === tagId);
+    if (!tag?.parentId || tag.status === "disabled") {
+      continue;
+    }
+    const parent = data.tags.find((item) => item.id === tag.parentId);
+    if (parent?.childTagSelectionMode !== "single") {
+      continue;
+    }
+    const selected = selectedByParent.get(parent.id) ?? [];
+    selected.push(tag.path);
+    selectedByParent.set(parent.id, selected);
+  }
+
+  const conflict = [...selectedByParent.values()].find((paths) => paths.length > 1);
+  if (conflict) {
+    throw new LibraryError(
+      409,
+      "LIBRARY_TAG_EXCLUSIVE_CHILD_CONFLICT",
+      `这些标签属于同一单选组，不能同时分配：${conflict.join("、")}`,
+      "tagIds",
+    );
+  }
 }
 
 function normalizeTagSegment(value: string): string {

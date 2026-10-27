@@ -14,6 +14,7 @@ export interface StoredTagDefinition {
   createdAt: string;
   updatedAt: string;
   disabledAt: string | null;
+  childTagSelectionMode?: "multiple" | "single";
 }
 
 export interface StoredDocumentTagBinding {

@@ -144,6 +144,7 @@ pub struct NativeSaveLibraryTagDefinitionRequest {
     pub parent_id: Option<String>,
     pub description: Option<String>,
     pub status: Option<String>,
+    pub child_tag_selection_mode: Option<String>,
     pub smart_rules: Option<Vec<LocalStoredTagRuleDraft>>,
 }
 
@@ -419,6 +420,11 @@ fn map_local_tag_detail(
         created_at: tag.created_at.clone(),
         updated_at: tag.updated_at.clone(),
         disabled_at: tag.disabled_at.clone(),
+        child_tag_selection_mode: normalize_child_tag_selection_mode(
+            tag.child_tag_selection_mode.as_deref(),
+        )
+        .unwrap_or("multiple")
+        .to_string(),
         smart_rule_enabled: smart_rules.iter().any(|rule| rule.enabled),
         smart_rules,
     }
@@ -467,6 +473,11 @@ pub fn save_local_library_tag(
         .unwrap_or_else(|| name.clone());
     let description = normalize_optional_text(request.description.as_deref());
     let status = normalize_tag_status(request.status.as_deref());
+    let child_tag_selection_mode = request
+        .child_tag_selection_mode
+        .as_deref()
+        .map(|value| normalize_child_tag_selection_mode(Some(value)))
+        .transpose()?;
     let smart_rules = request.smart_rules.clone();
 
     if let Some(existing_id) = tag_id {
@@ -490,6 +501,9 @@ pub fn save_local_library_tag(
                 None
             };
             tag.updated_at = now.clone();
+            if let Some(mode) = child_tag_selection_mode {
+                tag.child_tag_selection_mode = Some(mode.to_string());
+            }
             updated_tag_id = tag.id.clone();
         }
         replace_local_tag_rules(&mut store, &updated_tag_id, smart_rules);
@@ -514,6 +528,9 @@ pub fn save_local_library_tag(
             } else {
                 None
             },
+            child_tag_selection_mode: Some(
+                child_tag_selection_mode.unwrap_or("multiple").to_string(),
+            ),
         });
         replace_local_tag_rules(&mut store, &created_id, smart_rules);
     }
@@ -687,6 +704,7 @@ pub fn save_local_document_tags(
             tag_ids.push(created_id);
         }
     }
+    validate_single_child_tag_ids(&store, &tag_ids)?;
     set_task_tag_category(&store, &tag_ids);
     store
         .document_tags
@@ -758,6 +776,7 @@ pub fn save_local_folder_tags(
             tag_ids.push(created_id);
         }
     }
+    validate_single_child_tag_ids(&store, &tag_ids)?;
     set_task_tag_category(&store, &tag_ids);
     store
         .folder_tags
@@ -813,6 +832,48 @@ fn normalize_tag_ids(store: &LocalStoredLibraryTags, input: Vec<String>) -> Vec<
         .collect()
 }
 
+fn normalize_child_tag_selection_mode(value: Option<&str>) -> Result<&'static str, String> {
+    match value.unwrap_or("multiple") {
+        "multiple" => Ok("multiple"),
+        "single" => Ok("single"),
+        _ => Err("子标签选择模式无效".to_string()),
+    }
+}
+
+fn validate_single_child_tag_ids(
+    store: &LocalStoredLibraryTags,
+    tag_ids: &[String],
+) -> Result<(), String> {
+    let mut selected_by_parent = HashMap::<&str, Vec<&str>>::new();
+    for tag_id in tag_ids {
+        let Some(tag) = store.tags.iter().find(|tag| tag.id == *tag_id) else {
+            continue;
+        };
+        if tag.status != "active" {
+            continue;
+        }
+        let Some(parent_id) = tag.parent_id.as_deref() else {
+            continue;
+        };
+        let parent_is_single = store.tags.iter().any(|parent| {
+            parent.id == parent_id
+                && matches!(normalize_child_tag_selection_mode(
+                    parent.child_tag_selection_mode.as_deref(),
+                ), Ok("single"))
+        });
+        if parent_is_single {
+            selected_by_parent.entry(parent_id).or_default().push(&tag.path);
+        }
+    }
+    if let Some(conflict) = selected_by_parent.values().find(|paths| paths.len() > 1) {
+        return Err(format!(
+            "LIBRARY_TAG_EXCLUSIVE_CHILD_CONFLICT: 这些标签属于同一单选组，不能同时分配：{}",
+            conflict.join("、")
+        ));
+    }
+    Ok(())
+}
+
 fn ensure_local_tag_path(
     store: &mut LocalStoredLibraryTags,
     tag_path: &str,
@@ -851,6 +912,7 @@ fn ensure_local_tag_path(
             created_at: now.clone(),
             updated_at: now.clone(),
             disabled_at: None,
+            child_tag_selection_mode: None,
         };
         store.tags.push(tag);
         parent_id = Some(id.clone());
@@ -1012,25 +1074,61 @@ fn apply_tag_assignment(
 ) {
     let snapshot = &mut plan.snapshot;
     let active = store.tags.iter().filter(|tag| tag.status == "active").collect::<Vec<_>>();
-    let rules_by_tag = active.iter().map(|tag| {
-        let mut rules = store.tag_rules.iter()
-            .filter(|rule| rule.enabled && rule.tag_id == tag.id).collect::<Vec<_>>();
-        rules.sort_by_key(|rule| rule.priority);
-        (tag.path.as_str(), rules)
-    }).collect::<Vec<_>>();
     let total = plan.targets.len();
     on_progress(0, total);
     for (index, document_index) in plan.targets.iter().enumerate() {
         let document = &mut snapshot.documents[*document_index];
-        let mut tags =
-            resolve_manual_tag_paths_core(store, &document.path, Some(&document.document_id))
-                .into_iter()
-                .chain(resolve_folder_tag_paths_core(store, &document.path))
-                .collect::<BTreeSet<_>>();
-        for (tag_path, rules) in &rules_by_tag {
+        let mut candidates = Vec::new();
+        for tag_path in resolve_manual_tag_paths_core(
+            store,
+            &document.path,
+            Some(&document.document_id),
+        ) {
+            if let Some(tag) = active.iter().find(|tag| tag.path == tag_path) {
+                candidates.push(LocalTagCandidate::new(tag, "manual_document", 100, 0, i64::MAX));
+            }
+        }
+
+        let document_folder = normalize_folder_path(
+            &PathBuf::from(&document.path)
+                .parent()
+                .map(|value| value.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|| ".".into()),
+        );
+        let effective_folder_tag_paths =
+            resolve_folder_tag_paths_core(store, &document.path).into_iter().collect::<HashSet<_>>();
+        for binding in &store.folder_tags {
+            let folder_path = normalize_folder_path(&binding.folder_path);
+            if folder_path != "."
+                && document_folder != folder_path
+                && !document_folder.starts_with(&format!("{folder_path}/"))
+            {
+                continue;
+            }
+            for tag_id in &binding.binding_tag_ids {
+                if let Some(tag) = active.iter().find(|tag| tag.id == *tag_id) {
+                    if !effective_folder_tag_paths.contains(&tag.path) {
+                        continue;
+                    }
+                    candidates.push(LocalTagCandidate::new(
+                        tag,
+                        "folder_binding",
+                        80,
+                        folder_path.len(),
+                        i64::MAX,
+                    ));
+                }
+            }
+        }
+
+        for tag in &active {
+            let mut rules = store.tag_rules.iter()
+                .filter(|rule| rule.enabled && rule.tag_id == tag.id).collect::<Vec<_>>();
+            rules.sort_by_key(|rule| rule.priority);
             let mut has_positive = false;
             let mut matches = true;
             let mut or_matches = None;
+            let mut matched_priority = None;
             for rule in rules {
                 let matched = matches_tag_rule(document, rule);
                 match rule.relation.as_str() {
@@ -1040,18 +1138,48 @@ fn apply_tag_assignment(
                     "or" => {
                         has_positive = true;
                         or_matches = Some(or_matches.unwrap_or(false) || matched);
+                        if matched {
+                            matched_priority = Some(matched_priority.map_or(rule.priority, |current: i64| current.min(rule.priority)));
+                        }
                     }
                     _ => {
                         has_positive = true;
                         matches &= matched;
+                        if matched {
+                            matched_priority = Some(matched_priority.map_or(rule.priority, |current: i64| current.min(rule.priority)));
+                        }
                     }
                 }
             }
             if has_positive && matches && or_matches.unwrap_or(true) {
-                tags.insert((*tag_path).to_string());
+                candidates.push(LocalTagCandidate::new(
+                    tag,
+                    "smart_rule",
+                    60,
+                    0,
+                    matched_priority.unwrap_or(i64::MAX),
+                ));
             }
         }
-        document.tags = tags.into_iter().collect();
+
+        for tag_path in document.derived_tags.clone() {
+            if let Some(tag) = active.iter().find(|tag| tag.path == tag_path) {
+                candidates.push(LocalTagCandidate::new(tag, "system_derived", 40, 0, i64::MAX));
+            } else {
+                candidates.push(LocalTagCandidate::unknown_derived(tag_path));
+            }
+        }
+        let resolved = resolve_exclusive_tag_candidates(store, candidates);
+        document.tags = resolved
+            .iter()
+            .filter(|candidate| candidate.source_type != "system_derived")
+            .map(|candidate| candidate.path.clone())
+            .collect();
+        document.derived_tags = resolved
+            .iter()
+            .filter(|candidate| candidate.source_type == "system_derived")
+            .map(|candidate| candidate.path.clone())
+            .collect();
         on_progress(index + 1, total);
     }
     let mut tags = BTreeMap::new();
@@ -1065,6 +1193,103 @@ fn apply_tag_assignment(
     }
     snapshot.tags = tags.into_values().collect();
     snapshot.generated_at = Some(iso_now());
+}
+
+#[derive(Clone)]
+struct LocalTagCandidate {
+    tag_id: String,
+    parent_id: Option<String>,
+    path: String,
+    source_type: &'static str,
+    priority: i64,
+    folder_specificity: usize,
+    rule_priority: i64,
+}
+
+impl LocalTagCandidate {
+    fn unknown_derived(path: String) -> Self {
+        Self {
+            tag_id: path.clone(),
+            parent_id: None,
+            path,
+            source_type: "system_derived",
+            priority: 40,
+            folder_specificity: 0,
+            rule_priority: i64::MAX,
+        }
+    }
+
+    fn new(
+        tag: &LocalStoredTagDefinition,
+        source_type: &'static str,
+        priority: i64,
+        folder_specificity: usize,
+        rule_priority: i64,
+    ) -> Self {
+        Self {
+            tag_id: tag.id.clone(),
+            parent_id: tag.parent_id.clone(),
+            path: tag.path.clone(),
+            source_type,
+            priority,
+            folder_specificity,
+            rule_priority,
+        }
+    }
+}
+
+fn candidate_precedes(left: &LocalTagCandidate, right: &LocalTagCandidate) -> bool {
+    left.priority > right.priority
+        || (left.priority == right.priority
+            && left.source_type == "folder_binding"
+            && right.source_type == "folder_binding"
+            && left.folder_specificity > right.folder_specificity)
+        || (left.priority == right.priority
+            && left.source_type == "smart_rule"
+            && right.source_type == "smart_rule"
+            && left.rule_priority < right.rule_priority)
+        || (left.priority == right.priority
+            && left.folder_specificity == right.folder_specificity
+            && left.rule_priority == right.rule_priority
+            && left.tag_id < right.tag_id)
+}
+
+fn resolve_exclusive_tag_candidates(
+    store: &LocalStoredLibraryTags,
+    candidates: Vec<LocalTagCandidate>,
+) -> Vec<LocalTagCandidate> {
+    let mut winners = BTreeMap::<String, LocalTagCandidate>::new();
+    let mut exclusive = HashMap::<String, LocalTagCandidate>::new();
+    for candidate in candidates {
+        let parent = candidate.parent_id.as_deref().and_then(|parent_id| {
+            store.tags.iter().find(|tag| tag.id == parent_id)
+        });
+        if parent.is_some_and(|tag| tag.child_tag_selection_mode.as_deref() == Some("single")) {
+            let key = candidate.parent_id.clone().unwrap_or_default();
+            let replace = exclusive.get(&key)
+                .map(|current| candidate_precedes(&candidate, current))
+                .unwrap_or(true);
+            if replace {
+                exclusive.insert(key, candidate);
+            }
+            continue;
+        }
+        let replace = winners.get(&candidate.path)
+            .map(|current| candidate_precedes(&candidate, current))
+            .unwrap_or(true);
+        if replace {
+            winners.insert(candidate.path.clone(), candidate);
+        }
+    }
+    for candidate in exclusive.into_values() {
+        let replace = winners.get(&candidate.path)
+            .map(|current| candidate_precedes(&candidate, current))
+            .unwrap_or(true);
+        if replace {
+            winners.insert(candidate.path.clone(), candidate);
+        }
+    }
+    winners.into_values().collect()
 }
 
 pub fn run_tag_assignment_core(
@@ -1173,6 +1398,160 @@ fn matches_tag_rule(document: &LocalRuntimeSnapshotDocument, rule: &LocalStoredT
         }
         _ => false,
     }
+}
+
+fn resolve_local_tag_rule<'a>(
+    document: &LocalRuntimeSnapshotDocument,
+    target_kind: LocalTagRecommendationTargetKind,
+    rules: &[&'a LocalStoredTagRule],
+) -> Option<&'a LocalStoredTagRule> {
+    let mut sorted_rules = rules.to_vec();
+    sorted_rules.sort_by_key(|rule| rule.priority);
+    let mut matched_and = None;
+    let mut matched_or = None;
+    let mut has_or = false;
+
+    for rule in sorted_rules {
+        let matched = matches_tag_rule_for_target(document, target_kind, rule);
+        match rule.relation.as_str() {
+            "not" if matched => return None,
+            "not" => {}
+            "or" => {
+                has_or = true;
+                if matched && matched_or.is_none() {
+                    matched_or = Some(rule);
+                }
+            }
+            _ if !matched => return None,
+            _ if matched_and.is_none() => matched_and = Some(rule),
+            _ => {}
+        }
+    }
+
+    if has_or && matched_or.is_none() {
+        return None;
+    }
+    matched_and.or(matched_or)
+}
+
+fn local_tag_rule_evidence(rule: &LocalStoredTagRule) -> String {
+    match rule.rule_type.as_str() {
+        "file_name_contains" => format!(
+            "智能规则：文件名包含“{}”",
+            rule.matcher["keyword"].as_str().unwrap_or("").trim()
+        ),
+        "file_content_contains" => format!(
+            "智能规则：标题、路径或摘要包含“{}”",
+            rule.matcher["keyword"].as_str().unwrap_or("").trim()
+        ),
+        "file_extension_in" => {
+            let extensions = rule.matcher["extensions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>();
+            format!("智能规则：文件类型命中 {}", extensions.join("、"))
+        }
+        "modified_time_between" => "智能规则：修改时间命中".to_string(),
+        "document_path_in_folder" => {
+            let folder = normalize_folder_path(
+                rule.matcher["folderPath"].as_str().unwrap_or("."),
+            );
+            if folder == "." {
+                "智能规则：位于根目录下".to_string()
+            } else {
+                format!("智能规则：位于“{folder}”下")
+            }
+        }
+        _ => "智能规则命中".to_string(),
+    }
+}
+
+fn resolve_local_tag_sources(
+    store: &LocalStoredLibraryTags,
+    sources: Vec<LocalResolvedTagSource>,
+    folder_bindings: &[Value],
+) -> (Vec<LocalResolvedTagSource>, Vec<LocalSuppressedTagSource>) {
+    let mut by_path = BTreeMap::<String, LocalResolvedTagSource>::new();
+    for source in sources {
+        let replace = by_path.get(&source.path)
+            .map(|current| source.priority > current.priority)
+            .unwrap_or(true);
+        if replace {
+            by_path.insert(source.path.clone(), source);
+        }
+    }
+
+    let mut resolved = Vec::new();
+    let mut by_parent = HashMap::<String, Vec<LocalResolvedTagSource>>::new();
+    for source in by_path.into_values() {
+        let tag = store.tags.iter().find(|tag| tag.path == source.path);
+        let parent = tag.and_then(|tag| tag.parent_id.as_deref())
+            .and_then(|parent_id| store.tags.iter().find(|tag| tag.id == parent_id));
+        if parent.is_some_and(|tag| tag.child_tag_selection_mode.as_deref() == Some("single")) {
+            if let Some(parent_id) = tag.and_then(|tag| tag.parent_id.as_ref()) {
+                by_parent.entry(parent_id.clone()).or_default().push(source);
+            }
+        } else {
+            resolved.push(source);
+        }
+    }
+
+    let mut suppressed = Vec::new();
+    for group in by_parent.values_mut() {
+        group.sort_by(|left, right| {
+            let priority = right.priority.cmp(&left.priority);
+            if priority != std::cmp::Ordering::Equal {
+                return priority;
+            }
+            if left.source_type == "folder_binding" && right.source_type == "folder_binding" {
+                let folder_depth = |source: &LocalResolvedTagSource| {
+                    folder_bindings.iter().find(|binding| {
+                        binding.get("id").and_then(Value::as_str) == source.source_ref.as_deref()
+                    }).and_then(|binding| binding.get("folderPath").and_then(Value::as_str))
+                        .map(str::len).unwrap_or_default()
+                };
+                let specificity = folder_depth(right).cmp(&folder_depth(left));
+                if specificity != std::cmp::Ordering::Equal {
+                    return specificity;
+                }
+            }
+            if left.source_type == "smart_rule" && right.source_type == "smart_rule" {
+                let rule_priority = |source: &LocalResolvedTagSource| {
+                    store.tag_rules.iter().find(|rule| Some(rule.id.as_str()) == source.source_ref.as_deref())
+                        .map(|rule| rule.priority).unwrap_or(i64::MAX)
+                };
+                let priority = rule_priority(left).cmp(&rule_priority(right));
+                if priority != std::cmp::Ordering::Equal {
+                    return priority;
+                }
+            }
+            let tag_id = |source: &LocalResolvedTagSource| {
+                store.tags.iter().find(|tag| tag.path == source.path)
+                    .map(|tag| tag.id.clone()).unwrap_or_else(|| source.path.clone())
+            };
+            tag_id(left).cmp(&tag_id(right))
+        });
+        if let Some(winner) = group.first() {
+            for source in group.iter().skip(1) {
+                suppressed.push(LocalSuppressedTagSource {
+                    path: source.path.clone(),
+                    source_type: source.source_type.clone(),
+                    source_ref: source.source_ref.clone(),
+                    evidence: source.evidence.clone(),
+                    confidence: source.confidence,
+                    priority: source.priority,
+                    suppressed_by_path: winner.path.clone(),
+                });
+            }
+            resolved.push(winner.clone());
+        }
+    }
+    resolved.sort_by(|left, right| {
+        right.priority.cmp(&left.priority).then_with(|| left.path.cmp(&right.path))
+    });
+    (resolved, suppressed)
 }
 
 pub fn register_snapshot_tag_path_core(
@@ -1305,6 +1684,244 @@ mod task_tests {
             folder_path: "目标".to_string(), binding_tag_ids: vec![tag_id], updated_at: iso_now(),
         });
         (binding, store)
+    }
+
+    #[test]
+    fn 单选子标签写入拒绝同组冲突且来源裁决优先保留手工标签() {
+        let (binding, mut store) = scope_fixture("exclusive-tags", vec![]);
+        let parent_id = ensure_local_tag_path(&mut store, "项目状态").unwrap();
+        let first_id = ensure_local_tag_path(&mut store, "项目状态/方案沟通").unwrap();
+        let second_id = ensure_local_tag_path(&mut store, "项目状态/项目投标").unwrap();
+        let other_id = ensure_local_tag_path(&mut store, "部门/工程").unwrap();
+        store.tags.iter_mut().find(|tag| tag.id == parent_id).unwrap().child_tag_selection_mode = Some("single".into());
+
+        assert!(validate_single_child_tag_ids(
+            &store,
+            &[first_id.clone(), second_id.clone()],
+        ).is_err());
+        assert!(validate_single_child_tag_ids(&store, &[second_id.clone(), other_id]).is_ok());
+
+        let first = store.tags.iter().find(|tag| tag.id == first_id).unwrap().clone();
+        let second = store.tags.iter().find(|tag| tag.id == second_id).unwrap().clone();
+        let resolved = resolve_exclusive_tag_candidates(&store, vec![
+            LocalTagCandidate::new(&first, "folder_binding", 80, 100, i64::MAX),
+            LocalTagCandidate::new(&second, "manual_document", 100, 0, i64::MAX),
+        ]);
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].tag_id, second_id);
+
+        let resolved = resolve_exclusive_tag_candidates(&store, vec![
+            LocalTagCandidate::new(&first, "folder_binding", 80, 4, i64::MAX),
+            LocalTagCandidate::new(&second, "folder_binding", 80, 12, i64::MAX),
+        ]);
+        assert_eq!(resolved[0].tag_id, second_id);
+        let resolved = resolve_exclusive_tag_candidates(&store, vec![
+            LocalTagCandidate::new(&first, "smart_rule", 60, 0, 4),
+            LocalTagCandidate::new(&second, "smart_rule", 60, 0, 1),
+        ]);
+        assert_eq!(resolved[0].tag_id, second_id);
+
+        store.tags.iter_mut().find(|tag| tag.id == parent_id).unwrap().child_tag_selection_mode = Some("multiple".into());
+        let resolved = resolve_exclusive_tag_candidates(&store, vec![
+            LocalTagCandidate::new(&first, "manual_document", 100, 0, i64::MAX),
+            LocalTagCandidate::new(&second, "manual_document", 100, 0, i64::MAX),
+        ]);
+        assert_eq!(resolved.len(), 2);
+        std::fs::remove_dir_all(&binding.root_dir).unwrap();
+    }
+
+    #[test]
+    fn 旧标签定义缺少子标签选择模式时保持兼容() {
+        let tag: LocalStoredTagDefinition = serde_json::from_value(json!({
+            "id": "tag-root",
+            "path": "项目状态",
+            "name": "项目状态",
+            "rootType": "项目状态",
+            "parentId": null,
+            "parentPath": null,
+            "description": null,
+            "status": "active",
+            "createdAt": "2026-10-27T00:00:00Z",
+            "updatedAt": "2026-10-27T00:00:00Z",
+            "disabledAt": null
+        })).unwrap();
+        assert_eq!(tag.child_tag_selection_mode, None);
+        assert_eq!(normalize_child_tag_selection_mode(tag.child_tag_selection_mode.as_deref()), Ok("multiple"));
+    }
+
+    #[test]
+    fn 原生标签详情会按智能规则推荐并遵守规则关系() {
+        let (binding, mut store) = scope_fixture(
+            "recommendations",
+            vec!["商务/采购合同.xlsx".into(), "商务/草稿报价.xlsx".into()],
+        );
+        let contract_id = ensure_local_tag_path(&mut store, "业务/法务资料").unwrap();
+        let quote_id = ensure_local_tag_path(&mut store, "业务/报价单").unwrap();
+        store.tag_rules = vec![
+            LocalStoredTagRule {
+                id: "rule-contract-name".into(),
+                tag_id: contract_id.clone(),
+                relation: "and".into(),
+                rule_type: "file_name_contains".into(),
+                matcher: json!({ "keyword": "合同" }),
+                enabled: true,
+                priority: 0,
+            },
+            LocalStoredTagRule {
+                id: "rule-quote-extension".into(),
+                tag_id: quote_id.clone(),
+                relation: "and".into(),
+                rule_type: "file_extension_in".into(),
+                matcher: json!({ "extensions": ["xlsx"] }),
+                enabled: true,
+                priority: 0,
+            },
+            LocalStoredTagRule {
+                id: "rule-quote-not-draft".into(),
+                tag_id: quote_id.clone(),
+                relation: "not".into(),
+                rule_type: "file_name_contains".into(),
+                matcher: json!({ "keyword": "草稿" }),
+                enabled: true,
+                priority: 1,
+            },
+        ];
+
+        let document_target = LocalTagRecommendationTarget {
+            kind: LocalTagRecommendationTargetKind::Document,
+            path: "商务/采购合同.xlsx",
+            title: "采购合同.xlsx",
+            summary: "付款条款",
+            mtime: Some("2026-10-26T00:00:00Z"),
+        };
+        let contract_recommendations = build_local_tag_recommendations(
+            &store,
+            &document_target,
+            Vec::new(),
+            HashSet::new(),
+            &HashMap::new(),
+        );
+        assert!(contract_recommendations.iter().any(|item| {
+            item.tag_id == contract_id
+                && item.reason == "smart_rule"
+                && item.evidence.contains("合同")
+        }));
+        assert!(contract_recommendations
+            .iter()
+            .any(|item| item.tag_id == quote_id));
+
+        let draft_target = LocalTagRecommendationTarget {
+            path: "商务/草稿报价.xlsx",
+            title: "草稿报价.xlsx",
+            ..document_target
+        };
+        assert!(!build_local_tag_recommendations(
+            &store,
+            &draft_target,
+            Vec::new(),
+            HashSet::new(),
+            &HashMap::new(),
+        )
+        .iter()
+        .any(|item| item.tag_id == quote_id && item.reason == "smart_rule"));
+
+        let folder_target = LocalTagRecommendationTarget {
+            kind: LocalTagRecommendationTargetKind::Folder,
+            path: "商务/采购",
+            title: "采购",
+            summary: "",
+            mtime: None,
+        };
+        assert!(!build_local_tag_recommendations(
+            &store,
+            &folder_target,
+            Vec::new(),
+            HashSet::new(),
+            &HashMap::new(),
+        )
+        .iter()
+        .any(|item| item.tag_id == quote_id && item.reason == "smart_rule"));
+        std::fs::remove_dir_all(&binding.root_dir).unwrap();
+    }
+
+    #[test]
+    fn 文件夹名称包含客户关键词时推荐对应客户标签() {
+        let (binding, mut store) = scope_fixture("customer-recommendation", vec![]);
+        let tag_id = ensure_local_tag_path(
+            &mut store,
+            "客户/山东雄鹰轮胎集团有限公司",
+        )
+        .unwrap();
+        let target = LocalTagRecommendationTarget {
+            kind: LocalTagRecommendationTargetKind::Folder,
+            path: "项目文档/GIXM0636-雄鹰轮胎机房建设项目",
+            title: "GIXM0636-雄鹰轮胎机房建设项目",
+            summary: "",
+            mtime: None,
+        };
+
+        let recommendations = build_local_tag_recommendations(
+            &store,
+            &target,
+            Vec::new(),
+            HashSet::new(),
+            &HashMap::new(),
+        );
+        let recommendation = recommendations
+            .iter()
+            .find(|item| item.tag_id == tag_id)
+            .expect("匹配到‘雄鹰轮胎’的客户标签应被推荐");
+        assert_eq!(recommendation.path, "客户/山东雄鹰轮胎集团有限公司");
+        assert_eq!(recommendation.reason, "name_match");
+        assert!(recommendation.score >= 86.0);
+        std::fs::remove_dir_all(&binding.root_dir).unwrap();
+    }
+
+    #[test]
+    fn 推荐结果覆盖目录上下文近期标签和文档数量加权() {
+        let (binding, store) = scope_fixture("recommendation-sources", vec![]);
+        let folder_target = LocalTagRecommendationTarget {
+            kind: LocalTagRecommendationTargetKind::Folder,
+            path: "目标/子目录",
+            title: "子目录",
+            summary: "",
+            mtime: None,
+        };
+        let folder_recommendations = build_local_tag_recommendations(
+            &store,
+            &folder_target,
+            Vec::new(),
+            HashSet::new(),
+            &HashMap::from([("客户/目标客户".to_string(), 4)]),
+        );
+        let folder_recommendation = folder_recommendations
+            .iter()
+            .find(|item| item.path == "客户/目标客户")
+            .unwrap();
+        assert_eq!(folder_recommendation.reason, "folder_context");
+        assert!((folder_recommendation.score - 83.48).abs() < 0.01);
+
+        let mut store = store;
+        let recent_id = ensure_local_tag_path(&mut store, "时间/最近7天").unwrap();
+        let recent_time = iso_now();
+        let document_target = LocalTagRecommendationTarget {
+            kind: LocalTagRecommendationTargetKind::Document,
+            path: "目标/新文件.md",
+            title: "新文件.md",
+            summary: "",
+            mtime: Some(&recent_time),
+        };
+        let recommendations = build_local_tag_recommendations(
+            &store,
+            &document_target,
+            Vec::new(),
+            HashSet::new(),
+            &HashMap::new(),
+        );
+        assert!(recommendations
+            .iter()
+            .any(|item| item.tag_id == recent_id && item.reason == "time_pattern"));
+        std::fs::remove_dir_all(&binding.root_dir).unwrap();
     }
 
     #[test]

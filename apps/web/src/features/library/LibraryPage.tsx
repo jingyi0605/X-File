@@ -5851,10 +5851,23 @@ function LibraryQuickTagAssignmentEditor({
         setQuery("");
         return;
       }
-      await commitSelection([...assignedTagIds, exactId], [], "assign");
+      await commitSelection(
+        resolveTagIdsAfterAdding(
+          assignedTagIds,
+          exactMatchedTag,
+          assignableTags,
+        ),
+        [],
+        "assign",
+      );
       return;
     }
-    await commitSelection([...assignedTagIds], [normalizedQuery], "create");
+    const nextTagIds = resolveTagIdsAfterCreatingPath(
+      assignedTagIds,
+      normalizedQuery,
+      assignableTags,
+    );
+    await commitSelection(nextTagIds, [normalizedQuery], "create");
   };
   const pendingStatusText = pendingAction === "create"
     ? t("libraryTagQuickCreateSubmitting")
@@ -5877,68 +5890,178 @@ function LibraryQuickTagAssignmentEditor({
           <span className="affairs-binding-hint">{emptyText}</span>
         ) : visibleTagPaths.map((tagPath) => {
           const manualTag = selectedTagByPath.get(tagPath);
-          if (!manualTag) {
-            return <LibraryColorTag key={tagPath} label={tagPath} path={tagPath} />;
+          const knownTag = assignableTags.find((tag) => tag.path === tagPath);
+          const siblings = knownTag
+            ? resolveExclusiveSiblingTags(knownTag, assignableTags)
+            : [];
+          if (!knownTag || siblings.length === 0) {
+            if (!manualTag) {
+              return <LibraryColorTag key={tagPath} label={tagPath} path={tagPath} />;
+            }
+            return (
+              <button
+                key={manualTag.id}
+                type="button"
+                className="affairs-document-tag-token"
+                aria-label={t("libraryDocumentTagRemoveAction", { tag: manualTag.path })}
+                disabled={submitting}
+                onClick={() => {
+                  void commitSelection(assignedTagIds.filter((item) => item !== manualTag.id), [], "remove");
+                }}
+              >
+                <LibraryColorTag label={manualTag.path} path={manualTag.path} />
+                <span aria-hidden="true">×</span>
+              </button>
+            );
           }
-          const manualTagId = manualTag.id;
+          const isOpen = knownTag.id === openExclusiveTagId;
           return (
-            <button
-              key={manualTagId}
-              type="button"
-              className="affairs-document-tag-token"
-              aria-label={t("libraryDocumentTagRemoveAction", { tag: manualTag.path })}
-              disabled={submitting}
-              onClick={() => {
-                void commitSelection(assignedTagIds.filter((item) => item !== manualTagId), [], "remove");
-              }}
-            >
-              <LibraryColorTag label={manualTag.path} path={manualTag.path} />
-              <span aria-hidden="true">×</span>
-            </button>
+            <span className="affairs-exclusive-tag-anchor" key={knownTag.id}>
+              <button
+                ref={isOpen ? exclusiveTriggerRef : undefined}
+                type="button"
+                className="affairs-document-tag-token affairs-document-tag-switch-trigger"
+                aria-label={t("libraryTagExclusiveSwitchAction", { tag: knownTag.path })}
+                aria-haspopup="menu"
+                aria-expanded={isOpen}
+                aria-controls={isOpen ? exclusivePopoverId : undefined}
+                disabled={submitting}
+                onClick={() => {
+                  setExclusivePopoverPosition(null);
+                  setOpenExclusiveTagId((current) => current === knownTag.id ? null : knownTag.id);
+                }}
+              >
+                <LibraryColorTag label={knownTag.path} path={knownTag.path} />
+                <span className="affairs-exclusive-tag-switch-mark" aria-hidden="true">⌄</span>
+              </button>
+              {manualTag ? (
+                <button
+                  type="button"
+                  className="affairs-document-tag-token-remove"
+                  aria-label={t("libraryDocumentTagRemoveAction", { tag: manualTag.path })}
+                  disabled={submitting}
+                  onClick={() => {
+                    void commitSelection(assignedTagIds.filter((item) => item !== manualTag.id), [], "remove");
+                  }}
+                >
+                  <span aria-hidden="true">×</span>
+                </button>
+              ) : null}
+            </span>
           );
         })}
       </div>
-      {recommendedVisibleTags.length > 0 ? (
-        <div className="affairs-document-tag-recommendations" aria-label={t("libraryTagAssignmentRecommendations")}>
-          <span className="affairs-document-tag-recommendations-title">{t("libraryTagAssignmentRecommendations")}</span>
-          <div className="affairs-document-tag-recommendation-list">
-            {recommendedVisibleTags.map((tag) => (
-              <button
-                key={tag.tagId}
-                type="button"
-                className="affairs-document-tag-recommendation"
-                disabled={submitting}
-                aria-label={t("libraryTagRecommendationAssignAction", { tag: tag.path })}
-                title={tag.evidence}
-                onClick={() => {
-                  void commitSelection([...assignedTagIds, tag.tagId], [], "assign");
-                }}
-              >
-                <LibraryColorTag label={tag.path} path={tag.path} variant="recommended" />
-                <span className="affairs-document-tag-recommendation-reason">
-                  {resolveTagRecommendationReasonLabel(tag.reason)}
-                </span>
-              </button>
-            ))}
-          </div>
+      {openExclusiveTag && exclusiveSiblingTags.length > 0 && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              ref={exclusivePopoverRef}
+              id={exclusivePopoverId}
+              className="affairs-exclusive-tag-popover"
+              role="menu"
+              aria-label={t("libraryTagExclusiveSwitchMenuLabel", { parent: openExclusiveTag.parentPath ?? "" })}
+              style={{
+                left: exclusivePopoverPosition?.left ?? 0,
+                top: exclusivePopoverPosition?.top ?? 0,
+                visibility: exclusivePopoverPosition ? "visible" : "hidden",
+              }}
+            >
+              <div className="affairs-exclusive-tag-popover-heading">
+                {t("libraryTagExclusiveSwitchMenuLabel", { parent: openExclusiveTag.parentPath ?? "" })}
+              </div>
+              {exclusiveSiblingTags.map((tag) => (
+                <button
+                  key={tag.id}
+                  type="button"
+                  className="affairs-exclusive-tag-option"
+                  role="menuitemradio"
+                  aria-checked={false}
+                  disabled={submitting}
+                  onClick={() => {
+                    setOpenExclusiveTagId(null);
+                    setExclusivePopoverPosition(null);
+                    void commitSelection(
+                      resolveTagIdsAfterAdding(assignedTagIds, tag, assignableTags),
+                      [],
+                      "assign",
+                    );
+                  }}
+                >
+                  <LibraryColorTag label={tag.path} path={tag.path} />
+                </button>
+              ))}
+            </div>,
+            document.body,
+          )
+        : null}
+      {suppressedTags.length > 0 ? (
+        <div className="affairs-binding-hint" role="status">
+          {t("libraryTagExclusiveSuppressedHint", {
+            tags: suppressedTags.map((item) => item.path).join("、"),
+            winner: suppressedTags[0]?.suppressedByPath ?? "",
+          })}
         </div>
       ) : null}
       <div className="affairs-document-tag-picker">
         <label className="affairs-document-tag-input-label">
           <span>{inputLabel}</span>
-          <input
-            value={query}
-            autoFocus={autoFocusInput}
-            disabled={submitting}
-            onChange={(event) => setQuery(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                void handleSubmitQuery();
+          <div
+            ref={recommendationAnchorRef}
+            className="affairs-document-tag-input-anchor"
+            data-focused={recommendationsFocused}
+            onFocusCapture={() => setRecommendationsFocused(true)}
+            onBlurCapture={(event) => {
+              if (!recommendationAnchorRef.current?.contains(event.relatedTarget as Node | null)) {
+                setRecommendationsFocused(false);
               }
             }}
-            placeholder={t("libraryTagQuickSearchPlaceholder")}
-          />
+          >
+            <input
+              aria-label={inputLabel}
+              value={query}
+              autoFocus={autoFocusInput}
+              disabled={submitting}
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  void handleSubmitQuery();
+                }
+              }}
+              placeholder={t("libraryTagQuickSearchPlaceholder")}
+            />
+            {!normalizedQuery && recommendedVisibleTags.length > 0 ? (
+              <div className="affairs-document-tag-recommendations" aria-label={t("libraryTagAssignmentRecommendations")}>
+                <span className="affairs-document-tag-recommendations-title">{t("libraryTagAssignmentRecommendations")}</span>
+                <div className="affairs-document-tag-recommendation-list">
+                  {recommendedVisibleTags.map((tag) => (
+                    <button
+                      key={tag.tagId}
+                      type="button"
+                      className="affairs-document-tag-recommendation"
+                      disabled={submitting}
+                      aria-label={t("libraryTagRecommendationAssignAction", { tag: tag.path })}
+                      title={tag.evidence}
+                      onClick={() => {
+                        const matched = assignableTags.find((item) => item.id === tag.tagId);
+                        if (matched) {
+                          void commitSelection(
+                            resolveTagIdsAfterAdding(assignedTagIds, matched, assignableTags),
+                            [],
+                            "assign",
+                          );
+                        }
+                      }}
+                    >
+                      <LibraryColorTag label={tag.path} path={tag.path} variant="recommended" />
+                      <span className="affairs-document-tag-recommendation-reason">
+                        {resolveTagRecommendationReasonLabel(tag.reason)}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
         </label>
         {normalizedQuery ? (
           <div className="affairs-document-tag-suggestions" role="listbox" aria-label={suggestionsLabel}>
@@ -5951,7 +6074,11 @@ function LibraryQuickTagAssignmentEditor({
                   className="affairs-document-tag-suggestion"
                   disabled={submitting}
                   onClick={() => {
-                    void commitSelection([...assignedTagIds, tagId], [], "assign");
+                    void commitSelection(
+                      resolveTagIdsAfterAdding(assignedTagIds, tag, assignableTags),
+                      [],
+                      "assign",
+                    );
                   }}
                 >
                   <LibraryColorTag label={tag.path} path={tag.path} />
@@ -5966,7 +6093,11 @@ function LibraryQuickTagAssignmentEditor({
                 aria-label={t("libraryTagQuickCreateAction", { tag: normalizedQuery })}
                 disabled={submitting}
                 onClick={() => {
-                  void commitSelection([...assignedTagIds], [normalizedQuery], "create");
+                  void commitSelection(
+                    resolveTagIdsAfterCreatingPath(assignedTagIds, normalizedQuery, assignableTags),
+                    [normalizedQuery],
+                    "create",
+                  );
                 }}
               >
                 <span className="affairs-document-tag-create-label">
@@ -6185,6 +6316,57 @@ function resolveTagRecommendationReasonLabel(
 
 type EditableLibraryTagRule = LibraryTagRule;
 
+function resolveTagIdsAfterAdding(
+  currentTagIds: string[],
+  candidate: LibraryTagDetailWithRules,
+  tags: LibraryTagDetailWithRules[],
+): string[] {
+  const parent = candidate.parentId
+    ? tags.find((tag) => tag.id === candidate.parentId)
+    : null;
+  const retained = parent?.childTagSelectionMode === "single"
+    ? currentTagIds.filter((tagId) => {
+        const current = tags.find((tag) => tag.id === tagId);
+        return current?.parentId !== candidate.parentId;
+      })
+    : currentTagIds;
+  return [...retained, candidate.id];
+}
+
+function resolveTagIdsAfterCreatingPath(
+  currentTagIds: string[],
+  tagPath: string,
+  tags: LibraryTagDetailWithRules[],
+): string[] {
+  const normalizedPath = normalizeTagPathInput(tagPath);
+  const parentPath = normalizedPath.includes("/")
+    ? normalizedPath.slice(0, normalizedPath.lastIndexOf("/"))
+    : "";
+  const parent = tags.find((tag) => tag.path === parentPath);
+  if (!parent || parent.childTagSelectionMode !== "single") {
+    return currentTagIds;
+  }
+  return currentTagIds.filter((tagId) =>
+    tags.find((tag) => tag.id === tagId)?.parentId !== parent.id,
+  );
+}
+
+function resolveExclusiveSiblingTags(
+  tag: LibraryTagDetailWithRules,
+  tags: LibraryTagDetailWithRules[],
+): LibraryTagDetailWithRules[] {
+  if (!tag.parentId) return [];
+  const parent = tags.find((item) => item.id === tag.parentId);
+  if (parent?.childTagSelectionMode !== "single") return [];
+  return tags.filter(
+    (item) =>
+      item.status === "active" &&
+      item.parentId === tag.parentId &&
+      item.id !== tag.id &&
+      isAssignableLibraryTag(item),
+  );
+}
+
 function createEditableLibraryTagRule(
   priority: number,
 ): EditableLibraryTagRule {
@@ -6383,6 +6565,7 @@ function LibraryTagManagerModal({
   const [description, setDescription] = useState("");
   const [parentId, setParentId] = useState<string>("");
   const [status, setStatus] = useState<"active" | "disabled">("active");
+  const [childTagSelectionMode, setChildTagSelectionMode] = useState<"multiple" | "single">("multiple");
   const [smartRules, setSmartRules] = useState<EditableLibraryTagRule[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -6429,6 +6612,7 @@ function LibraryTagManagerModal({
     setDescription(tag?.description ?? "");
     setParentId(tag?.parentId ?? "");
     setStatus(tag?.status ?? "active");
+    setChildTagSelectionMode(tag?.childTagSelectionMode ?? "multiple");
     setSmartRules(cloneLibraryTagRules(tag?.smartRules ?? []));
   }
 
@@ -6461,6 +6645,7 @@ function LibraryTagManagerModal({
     setDescription(selectedEditableTag.description ?? "");
     setParentId(selectedEditableTag.parentId ?? "");
     setStatus(selectedEditableTag.status);
+    setChildTagSelectionMode(selectedEditableTag.childTagSelectionMode ?? "multiple");
     setSmartRules(cloneLibraryTagRules(selectedEditableTag.smartRules ?? []));
     setError(null);
   };
@@ -6562,6 +6747,7 @@ function LibraryTagManagerModal({
         parentId: parentId || null,
         description: description.trim() || null,
         status,
+        childTagSelectionMode,
         smartRules: normalizedSmartRules,
       });
       await loadTags(tag.id);
@@ -6627,6 +6813,7 @@ function LibraryTagManagerModal({
           parentId: parentId || null,
           description: description.trim() || null,
           status,
+          childTagSelectionMode,
           smartRules: normalizedSmartRules,
         });
       } else if (editorMode === "create-root") {
@@ -6635,6 +6822,7 @@ function LibraryTagManagerModal({
           parentId: null,
           description: description.trim() || null,
           status,
+          childTagSelectionMode,
           smartRules: normalizedSmartRules,
         });
       } else if (editorMode === "create-child") {
@@ -6643,6 +6831,7 @@ function LibraryTagManagerModal({
           parentId: (selectedEditableTag?.id ?? parentId) || null,
           description: description.trim() || null,
           status,
+          childTagSelectionMode,
           smartRules: normalizedSmartRules,
         });
       }
@@ -6718,6 +6907,7 @@ function LibraryTagManagerModal({
                     setDescription(tag.description ?? "");
                     setParentId(tag.parentId ?? "");
                     setStatus(tag.status);
+                    setChildTagSelectionMode(tag.childTagSelectionMode ?? "multiple");
                     setSmartRules(cloneLibraryTagRules(tag.smartRules ?? []));
                     setError(null);
                   }
@@ -6770,6 +6960,19 @@ function LibraryTagManagerModal({
                 </select>
               </ModalField>
             ) : null}
+            <ModalField label={t("libraryTagChildSelectionModeLabel")}>
+              <select
+                aria-label={t("libraryTagChildSelectionModeLabel")}
+                value={childTagSelectionMode}
+                disabled={saving}
+                onChange={(event) =>
+                  setChildTagSelectionMode(event.target.value as "multiple" | "single")
+                }
+              >
+                <option value="multiple">{t("libraryTagChildSelectionMultiple")}</option>
+                <option value="single">{t("libraryTagChildSelectionSingle")}</option>
+              </select>
+            </ModalField>
           </ModalSection>
 
           <ModalSection

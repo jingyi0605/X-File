@@ -30,6 +30,7 @@ test("tag ensure 使用 libraryId/rootDir 存储并创建层级标签", () => {
   assert.equal(ensured.path, "项目/设计");
   assert.equal(ensured.name, "设计");
   assert.equal(ensured.parentPath, "项目");
+  assert.equal(ensured.childTagSelectionMode, "multiple");
 
   const list = tagService.listTags();
   assert.equal(list.items.length, 2);
@@ -75,6 +76,49 @@ test("标签支持详情、编辑、禁用和删除子树", () => {
     new Set([parent.id, child.id]),
   );
   assert.equal(tagService.listTags({ includeDisabled: true }).items.length, 0);
+});
+
+test("父标签可配置子标签单选，冲突赋值被拒绝而不同组仍可共存", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "x-file-tags-exclusive-"));
+  const dataDir = path.join(tempDir, "data");
+  const rootDir = path.join(tempDir, "library");
+  fs.mkdirSync(rootDir, { recursive: true });
+
+  const bindingStore = new LibraryBindingStore({ dataDir });
+  new LibraryService(bindingStore).saveBinding({ rootDir, completeInitialization: true });
+  const service = new TagService(bindingStore, new TagStore({ dataDir }));
+  const status = service.createTag({ name: "项目状态", childTagSelectionMode: "single" });
+  const conversation = service.createTag({ name: "方案沟通", parentId: status.id });
+  const bidding = service.createTag({ name: "项目投标", parentId: status.id });
+  const department = service.createTag({ name: "部门" });
+  const engineering = service.createTag({ name: "工程", parentId: department.id });
+
+  assert.equal(service.getTagDetail(status.id).childTagSelectionMode, "single");
+  assert.throws(
+    () => service.saveDocumentTags("docs/project.md", {
+      tagIds: [conversation.id, bidding.id],
+    }),
+    (error: unknown) => error instanceof Error
+      && "errorCode" in error
+      && error.errorCode === "LIBRARY_TAG_EXCLUSIVE_CHILD_CONFLICT",
+  );
+  const saved = service.saveDocumentTags("docs/project.md", {
+    tagIds: [bidding.id, engineering.id],
+  });
+  assert.deepEqual(saved.manualTagIds, [bidding.id, engineering.id]);
+
+  service.saveFolderTags({ folderPath: "docs", tagIds: [conversation.id] });
+  service.saveFolderTags({ folderPath: "docs/active", tagIds: [bidding.id] });
+  const inherited = service.getDocumentTagDetails("docs/active/project.md");
+  assert.deepEqual(inherited.resolvedTags.map((item) => item.path), [bidding.path]);
+  assert.equal(inherited.suppressedTags?.[0]?.path, conversation.path);
+  assert.equal(inherited.suppressedTags?.[0]?.suppressedByPath, bidding.path);
+
+  service.updateTag(status.id, { childTagSelectionMode: "multiple" });
+  const afterSwitch = service.saveDocumentTags("docs/project.md", {
+    tagIds: [conversation.id, bidding.id],
+  });
+  assert.deepEqual(afterSwitch.manualTagIds, [conversation.id, bidding.id]);
 });
 
 test("标签详情会基于文档路径和目录上下文给出推荐标签", () => {

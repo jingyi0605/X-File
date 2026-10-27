@@ -1067,6 +1067,8 @@ struct LocalStoredTagDefinition {
     created_at: String,
     updated_at: String,
     disabled_at: Option<String>,
+    #[serde(default)]
+    child_tag_selection_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1137,6 +1139,7 @@ struct LocalLibraryTagDetailWithRules {
     created_at: String,
     updated_at: String,
     disabled_at: Option<String>,
+    child_tag_selection_mode: String,
     smart_rules: Vec<LocalLibraryTagRuleView>,
     smart_rule_enabled: bool,
 }

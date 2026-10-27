@@ -128,6 +128,32 @@ describe("第 9 批：标签管理、智能规则与全量重算任务", () => {
     });
   });
 
+  it("标签管理模态框保存父标签的子标签单选模式", async () => {
+    const parent = createTagDetail({ id: "tag-status", path: "项目状态", name: "项目状态" });
+    libraryApiMock.listLibraryTagDetails.mockResolvedValue([parent]);
+    libraryApiMock.updateLibraryTag.mockResolvedValue({
+      ...parent,
+      childTagSelectionMode: "single",
+    });
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={() => undefined} platformData={platformData} />);
+    await openTagManager();
+    const dialog = await screen.findByRole("dialog", { name: "标签管理" });
+    await userEvent.selectOptions(
+      within(dialog).getByLabelText("子标签选择方式"),
+      "single",
+    );
+    await userEvent.click(within(dialog).getByRole("button", { name: "保存标签" }));
+
+    await waitFor(() => {
+      expect(libraryApiMock.updateLibraryTag).toHaveBeenCalledWith(
+        "tag-status",
+        expect.objectContaining({ childTagSelectionMode: "single" }),
+      );
+    });
+  });
+
   it("标签管理模态框支持配置按文件夹子树命中的智能规则", async () => {
     const tag = createTagDetail({ id: "tag-folder", path: "客户/合同", name: "合同" });
     libraryApiMock.listLibraryTagDetails.mockResolvedValue([tag]);

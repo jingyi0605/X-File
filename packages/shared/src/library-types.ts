@@ -514,6 +514,8 @@ export type LibraryTagRuleType =
   | "modified_time_between"
   | "document_path_in_folder";
 
+export type LibraryTagChildSelectionMode = "multiple" | "single";
+
 export interface LibraryTagNodeDetail {
   id: string;
   path: string;
@@ -527,6 +529,7 @@ export interface LibraryTagNodeDetail {
   createdAt: string;
   updatedAt: string;
   disabledAt: string | null;
+  childTagSelectionMode?: LibraryTagChildSelectionMode;
 }
 
 export interface LibraryTagRule {
@@ -572,6 +575,7 @@ export interface SaveLibraryTagDefinitionInput {
   parentId?: string | null;
   description?: string | null;
   status?: "active" | "disabled";
+  childTagSelectionMode?: LibraryTagChildSelectionMode;
   smartRules?: LibraryTagRule[];
 }
 
@@ -592,6 +596,10 @@ export interface LibraryResolvedTagSource {
   evidence: string | null;
   confidence: number;
   priority: number;
+}
+
+export interface LibrarySuppressedTagSource extends LibraryResolvedTagSource {
+  suppressedByPath: string;
 }
 
 export type LibraryTagRecommendationReason =
@@ -621,6 +629,7 @@ export interface LibraryDocumentTagDetails {
     tagPath: string;
   }>;
   resolvedTags: LibraryResolvedTagSource[];
+  suppressedTags?: LibrarySuppressedTagSource[];
   recommendedTags?: LibraryTagRecommendation[];
 }
 
