@@ -201,6 +201,8 @@ export async function listNativeLibraryDocuments(query: {
   selectedTagPaths?: string[] | null;
   selectedFavoriteId?: string | null;
   keyword?: string | null;
+  searchScope?: "all" | "current_directory" | "current_results";
+  searchMode?: "all" | "name" | "content";
   updatedAtOrder?: "asc" | "desc";
   offset?: number;
   limit?: number;

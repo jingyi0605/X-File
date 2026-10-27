@@ -11,6 +11,7 @@ use hmac::{Hmac, Mac};
 use jwt::SignWithKey;
 use mime_guess::from_path;
 use native_core::scheduler::{lock_root, RootScheduler};
+use native_core::task_center;
 use native_core::state_store::priority_hints_path;
 use native_core::tag_core::{
     count_local_tags, create_native_library_tag, delete_native_library_tag,
@@ -21,6 +22,7 @@ use native_core::tag_core::{
     update_native_library_tag, NativeFolderTagDetailsRequest, NativeLibraryTagIdRequest,
     NativeSaveDocumentTagsRequest, NativeSaveFolderTagsRequest,
     NativeSaveLibraryTagDefinitionRequest,
+    TagAssignmentScope,
 };
 use native_export::{run_native_export_worker, NativeExportRequest};
 use native_index::{is_native_library_path_visible, run_native_index_worker, NativeIndexRequest};
@@ -30,7 +32,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
-use std::net::TcpListener;
+use std::net::{Ipv4Addr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -666,6 +668,7 @@ struct NativeLibraryWorkerCliPayload {
     reason: Option<String>,
     dirty_scope: Option<Value>,
     tag_store: Option<LocalStoredLibraryTags>,
+    tag_scope: Option<TagAssignmentScope>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -685,8 +688,13 @@ struct NativeOnlyOfficeSettingsInput {
 #[serde(rename_all = "camelCase")]
 struct NativeSaveHttpServerStateRequest {
     enabled: Option<bool>,
+    host: Option<String>,
     persistent: Option<bool>,
     port: Option<u16>,
+    auth_enabled: Option<bool>,
+    auth_username: Option<String>,
+    auth_password: Option<String>,
+    clear_auth: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -729,6 +737,8 @@ struct NativeListDocumentsRequest {
     selected_tag_paths: Option<Vec<String>>,
     selected_favorite_id: Option<String>,
     keyword: Option<String>,
+    search_scope: Option<String>,
+    search_mode: Option<String>,
     updated_at_order: Option<String>,
     offset: Option<usize>,
     limit: Option<usize>,
@@ -1439,6 +1449,7 @@ struct LibraryWork {
     app: Option<AppHandle>,
     mode: String,
     payload: NativeLibraryWorkerCliPayload,
+    task_ids: Vec<String>,
 }
 
 fn library_scheduler() -> &'static RootScheduler<LibraryWork> {
@@ -1447,6 +1458,7 @@ fn library_scheduler() -> &'static RootScheduler<LibraryWork> {
 }
 
 fn merge_library_work(pending: &mut LibraryWork, next: LibraryWork) {
+    pending.task_ids.extend(next.task_ids);
     if pending.mode != next.mode {
         pending.mode = "full".to_string();
     }
@@ -1497,12 +1509,17 @@ fn schedule_library_work(
     app: Option<AppHandle>,
 ) -> bool {
     let root = payload.root_dir.clone();
+    let task_id = task_center::register(
+        &root, "library.index", payload.reason.as_deref().unwrap_or("refresh"),
+        payload.target_path.clone(),
+    );
     let start = library_scheduler().submit(
         &root,
         LibraryWork {
             app,
             mode: mode.to_string(),
             payload,
+            task_ids: vec![task_id],
         },
         merge_library_work,
     );
@@ -1516,7 +1533,9 @@ fn schedule_library_work(
             let target = work.payload.target_path.clone();
             let target_count = work.payload.target_paths.len();
             let reason = work.payload.reason.clone();
-            let result = run_native_library_worker_mode(&work.mode, work.payload);
+            let result = task_center::run(work.task_ids, || {
+                run_native_library_worker_mode(&work.mode, work.payload)
+            });
             let metrics = match &result {
                 Ok(value) => json!({ "rootDir": root, "mode": work.mode, "reason": reason,
                     "startedAtMs": started_at_ms, "completedAtMs": epoch_millis(),
@@ -1571,6 +1590,7 @@ fn build_native_library_worker_payload(
         reason: Some(reason),
         dirty_scope,
         tag_store: None,
+        tag_scope: None,
     }
 }
 
@@ -1578,7 +1598,9 @@ fn run_native_library_worker_mode(
     mode: &str,
     payload: NativeLibraryWorkerCliPayload,
 ) -> Result<Value, String> {
+    task_center::stage("waiting_for_lock");
     let _root_lock = lock_root(&payload.root_dir)?;
+    task_center::stage("index_text");
     let reason =
         normalize_library_worker_reason(payload.reason.as_deref(), "desktop_native_worker_cli");
     let target_path = normalize_library_worker_target_path(payload.target_path.as_deref());
@@ -1590,21 +1612,10 @@ fn run_native_library_worker_mode(
             let store = payload
                 .tag_store
                 .ok_or_else(|| "标签任务缺少 tagStore".to_string())?;
-            let snapshot = native_core::tag_core::build_local_tag_snapshot_core(&binding, &store)?;
-            let count = snapshot.documents.len();
-            write_runtime_export_catalog_snapshot(&binding.root_dir, &snapshot)?;
-            let export = run_native_export_worker(NativeExportRequest {
-                root_dir: binding.root_dir,
-                reason,
-                target_path: None,
-                dirty_scope: json!({ "trigger": "full", "changedPaths": [], "deletedPaths": [],
-                    "dirtyDirectories": [], "dirtyTagPaths": [], "dirtyMetaShards": [],
-                    "dirtyDetailShards": [], "dirtyPostingBuckets": [], "dirtyRelations": [] }),
-            })?;
-            Ok(json!({ "scannedCount": count, "updatedCount": count,
-                "directAssignedCount": snapshot.documents.iter().map(|doc| doc.tags.len()).sum::<usize>(),
-                "derivedAssignedCount": snapshot.documents.iter().map(|doc| doc.derived_tags.len()).sum::<usize>(),
-                "exportedAt": export["exportedAt"] }))
+            let plan = native_core::tag_core::prepare_tag_assignment(
+                &binding, &payload.tag_scope.unwrap_or_default(), true,
+            )?;
+            native_core::tag_core::run_tag_assignment_core(&binding, &store, plan, &reason)
         }
         "index-only" => {
             let allowed_extensions = payload.allowed_extensions.unwrap_or_default();
@@ -1649,6 +1660,7 @@ fn run_native_library_worker_mode(
                 target_paths: payload.target_paths,
             };
             let index_result = run_native_index_worker(index_request.clone())?;
+            task_center::stage("export_snapshot");
             let dirty_scope = index_result["dirtyScope"].clone();
             let export_result = run_native_export_worker(NativeExportRequest {
                 root_dir: payload.root_dir.clone(),
@@ -2013,70 +2025,99 @@ fn native_get_library_snapshot(
 }
 
 #[tauri::command]
-fn native_list_library_tag_details(
+async fn native_list_library_tasks() -> Result<Vec<task_center::LibraryTask>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        Ok(read_local_library_binding()?.map(|binding| task_center::list(&binding.root_dir)).unwrap_or_default())
+    }).await.map_err(|error| format!("读取任务中心失败：{error}"))?
+}
+
+#[tauri::command]
+async fn native_list_library_tag_details(
     request: NativeListLibraryTagDetailsRequest,
 ) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
     list_native_library_tag_details(request.include_disabled.unwrap_or(true))
+    }).await.map_err(|error| format!("后台标签任务异常：{error}"))?
 }
 
 #[tauri::command]
-fn native_get_library_tag_detail(request: NativeLibraryTagIdRequest) -> Result<Value, String> {
+async fn native_get_library_tag_detail(request: NativeLibraryTagIdRequest) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
     get_native_library_tag_detail(&request.tag_id)
+    }).await.map_err(|error| format!("后台标签任务异常：{error}"))?
 }
 
 #[tauri::command]
-fn native_create_library_tag(
+async fn native_create_library_tag(
     request: NativeSaveLibraryTagDefinitionRequest,
 ) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
     create_native_library_tag(request)
+    }).await.map_err(|error| format!("后台标签任务异常：{error}"))?
 }
 
 #[tauri::command]
-fn native_update_library_tag(
+async fn native_update_library_tag(
     request: NativeSaveLibraryTagDefinitionRequest,
 ) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
     let tag_id = request
         .tag_id
         .clone()
         .ok_or_else(|| "tagId 不能为空".to_string())?;
     update_native_library_tag(tag_id, request)
+    }).await.map_err(|error| format!("后台标签任务异常：{error}"))?
 }
 
 #[tauri::command]
-fn native_delete_library_tag(request: NativeLibraryTagIdRequest) -> Result<Value, String> {
+async fn native_delete_library_tag(request: NativeLibraryTagIdRequest) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
     delete_native_library_tag(&request.tag_id)
+    }).await.map_err(|error| format!("后台标签任务异常：{error}"))?
 }
 
 #[tauri::command]
-fn native_get_document_tag_details(
+async fn native_get_document_tag_details(
     request: NativeDocumentTagDetailsRequest,
 ) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
     get_native_document_tag_details(&request.document_id)
+    }).await.map_err(|error| format!("后台标签任务异常：{error}"))?
 }
 
 #[tauri::command]
-fn native_save_document_tags(request: NativeSaveDocumentTagsRequest) -> Result<Value, String> {
+async fn native_save_document_tags(request: NativeSaveDocumentTagsRequest) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
     save_native_document_tags(request)
+    }).await.map_err(|error| format!("后台标签任务异常：{error}"))?
 }
 
 #[tauri::command]
-fn native_get_folder_tag_details(request: NativeFolderTagDetailsRequest) -> Result<Value, String> {
+async fn native_get_folder_tag_details(request: NativeFolderTagDetailsRequest) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
     get_native_folder_tag_details(&request.folder_path)
+    }).await.map_err(|error| format!("后台标签任务异常：{error}"))?
 }
 
 #[tauri::command]
-fn native_save_folder_tags(request: NativeSaveFolderTagsRequest) -> Result<Value, String> {
+async fn native_save_folder_tags(request: NativeSaveFolderTagsRequest) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
     save_native_folder_tags(request)
+    }).await.map_err(|error| format!("后台标签任务异常：{error}"))?
 }
 
 #[tauri::command]
-fn native_request_library_tag_recompute() -> Result<Value, String> {
+async fn native_request_library_tag_recompute() -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
     request_native_library_tag_recompute()
+    }).await.map_err(|error| format!("后台标签任务异常：{error}"))?
 }
 
 #[tauri::command]
-fn native_get_library_tag_recompute_task() -> Result<Value, String> {
+async fn native_get_library_tag_recompute_task() -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
     get_native_library_tag_recompute_task()
+    }).await.map_err(|error| format!("后台标签任务异常：{error}"))?
 }
 
 #[tauri::command]
@@ -3030,20 +3071,6 @@ fn configure_backend_process(app: &tauri::App) {
     }
 }
 
-fn run_native_library_export_once(
-    binding: &LocalLibraryBinding,
-    reason: &str,
-    target_path: Option<String>,
-    dirty_scope: Value,
-) -> Result<Value, String> {
-    run_native_export_worker(NativeExportRequest {
-        root_dir: binding.root_dir.clone(),
-        reason: reason.to_string(),
-        target_path,
-        dirty_scope,
-    })
-}
-
 fn schedule_native_library_refresh(
     request: NativeLibraryRefreshRequest,
     app: Option<AppHandle>,
@@ -3172,7 +3199,14 @@ fn read_local_library_documents(
             return Err("文档库读取失败：索引快照尚未生成，请先等待本地索引完成".to_string());
         }
     };
-    let documents = if request.browse_mode == "folder" {
+    let search_scope = match request.search_scope.as_deref() {
+        Some("all") => "all",
+        Some("current_directory") => "current_directory",
+        _ => "current_results",
+    };
+    let documents = if search_scope == "all" {
+        export_payload.documents.iter().collect::<Vec<_>>()
+    } else if request.browse_mode == "folder" {
         let directory =
             normalize_folder_path(request.selected_folder_path.as_deref().unwrap_or("."));
         export_payload
@@ -3186,6 +3220,11 @@ fn read_local_library_documents(
         export_payload.documents.iter().collect::<Vec<_>>()
     };
     let keyword = request.keyword.unwrap_or_default().trim().to_lowercase();
+    let search_mode = match request.search_mode.as_deref() {
+        Some("name") => "name",
+        Some("content") => "content",
+        _ => "all",
+    };
     let offset = request.offset.unwrap_or(0);
     let limit = request.limit.unwrap_or(50);
     let selected_tags = request.selected_tag_paths.unwrap_or_else(|| {
@@ -3214,7 +3253,9 @@ fn read_local_library_documents(
                 .unwrap_or_else(|| ".".to_string()),
         );
 
-        if request.browse_mode != "tag" {
+        if search_scope != "all"
+            && (search_scope == "current_directory" || request.browse_mode != "tag")
+        {
             let selected_folder =
                 normalize_folder_path(request.selected_folder_path.as_deref().unwrap_or("."));
             if document_dir != selected_folder {
@@ -3222,7 +3263,7 @@ fn read_local_library_documents(
             }
         }
 
-        if !selected_tags.is_empty() {
+        if search_scope == "current_results" && !selected_tags.is_empty() {
             let all_tags: Vec<String> = tags.iter().chain(derived_tags.iter()).cloned().collect();
             let matched_all = selected_tags.iter().all(|selected| {
                 all_tags.iter().any(|tag_path| {
@@ -3234,25 +3275,35 @@ fn read_local_library_documents(
             }
         }
 
-        if let Some(selected_favorite_id) = request.selected_favorite_id.as_deref() {
-            let Some(favorite) = favorites
-                .iter()
-                .find(|item| item.path == selected_favorite_id)
-            else {
-                continue;
-            };
-            if !document_matches_favorite(&tags, &derived_tags, &document_dir, favorite) {
-                continue;
+        if search_scope == "current_results" {
+            if let Some(selected_favorite_id) = request.selected_favorite_id.as_deref() {
+                let Some(favorite) = favorites
+                    .iter()
+                    .find(|item| item.path == selected_favorite_id)
+                else {
+                    continue;
+                };
+                if !document_matches_favorite(&tags, &derived_tags, &document_dir, favorite) {
+                    continue;
+                }
             }
         }
 
         if !keyword.is_empty() {
-            let haystack = format!(
-                "{}\n{}\n{}",
-                title.to_lowercase(),
-                normalized_path.to_lowercase(),
-                summary.to_lowercase()
-            );
+            let haystack = match search_mode {
+                "name" => Path::new(&normalized_path)
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("")
+                    .to_lowercase(),
+                "content" => summary.to_lowercase(),
+                _ => format!(
+                    "{}\n{}\n{}",
+                    title.to_lowercase(),
+                    normalized_path.to_lowercase(),
+                    summary.to_lowercase()
+                ),
+            };
             if !keyword
                 .split_whitespace()
                 .all(|token| haystack.contains(token))
@@ -5412,6 +5463,218 @@ where
     read_json_file(path).map(Some)
 }
 
+fn local_http_host_options() -> Vec<Value> {
+    let mut options = vec![
+        json!({
+            "value": "0.0.0.0",
+            "interfaceName": Value::Null,
+        }),
+        json!({
+            "value": "127.0.0.1",
+            "interfaceName": Value::Null,
+        }),
+    ];
+
+    for (interface_name, value) in local_ipv4_interfaces() {
+        if value == "127.0.0.1"
+            || options
+                .iter()
+                .any(|option| option.get("value").and_then(Value::as_str) == Some(value.as_str()))
+        {
+            continue;
+        }
+        options.push(json!({
+            "value": value,
+            "interfaceName": interface_name,
+        }));
+    }
+
+    options
+}
+
+fn local_ipv4_interfaces() -> Vec<(Option<String>, String)> {
+    let output = if cfg!(target_os = "windows") {
+        Command::new("ipconfig").output()
+    } else if cfg!(target_os = "macos") {
+        Command::new("ifconfig").output()
+    } else {
+        Command::new("ip")
+            .args(["-o", "-4", "addr", "show"])
+            .output()
+    };
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+
+    if cfg!(target_os = "windows") {
+        return text
+            .lines()
+            .filter(|line| line.to_ascii_lowercase().contains("ipv4"))
+            .flat_map(|line| {
+                line.split_whitespace().filter_map(|token| {
+                    let value = token
+                        .trim_matches(|character: char| !character.is_ascii_digit() && character != '.');
+                    if value.parse::<Ipv4Addr>().is_ok() {
+                        Some((None, value.to_string()))
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+    }
+
+    if cfg!(target_os = "macos") {
+        let mut current_interface = None;
+        let mut interfaces = Vec::new();
+        for line in text.lines() {
+            if !line.starts_with(' ') && !line.starts_with('\t') {
+                current_interface = line.split(':').next().map(str::to_string);
+                continue;
+            }
+            let mut fields = line.split_whitespace();
+            if fields.next() != Some("inet") {
+                continue;
+            }
+            if let Some(value) = fields.next().filter(|value| value.parse::<Ipv4Addr>().is_ok()) {
+                interfaces.push((current_interface.clone(), value.to_string()));
+            }
+        }
+        return interfaces;
+    }
+
+    text.lines()
+        .filter_map(|line| {
+            let fields = line.split_whitespace().collect::<Vec<_>>();
+            let interface_name = fields.get(1)?.to_string();
+            let address_index = fields.iter().position(|field| *field == "inet")? + 1;
+            let value = fields.get(address_index)?.split('/').next()?;
+            if value.parse::<Ipv4Addr>().is_ok() {
+                Some((Some(interface_name), value.to_string()))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn local_http_access_urls(host: &str, port: u16) -> Vec<String> {
+    let hosts = if host == "0.0.0.0" {
+        local_http_host_options()
+            .into_iter()
+            .filter_map(|option| option.get("value").and_then(Value::as_str).map(ToString::to_string))
+            .filter(|value| value != "0.0.0.0" && value != "127.0.0.1")
+            .collect::<Vec<_>>()
+    } else {
+        vec![host.to_string()]
+    };
+    let hosts = if hosts.is_empty() {
+        vec!["127.0.0.1".to_string()]
+    } else {
+        hosts
+    };
+
+    let mut seen = HashSet::new();
+    hosts
+        .into_iter()
+        .filter(|value| seen.insert(value.clone()))
+        .map(|value| format!("http://{value}:{port}/"))
+        .collect()
+}
+
+fn normalize_local_http_host(value: &str) -> Result<String, String> {
+    let host = value.trim();
+    if host == "0.0.0.0" || host.parse::<Ipv4Addr>().is_ok() {
+        return Ok(host.to_string());
+    }
+    Err("HTTP 服务监听地址必须是 IPv4 地址，例如 127.0.0.1、0.0.0.0 或本机网卡地址".to_string())
+}
+
+const HTTP_PASSWORD_HASH_ITERATIONS: u32 = 120_000;
+
+fn derive_http_password_hash(password: &str, salt: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut value = format!("{salt}:{password}").into_bytes();
+    for _ in 0..HTTP_PASSWORD_HASH_ITERATIONS {
+        let mut hasher = Sha256::new();
+        hasher.update(&value);
+        hasher.update(password.as_bytes());
+        hasher.update(salt.as_bytes());
+        value = hasher.finalize().to_vec();
+    }
+    hex_encode(&value)
+}
+
+fn hex_encode(value: &[u8]) -> String {
+    value.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn create_http_auth_config(username: &str, password: &str) -> Result<Value, String> {
+    if username.is_empty() {
+        return Err("配置 HTTP 服务认证时必须填写用户名".to_string());
+    }
+    if username.chars().count() > 128 {
+        return Err("HTTP 服务认证用户名不能超过 128 个字符".to_string());
+    }
+    if password.chars().count() < 8 {
+        return Err("HTTP 服务认证密码至少需要 8 个字符".to_string());
+    }
+
+    let mut salt_bytes = [0_u8; 16];
+    getrandom::fill(&mut salt_bytes).map_err(|error| format!("生成 HTTP 服务认证盐失败：{error}"))?;
+    let salt = hex_encode(&salt_bytes);
+    Ok(json!({
+        "username": username,
+        "salt": salt,
+        "passwordHash": derive_http_password_hash(password, &salt),
+    }))
+}
+
+fn resolve_local_http_auth(
+    current: &Value,
+    request: &NativeSaveHttpServerStateRequest,
+) -> Result<Value, String> {
+    if request.clear_auth == Some(true) {
+        return Ok(Value::Null);
+    }
+
+    let username = request
+        .auth_username
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let password = request
+        .auth_password
+        .as_deref()
+        .filter(|value| !value.is_empty());
+    if username.is_none() && password.is_none() {
+        return Ok(current.get("auth").cloned().unwrap_or(Value::Null));
+    }
+
+    let current_auth = current.get("auth").filter(|value| value.is_object());
+    let effective_username = username.or_else(|| {
+        current_auth
+            .and_then(|value| value.get("username"))
+            .and_then(Value::as_str)
+    });
+    let Some(effective_username) = effective_username else {
+        return Err(String::from("配置 HTTP 服务认证时必须填写用户名"));
+    };
+
+    if let Some(password) = password {
+        return create_http_auth_config(effective_username, password);
+    }
+
+    let Some(current_auth) = current_auth else {
+        return Err(String::from("首次配置 HTTP 服务认证时必须填写密码"));
+    };
+    let mut updated = current_auth.clone();
+    updated["username"] = Value::String(String::from(effective_username));
+    Ok(updated)
+}
+
 fn read_local_http_server_state(state: &mut DesktopState) -> Value {
     let file_path = resolve_local_http_server_state_path();
     let saved = read_optional_json_file::<Value>(&file_path)
@@ -5427,9 +5690,30 @@ fn read_local_http_server_state(state: &mut DesktopState) -> Value {
         .and_then(Value::as_str)
         .unwrap_or("127.0.0.1");
     let port = saved.get("port").and_then(Value::as_u64).unwrap_or(17321);
+    let auth_enabled = if host == "127.0.0.1" {
+        false
+    } else {
+        saved
+            .get("authEnabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
+    };
+    let auth = saved.get("auth").filter(|value| {
+        value
+            .get("username")
+            .and_then(Value::as_str)
+            .is_some()
+            && value.get("salt").and_then(Value::as_str).is_some()
+            && value.get("passwordHash").and_then(Value::as_str).is_some()
+    });
     let backend_snapshot = state.backend.snapshot();
     let healthy_http = if enabled {
-        probe_local_http_service(host, port as u16)
+        let probe_host = if host == "0.0.0.0" {
+            "127.0.0.1"
+        } else {
+            host
+        };
+        probe_local_http_service(probe_host, port as u16)
     } else {
         false
     };
@@ -5463,6 +5747,7 @@ fn read_local_http_server_state(state: &mut DesktopState) -> Value {
         "port": port,
         "running": running,
         "persistent": state.backend_persistent,
+        "authEnabled": auth_enabled,
         "actualHost": if running { Value::String(host.to_string()) } else { Value::Null },
         "actualPort": if running { json!(port) } else { Value::Null },
         "lifecycleState": lifecycle_state,
@@ -5472,6 +5757,14 @@ fn read_local_http_server_state(state: &mut DesktopState) -> Value {
             None
         },
         "lastError": last_error,
+        "authConfigured": auth.is_some(),
+        "authUsername": auth.and_then(|value| value.get("username").and_then(Value::as_str)),
+        "hostOptions": local_http_host_options(),
+        "accessUrls": if running {
+            local_http_access_urls(host, port as u16)
+        } else {
+            Vec::<String>::new()
+        },
     })
 }
 
@@ -5486,6 +5779,19 @@ fn save_local_http_server_state(
             .and_then(Value::as_bool)
             .unwrap_or(true)
     });
+    let host = normalize_local_http_host(request.host.as_deref().unwrap_or_else(|| {
+        current
+            .get("host")
+            .and_then(Value::as_str)
+            .unwrap_or("127.0.0.1")
+    }))?;
+    if host == "127.0.0.1" && request.auth_enabled == Some(true) {
+        return Err(String::from("HTTP 服务仅绑定 127.0.0.1 时不能启用局域网访问认证"));
+    }
+    if host != "127.0.0.1" && request.auth_enabled == Some(false) {
+        return Err(String::from("HTTP 服务绑定非 127.0.0.1 网卡时必须启用局域网访问认证"));
+    }
+    let auth_enabled = host != "127.0.0.1";
     let port = request
         .port
         .unwrap_or_else(|| current.get("port").and_then(Value::as_u64).unwrap_or(17321) as u16);
@@ -5495,18 +5801,42 @@ fn save_local_http_server_state(
             .and_then(Value::as_bool)
             .unwrap_or_else(default_backend_persistence)
     });
+    let auth = resolve_local_http_auth(&current, &request)?;
+    if auth_enabled && !auth.is_object() {
+        return Err(String::from(
+            "请先配置并保存局域网访问用户名和密码，再选择非 127.0.0.1 监听地址",
+        ));
+    }
     let payload = json!({
         "enabled": enabled,
-        "host": "127.0.0.1",
+        "host": host,
         "port": port,
         "persistent": persistent,
-        "lifecycleState": current.get("lifecycleState").cloned().unwrap_or_else(|| Value::String("disabled".to_string())),
+        "authEnabled": auth_enabled,
+        "lifecycleState": current.get("lifecycleState").cloned().unwrap_or_else(|| Value::String(String::from("disabled"))),
         "lastError": current.get("lastError").cloned().unwrap_or(Value::Null),
+        "auth": auth,
     });
     write_json_file(&resolve_local_http_server_state_path(), &payload)?;
     state.backend_persistent = persistent;
     if enabled {
-        if !probe_local_http_service("127.0.0.1", port) {
+        let current_host = current
+            .get("host")
+            .and_then(Value::as_str)
+            .unwrap_or("127.0.0.1");
+        let current_port = current
+            .get("port")
+            .and_then(Value::as_u64)
+            .unwrap_or(17321) as u16;
+        let probe_host = if host == "0.0.0.0" {
+            "127.0.0.1"
+        } else {
+            host.as_str()
+        };
+        if current_host != host
+            || current_port != port
+            || !probe_local_http_service(probe_host, port)
+        {
             let _ = state.backend.stop();
             let _ = state.backend.start();
         }
@@ -6079,6 +6409,8 @@ mod tests {
             selected_tag_paths: None,
             selected_favorite_id: None,
             keyword: None,
+            search_scope: None,
+            search_mode: None,
             updated_at_order: None,
             offset: Some(0),
             limit: Some(20),
@@ -6658,6 +6990,8 @@ mod tests {
             selected_tag_paths: None,
             selected_favorite_id: None,
             keyword: None,
+            search_scope: None,
+            search_mode: None,
             updated_at_order: None,
             offset: Some(0),
             limit: Some(20),
@@ -7315,6 +7649,9 @@ fn try_run_library_worker_cli_from_args(args: &[String]) -> Result<String, Strin
         .get(2)
         .map(String::as_str)
         .ok_or_else(|| "library worker CLI 缺少 mode 参数".to_string())?;
+    if mode == "agent-settings" {
+        return agent_tools::settings::run_worker();
+    }
     let raw_payload = match args.get(3) {
         Some(payload) => payload.clone(),
         None => {
@@ -7339,6 +7676,10 @@ pub fn run() {
         .manage(MacosNativeSidebarState::default())
         .manage(updater::DownloadedDesktopUpdateState::default())
         .setup(|app| {
+            let task_app = app.handle().clone();
+            task_center::set_event_handler(move |task| {
+                let _ = task_app.emit("x-file-library-task-updated", task);
+            });
             setup_tray(app)?;
             configure_backend_process(app);
             if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
@@ -7374,6 +7715,7 @@ pub fn run() {
             native_browse_host_directories,
             native_get_library_snapshot,
             native_list_library_tag_details,
+            native_list_library_tasks,
             native_get_library_tag_detail,
             native_create_library_tag,
             native_update_library_tag,
@@ -7495,6 +7837,7 @@ mod library_read_cache_tests {
     fn 同根目录请求合并范围() {
         let binding = default_local_library_binding();
         let work = |mode: &str, target: Option<&str>| LibraryWork {
+            task_ids: Vec::new(),
             app: None,
             mode: mode.to_string(),
             payload: build_native_library_worker_payload(

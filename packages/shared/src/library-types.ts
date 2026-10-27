@@ -233,9 +233,14 @@ export interface ListLibraryDocumentsInput {
   selectedTagPaths?: string[] | null;
   selectedFavoriteId?: string | null;
   keyword?: string | null;
+  searchScope?: LibrarySearchScope;
+  searchMode?: LibrarySearchMode;
   offset?: number;
   limit?: number;
 }
+
+export type LibrarySearchScope = "all" | "current_directory" | "current_results";
+export type LibrarySearchMode = "all" | "name" | "content";
 
 export interface LibraryDocumentList {
   total: number;

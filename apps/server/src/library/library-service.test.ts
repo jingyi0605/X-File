@@ -514,6 +514,42 @@ test("根目录列表不会混入子目录文档", () => {
   assert.deepEqual(rootList.items.map((item) => item.path), ["readme.md"]);
 });
 
+test("文档搜索支持全部文件、当前目录和当前结果范围，并区分文件名与索引内容", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "x-file-library-search-scope-"));
+  const rootDir = path.join(tempDir, "library");
+  writeExportFixture(rootDir);
+
+  const service = new LibraryService(new LibraryBindingStore({ dataDir: path.join(tempDir, "data") }));
+  service.saveBinding({ rootDir, completeInitialization: true });
+
+  const allFiles = service.listDocuments({
+    browseMode: "folder",
+    selectedFolderPath: "docs",
+    keyword: "readme",
+    searchScope: "all",
+    searchMode: "name",
+  });
+  assert.deepEqual(allFiles.items.map((item) => item.path), ["readme.md"]);
+
+  const currentDirectory = service.listDocuments({
+    browseMode: "folder",
+    selectedFolderPath: "docs",
+    keyword: "后台",
+    searchScope: "current_directory",
+    searchMode: "content",
+  });
+  assert.deepEqual(currentDirectory.items.map((item) => item.path), ["docs/backend.md"]);
+
+  const currentResults = service.listDocuments({
+    browseMode: "folder",
+    selectedFolderPath: "docs",
+    keyword: "根目录",
+    searchScope: "current_results",
+    searchMode: "content",
+  });
+  assert.deepEqual(currentResults.items, []);
+});
+
 function writeExportFixture(rootDir: string): void {
   const exportDir = path.join(rootDir, ".ai-index", "exports");
   fs.mkdirSync(path.join(exportDir, "meta"), { recursive: true });

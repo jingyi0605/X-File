@@ -23,6 +23,8 @@ export interface ReadLibraryDocumentsInput {
   selectedTagPaths?: string[] | null;
   selectedFavoriteId?: string | null;
   keyword?: string | null;
+  searchScope?: "all" | "current_directory" | "current_results";
+  searchMode?: "all" | "name" | "content";
   updatedAtOrder?: "asc" | "desc";
   offset: number;
   limit: number;
@@ -197,7 +199,11 @@ export class LibraryExportReader {
     }
 
     const allDocuments = refreshRecentTimeTags(this.readDocuments(exportDir, manifest, catalog));
-    const searchMatch = readOfflineSearchMatchState(exportDir, input.keyword);
+    const searchMatch = readOfflineSearchMatchState(
+      exportDir,
+      input.keyword,
+      input.searchMode,
+    );
     const filtered = filterDocuments(
       markFavoriteDocuments(allDocuments, input.favorites ?? []),
       input,
@@ -426,6 +432,8 @@ function filterDocuments(
   searchMatch: SearchMatchState,
 ): LibraryDocumentRecord[] {
   const folderPath = normalizeFolderPath(input.selectedFolderPath ?? "");
+  const searchScope = input.searchScope ?? "current_results";
+  const usesCurrentResults = searchScope === "current_results";
   const selectedFavorite = resolveSelectedFavorite(
     input.favorites ?? [],
     input.selectedFavoriteId,
@@ -437,11 +445,21 @@ function filterDocuments(
       : [];
 
   return documents.filter((document) => {
-    if (selectedFavorite && !matchesFavorite(document, selectedFavorite)) {
+    if (
+      usesCurrentResults
+      && selectedFavorite
+      && !matchesFavorite(document, selectedFavorite)
+    ) {
       return false;
     }
 
-    if (input.browseMode !== "tag") {
+    if (
+      searchScope !== "all"
+      && (
+        searchScope === "current_directory"
+        || input.browseMode !== "tag"
+      )
+    ) {
       const documentDir = normalizeFolderPath(
         path.posix.dirname(document.path),
       );
@@ -452,7 +470,7 @@ function filterDocuments(
       }
     }
 
-    if (selectedTags.length > 0) {
+    if (usesCurrentResults && selectedTags.length > 0) {
       // 子树匹配：文档命中选中标签 ⟺ 文档某个标签等于选中标签、或是选中标签的子孙路径。
       // 这样点击父标签能筛出所有子标签文档，与父标签 badge 的聚合计数保持一致。
       const documentTagPaths = [...document.tags, ...document.derivedTags];
@@ -465,12 +483,19 @@ function filterDocuments(
     }
 
     if (searchMatch.keywords.length > 0) {
-      const haystack =
-        `${document.title}\n${document.path}\n${document.summary}`.toLowerCase();
-      const matchedEveryKeyword = searchMatch.groups.every((group) => (
-        haystack.includes(group.keyword) ||
-        group.documentIds.has(document.documentId)
-      ));
+      const searchMode = input.searchMode ?? "all";
+      const searchText = searchMode === "name"
+        ? path.posix.basename(document.path)
+        : searchMode === "content"
+          ? document.summary
+          : `${document.title}\n${document.path}\n${document.summary}`;
+      const haystack = searchText.toLowerCase();
+      const matchedEveryKeyword = searchMode === "all"
+        ? searchMatch.groups.every((group) => (
+            haystack.includes(group.keyword)
+            || group.documentIds.has(document.documentId)
+          ))
+        : searchMatch.keywords.every((keyword) => haystack.includes(keyword));
       if (!matchedEveryKeyword) {
         return false;
       }
@@ -500,10 +525,14 @@ function compareSearchRank(
 function readOfflineSearchMatchState(
   exportDir: string,
   keyword: string | null | undefined,
+  searchMode: "all" | "name" | "content" | undefined,
 ): SearchMatchState {
   const keywords = splitSearchKeywords(keyword ?? "");
   if (keywords.length === 0) {
     return createEmptySearchMatchState([]);
+  }
+  if (searchMode === "name") {
+    return createEmptySearchMatchState(keywords);
   }
 
   const manifestPath = path.join(exportDir, "search", "manifest.json");
