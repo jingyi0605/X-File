@@ -2763,10 +2763,13 @@ function LibraryStageToolbar({
     && platformData.osFamily === "macos"
     && platformData.overlayTitlebar;
 
+  // macOS 覆盖式标题栏用 .overlay 变体承担工具栏高度与窗口拖拽区，左右留白与其余场景保持一致。
+  const titlebarClassName = overlayTitlebar
+    ? "xfile-stage-titlebar overlay"
+    : "xfile-stage-titlebar";
+
   return (
-    <div
-      className={overlayTitlebar ? "xfile-stage-titlebar overlay" : "xfile-stage-titlebar"}
-    >
+    <div className={titlebarClassName}>
       <div className="xfile-stage-titlebar-content">
         <div className="xfile-stage-titlebar-left">
           <div className="affairs-stage-toolbar-left" data-window-drag="ignore">
