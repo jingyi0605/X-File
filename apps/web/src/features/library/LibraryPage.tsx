@@ -5685,6 +5685,19 @@ function LibraryTagAssignmentModal({
     await Promise.all([library.reload(), library.reloadDocuments(true)]);
   }
 
+  // 标签分配成功后直接关闭弹窗，列表刷新在后台继续完成
+  async function saveTagsAndClose(
+    nextTagIds: string[],
+    createTagPaths: string[] = [],
+  ): Promise<void> {
+    try {
+      await saveTags(nextTagIds, createTagPaths);
+      onClose();
+    } catch (err) {
+      setError(toApiErrorMessage(err));
+    }
+  }
+
   const assignedTagIds = details ? resolveAssignedTagIds(details) : [];
   const resolvedTagPaths = details && "resolvedTags" in details
     ? details.resolvedTags.map((item) => item.path)
@@ -5692,6 +5705,7 @@ function LibraryTagAssignmentModal({
 
   return (
     <DesktopModal
+      backdropVisible={false}
       title={t("libraryTagAssignmentModalTitle")}
       description={target.kind === "document"
         ? t("libraryTagAssignmentDocumentDescription", { name: target.title })
@@ -5718,8 +5732,7 @@ function LibraryTagAssignmentModal({
           emptyText={t("libraryTagAssignmentEmpty")}
           inputLabel={t("libraryTagAssignmentTagsLabel")}
           suggestionsLabel={t("libraryTagAssignmentSuggestionsLabel")}
-          onSave={saveTags}
-          onSaved={() => void refreshDetails()}
+          onSave={saveTagsAndClose}
           onError={(message) => setError(message)}
         />
       ) : null}
