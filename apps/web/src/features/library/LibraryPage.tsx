@@ -444,8 +444,9 @@ export function LibraryPage({
   const { theme } = useTheme();
   const workbenchShellRef = useRef<HTMLElement | null>(null);
   const binding = library.snapshot?.binding ?? null;
-  const shouldShowInitialization = library.requiresInitialization || !binding;
-  const shouldShowDisabled = Boolean(binding && !binding.enabled);
+  const hasLoadedLibraryState = library.snapshot !== null;
+  const shouldShowInitialization = hasLoadedLibraryState && library.requiresInitialization;
+  const shouldShowDisabled = hasLoadedLibraryState && Boolean(binding && !binding.enabled);
   const [contextMenu, setContextMenu] =
     useState<LibraryContextMenuState | null>(null);
   const [libraryClipboard, setLibraryClipboard] =
@@ -1871,7 +1872,9 @@ function LibraryBindingPanel({
   const [browserItems, setBrowserItems] = useState<HostDirectoryOption[]>([]);
   const [browserTarget, setBrowserTarget] = useState<"local" | "mirror-local" | "mirror-source">("local");
   const [modeDraft, setModeDraft] = useState<"local" | "mirror">(runtimeConfig.mode);
-  const [wizardStep, setWizardStep] = useState<"mode" | "setup">("mode");
+  const [wizardStep, setWizardStep] = useState<"mode" | "setup">(
+    runtimeConfig.mode === "mirror" ? "setup" : "mode",
+  );
   const [mirrorSourceReady, setMirrorSourceReady] = useState(runtimeConfig.mode === "mirror" ? !library.requiresInitialization : false);
   const language = usePreferencesSelector((state) => state.profile.language);
   const { theme, setTheme } = useTheme();
@@ -1921,9 +1924,9 @@ function LibraryBindingPanel({
   }, [runtimeConfig.localRootDir, runtimeConfig.mode, runtimeConfig.remoteApiBaseUrl]);
 
   useEffect(() => {
-    if (runtimeConfig.mode === "mirror" && !library.requiresInitialization) {
+    if (runtimeConfig.mode === "mirror") {
       setWizardStep("setup");
-      setMirrorSourceReady(true);
+      setMirrorSourceReady(!library.requiresInitialization);
     }
   }, [library.requiresInitialization, runtimeConfig.mode]);
 

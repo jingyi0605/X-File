@@ -33,6 +33,23 @@ describe("LibraryPage 高风险交互", () => {
     resetLibraryApiMock();
   });
 
+  it("首次读取资料库状态时直接显示工作台，不闪现初始化页", async () => {
+    let resolveSnapshot: ((snapshot: ReturnType<typeof createLibrarySnapshot>) => void) | undefined;
+    const snapshotPromise = new Promise<ReturnType<typeof createLibrarySnapshot>>((resolve) => {
+      resolveSnapshot = resolve;
+    });
+    libraryApiMock.getLibrarySnapshot.mockReturnValueOnce(snapshotPromise);
+
+    const { LibraryPage } = await import("../LibraryPage");
+    const { container } = render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
+
+    expect(container.querySelector(".xfile-workbench-window")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "选择运行模式" })).not.toBeInTheDocument();
+
+    resolveSnapshot?.(createLibrarySnapshot());
+    expect(await screen.findByRole("tab", { name: "对象详情" })).toBeInTheDocument();
+  });
+
   it("文档详情保留对象详情与预览，不再显示文件助手或会话入口", async () => {
     const { LibraryPage } = await import("../LibraryPage");
     render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
