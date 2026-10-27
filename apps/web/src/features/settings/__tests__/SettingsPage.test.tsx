@@ -203,7 +203,7 @@ describe("SettingsPage 文档库索引配置迁移行为", () => {
     ).toBeInTheDocument();
   });
 
-  it("HTTP 服务状态会区分已保存配置和实际运行态", async () => {
+  it("HTTP 服务设置不展示内部监听生命周期调试信息", async () => {
     libraryApiMock.getHttpServerState.mockResolvedValue({
       enabled: true,
       host: "127.0.0.1",
@@ -215,6 +215,9 @@ describe("SettingsPage 文档库索引配置迁移行为", () => {
       lifecycleState: "failed",
       startedAt: null,
       lastError: "listen EADDRINUSE: address already in use 127.0.0.1:17321",
+      authEnabled: false,
+      authConfigured: false,
+      authUsername: null,
     });
 
     const { SettingsPage } = await import("../SettingsPage");
@@ -222,14 +225,148 @@ describe("SettingsPage 文档库索引配置迁移行为", () => {
 
     await userEvent.click(await screen.findByRole("tab", { name: /网络服务/ }));
 
-    expect(screen.getByText("已保存监听地址")).toBeInTheDocument();
-    expect(screen.getByText("已保存端口")).toBeInTheDocument();
-    expect(screen.getByText("实际监听地址")).toBeInTheDocument();
-    expect(screen.getByText("实际监听端口")).toBeInTheDocument();
     expect(screen.getByDisplayValue("17322")).toBeInTheDocument();
-    expect(screen.getByText("17322")).toBeInTheDocument();
-    expect(screen.getAllByText("未知").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText("listen EADDRINUSE: address already in use 127.0.0.1:17321")).toBeInTheDocument();
+    expect(screen.queryByText("已保存监听地址")).not.toBeInTheDocument();
+    expect(screen.queryByText("实际监听地址")).not.toBeInTheDocument();
+    expect(screen.queryByText("生命周期")).not.toBeInTheDocument();
+    expect(screen.queryByText("listen EADDRINUSE: address already in use 127.0.0.1:17321")).not.toBeInTheDocument();
+  });
+
+  it("未保存局域网认证凭据前不允许选择局域网监听地址", async () => {
+    const configuredState = {
+      enabled: true,
+      host: "127.0.0.1",
+      port: 17321,
+      running: false,
+      persistent: false,
+      actualHost: null,
+      actualPort: null,
+      lifecycleState: "disabled" as const,
+      startedAt: null,
+      lastError: null,
+      authEnabled: false,
+      authConfigured: true,
+      authUsername: "lan-user",
+    };
+    libraryApiMock.getHttpServerState.mockResolvedValue({
+      ...configuredState,
+      authConfigured: false,
+      authUsername: null,
+    });
+    libraryApiMock.saveHttpServerState.mockResolvedValue(configuredState);
+
+    const { SettingsPage } = await import("../SettingsPage");
+    render(<SettingsPage />);
+    await userEvent.click(await screen.findByRole("tab", { name: /网络服务/ }));
+
+    const hostSelect = screen.getByLabelText("监听地址");
+    const allInterfaces = screen.getByRole("option", { name: "所有网卡（0.0.0.0） (0.0.0.0)" });
+    expect(allInterfaces).toBeDisabled();
+    await userEvent.selectOptions(hostSelect, "0.0.0.0");
+    expect(hostSelect).toHaveValue("127.0.0.1");
+
+    await userEvent.type(screen.getByLabelText("用户名"), "lan-user");
+    await userEvent.type(screen.getByLabelText("密码"), "long-enough-password");
+    await userEvent.click(screen.getByRole("button", { name: "保存服务设置" }));
+
+    await waitFor(() => expect(libraryApiMock.saveHttpServerState).toHaveBeenCalledWith({
+      enabled: true,
+      persistent: false,
+      host: "127.0.0.1",
+      port: 17321,
+      authEnabled: false,
+      authUsername: "lan-user",
+      authPassword: "long-enough-password",
+    }));
+
+    expect(screen.getByRole("option", { name: "所有网卡（0.0.0.0） (0.0.0.0)" })).toBeEnabled();
+    await userEvent.selectOptions(hostSelect, "0.0.0.0");
+    expect(hostSelect).toHaveValue("0.0.0.0");
+    expect(screen.queryByText("启用局域网访问认证")).not.toBeInTheDocument();
+    expect(screen.getByText("选择非 127.0.0.1 监听地址后，局域网认证会强制启用，不能手动关闭。")).toBeInTheDocument();
+  });
+
+  it("HTTP 服务可以选择网卡，并展示可复制的局域网访问地址", async () => {
+    const runningState = {
+      enabled: true,
+      host: "0.0.0.0",
+      port: 3010,
+      running: true,
+      persistent: true,
+      actualHost: "0.0.0.0",
+      actualPort: 3010,
+      lifecycleState: "running" as const,
+      startedAt: "2026-10-27T00:00:00.000Z",
+      lastError: null,
+      authEnabled: true,
+      authConfigured: true,
+      authUsername: "lan-user",
+      hostOptions: [
+        { value: "0.0.0.0", interfaceName: null },
+        { value: "127.0.0.1", interfaceName: null },
+        { value: "192.168.1.20", interfaceName: "Wi-Fi" },
+      ],
+      accessUrls: ["http://192.168.1.20:3010/"],
+    };
+    libraryApiMock.getHttpServerState.mockResolvedValue(runningState);
+    libraryApiMock.saveHttpServerState.mockResolvedValue(runningState);
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+
+    const { SettingsPage } = await import("../SettingsPage");
+    render(<SettingsPage />);
+    await userEvent.click(await screen.findByRole("tab", { name: /网络服务/ }));
+
+    const hostSelect = screen.getByLabelText("监听地址");
+    expect(screen.getByRole("option", { name: "Wi-Fi (192.168.1.20)" })).toBeInTheDocument();
+    await userEvent.selectOptions(hostSelect, "192.168.1.20");
+    await userEvent.click(screen.getByRole("button", { name: "复制" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("http://192.168.1.20:3010/"));
+
+    await userEvent.click(screen.getByRole("button", { name: "保存服务设置" }));
+    await waitFor(() => expect(libraryApiMock.saveHttpServerState).toHaveBeenCalledWith({
+      enabled: true,
+      persistent: true,
+      host: "192.168.1.20",
+      port: 3010,
+      authEnabled: true,
+    }));
+  });
+
+  it("已有认证时修改密码会同时提交当前用户名", async () => {
+    const configuredState = {
+      enabled: true,
+      host: "127.0.0.1",
+      port: 17321,
+      running: false,
+      persistent: false,
+      actualHost: null,
+      actualPort: null,
+      lifecycleState: "disabled" as const,
+      startedAt: null,
+      lastError: null,
+      authEnabled: false,
+      authConfigured: true,
+      authUsername: "lan-user",
+    };
+    libraryApiMock.getHttpServerState.mockResolvedValue(configuredState);
+    libraryApiMock.saveHttpServerState.mockResolvedValue(configuredState);
+
+    const { SettingsPage } = await import("../SettingsPage");
+    render(<SettingsPage />);
+    await userEvent.click(await screen.findByRole("tab", { name: /网络服务/ }));
+    await userEvent.type(screen.getByLabelText("密码"), "replacement-password");
+    await userEvent.click(screen.getByRole("button", { name: "保存服务设置" }));
+
+    await waitFor(() => expect(libraryApiMock.saveHttpServerState).toHaveBeenCalledWith({
+      enabled: true,
+      persistent: false,
+      host: "127.0.0.1",
+      port: 17321,
+      authEnabled: false,
+      authUsername: "lan-user",
+      authPassword: "replacement-password",
+    }));
   });
 
   it("集成页保留 ONLYOFFICE，不再提供内置助手插件管理", async () => {

@@ -24,6 +24,7 @@ export async function apiRequest<T>(
   try {
     response = await fetch(resolveApiUrl(path), {
       ...options,
+      credentials: "include",
       headers: {
         ...(options.body ? { "content-type": "application/json" } : {}),
         ...options.headers

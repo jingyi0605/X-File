@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import type {
   HostDirectoryOption,
+  HttpServerHostOption,
   HttpServerState,
   LibraryIndexStatus,
   LibraryBinding,
@@ -76,7 +77,10 @@ interface OnlyOfficeFormState {
 interface ServerFormState {
   enabled: boolean;
   persistent: boolean;
+  host: string;
   port: string;
+  authUsername: string;
+  authPassword: string;
 }
 
 interface OnlyOfficeModalState {
@@ -192,8 +196,12 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
   const [serverForm, setServerForm] = useState<ServerFormState>({
     enabled: false,
     persistent: false,
-    port: "17321"
+    host: "127.0.0.1",
+    port: "17321",
+    authUsername: "",
+    authPassword: ""
   });
+  const [copiedServerUrl, setCopiedServerUrl] = useState<string | null>(null);
   const [onlyOfficeModal, setOnlyOfficeModal] = useState<OnlyOfficeModalState>({
     open: false,
     refreshing: false
@@ -386,10 +394,21 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
     event.preventDefault();
     try {
       setError(null);
+      const authUsername = serverForm.authUsername.trim();
+      const hasAuthPassword = serverForm.authPassword.length > 0;
+      const shouldSaveAuthUsername = authUsername.length > 0 && (
+        hasAuthPassword
+        || !serverState?.authConfigured
+        || authUsername !== serverState.authUsername
+      );
       const saved = await saveHttpServerState({
         enabled: serverForm.enabled,
         persistent: serverForm.persistent,
-        port: Number(serverForm.port)
+        host: serverForm.host,
+        port: Number(serverForm.port),
+        authEnabled: serverForm.host !== "127.0.0.1",
+        ...(shouldSaveAuthUsername ? { authUsername } : {}),
+        ...(hasAuthPassword ? { authPassword: serverForm.authPassword } : {})
       });
       applyServerState(saved);
       setMessage(t("settingsSaveSuccess"));
@@ -431,10 +450,16 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
 
   function applyServerState(state: HttpServerState): void {
     setServerState(state);
+    const host = !state.authConfigured && state.host !== "127.0.0.1"
+      ? "127.0.0.1"
+      : state.host;
     setServerForm({
       enabled: state.enabled,
       persistent: state.persistent,
-      port: String(state.port)
+      host,
+      port: String(state.port),
+      authUsername: state.authUsername ?? "",
+      authPassword: ""
     });
     setOnlyOfficeForm((current) => ({
       ...current,
@@ -827,6 +852,7 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
     ),
     network: (
       <SettingsModule title={t("settingsServerTitle")}
+        description={t("settingsServerDescription")}
         status={t(serverState?.running ? "settingsServerRunning" : "settingsServerStopped")}>
         <form className="settings-module-form" onSubmit={(event) => void submitServer(event)}>
           {isMirrorMode ? (
@@ -852,6 +878,14 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
               onChange={(checked) => setServerForm((current) => ({ ...current, persistent: checked }))}
             />
           </label>
+          <ServerHostField
+            state={serverState}
+            value={serverForm.host}
+            onChange={(host) => setServerForm((current) => ({
+              ...current,
+              host
+            }))}
+          />
           <label>
             <span>{t("settingsServerPort")}</span>
             <input
@@ -862,7 +896,43 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
               onChange={(event) => setServerForm((current) => ({ ...current, port: event.target.value }))}
             />
           </label>
-          <ServerStatus state={serverState} />
+          <section className="server-auth-settings">
+            <div className="server-auth-settings-heading">
+              <div>
+                <strong>{t("settingsServerAuthTitle")}</strong>
+                <span>{t("settingsServerAuthDescription")}</span>
+              </div>
+              <span className="server-auth-settings-status" data-configured={serverState?.authConfigured ? "true" : "false"}>
+                {serverState?.authConfigured ? t("settingsServerAuthConfigured") : t("settingsServerAuthNotConfigured")}
+              </span>
+            </div>
+            <div className="server-auth-settings-fields">
+              <label>
+                <span>{t("settingsServerAuthUsername")}</span>
+                <input
+                  autoComplete="username"
+                  value={serverForm.authUsername}
+                  onChange={(event) => setServerForm((current) => ({ ...current, authUsername: event.target.value }))}
+                />
+              </label>
+              <label>
+                <span>{t("settingsServerAuthPassword")}</span>
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  placeholder={serverState?.authConfigured ? t("settingsServerAuthPasswordPlaceholder") : undefined}
+                  value={serverForm.authPassword}
+                  onChange={(event) => setServerForm((current) => ({ ...current, authPassword: event.target.value }))}
+                />
+              </label>
+            </div>
+            <p>{serverForm.host !== "127.0.0.1" ? t("settingsServerAuthRequiredHint") : t("settingsServerAuthHint")}</p>
+          </section>
+          <ServerAccessUrls
+            state={serverState}
+            copiedUrl={copiedServerUrl}
+            onCopyUrl={(url) => void copyServerAccessUrl(url, setCopiedServerUrl)}
+          />
           <div className="button-row">
             <button type="submit" className="primary-button" disabled={Boolean(serverUnavailable)}>
               {t("settingsServerSave")}
@@ -1390,8 +1460,16 @@ function buildRuntimePublicBaseUrl(serverState: HttpServerState | null): string 
     return window.location.origin;
   }
 
+  const accessUrl = serverState.accessUrls?.[0];
+  if (accessUrl) {
+    return accessUrl.replace(/\/$/, "");
+  }
+
   const port = serverState.actualPort ?? serverState.port;
-  return `http://127.0.0.1:${port}`;
+  const host = serverState.actualHost && serverState.actualHost !== "0.0.0.0"
+    ? serverState.actualHost
+    : "127.0.0.1";
+  return `http://${host}:${port}`;
 }
 
 function looksLikeDevWebAddress(value: string): boolean {
@@ -1635,17 +1713,134 @@ function DirectoryBrowserModal({
   );
 }
 
-function ServerStatus({ state }: { state: HttpServerState | null }) {
+function resolveServerHostOptions(
+  state: HttpServerState | null,
+  selectedHost: string,
+): HttpServerHostOption[] {
+  const options = state?.hostOptions?.length
+    ? state.hostOptions
+    : [
+      { value: "0.0.0.0", interfaceName: null },
+      { value: "127.0.0.1", interfaceName: null }
+    ];
+  if (options.some((option) => option.value === selectedHost)) {
+    return options;
+  }
+  return [{ value: selectedHost, interfaceName: null }, ...options];
+}
+
+function formatServerHostOption(option: HttpServerHostOption): string {
+  if (option.value === "0.0.0.0") {
+    return `${t("settingsServerHostAll")} (${option.value})`;
+  }
+  if (option.value === "127.0.0.1") {
+    return `${t("settingsServerHostLocal")} (${option.value})`;
+  }
+  return `${option.interfaceName ?? t("settingsServerHostNetwork")} (${option.value})`;
+}
+
+function formatServerHostTitle(option: HttpServerHostOption): string {
+  if (option.value === "0.0.0.0") {
+    return t("settingsServerHostAll");
+  }
+  if (option.value === "127.0.0.1") {
+    return t("settingsServerHostLocal");
+  }
+  return option.interfaceName ?? t("settingsServerHostNetwork");
+}
+
+function ServerHostField({
+  state,
+  value,
+  onChange,
+}: {
+  state: HttpServerState | null;
+  value: string;
+  onChange: (host: string) => void;
+}) {
+  const options = resolveServerHostOptions(state, value);
+  const selected = options.find((option) => option.value === value) ?? options[0];
+
   return (
-    <div className="server-status">
-      <div><span>{t("settingsServerConfiguredHost")}</span><strong>{state?.host ?? t("commonUnknown")}</strong></div>
-      <div><span>{t("settingsServerConfiguredPort")}</span><strong>{state?.port ?? t("commonUnknown")}</strong></div>
-      <div><span>{t("settingsServerActualHost")}</span><strong>{state?.actualHost ?? t("commonUnknown")}</strong></div>
-      <div><span>{t("settingsServerActualPort")}</span><strong>{state?.actualPort ?? t("commonUnknown")}</strong></div>
-      <div><span>{t("settingsServerLifecycle")}</span><strong>{state?.lifecycleState ?? t("commonUnknown")}</strong></div>
-      <div><span>{t("settingsServerStartedAt")}</span><strong>{formatDateTime(state?.startedAt)}</strong></div>
-      <div><span>{t("settingsServerLastError")}</span><strong>{state?.lastError ?? t("commonNone")}</strong></div>
-    </div>
+    <label className="server-host-field">
+      <span className="server-host-label">{t("settingsServerHost")}</span>
+      <span className="server-host-picker">
+        <span className="server-host-picker-leading" aria-hidden="true">
+          <span className="server-host-picker-icon">
+            <InterfaceIcon name="network" />
+          </span>
+          <span className="server-host-picker-copy">
+            <strong>{formatServerHostTitle(selected)}</strong>
+            <small>{selected.value}</small>
+          </span>
+        </span>
+        <svg className="server-host-picker-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="m7 10 5 5 5-5" />
+        </svg>
+        <select
+          aria-label={t("settingsServerHost")}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+        >
+          {options.map((option) => (
+                <option
+                  key={option.value}
+                  value={option.value}
+                  disabled={option.value !== "127.0.0.1" && !state?.authConfigured}
+                >
+              {formatServerHostOption(option)}
+            </option>
+          ))}
+        </select>
+      </span>
+    </label>
+  );
+}
+
+async function copyServerAccessUrl(
+  url: string,
+  setCopiedUrl: (value: string | null) => void,
+): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(url);
+    setCopiedUrl(url);
+    window.setTimeout(() => setCopiedUrl(null), 1600);
+  } catch {
+    setCopiedUrl(null);
+  }
+}
+
+function ServerAccessUrls({
+  state,
+  copiedUrl,
+  onCopyUrl,
+}: {
+  state: HttpServerState | null;
+  copiedUrl: string | null;
+  onCopyUrl: (url: string) => void;
+}) {
+  return (
+    <>
+      {state?.running && state.accessUrls?.length ? (
+        <div className="server-access">
+          <div className="server-access-heading">
+            <span>{t("settingsServerAccessUrls")}</span>
+            <small>{t("settingsServerAccessUrlsDescription")}</small>
+          </div>
+          <div className="server-access-list">
+            {state.accessUrls.map((url) => (
+              <div className="server-access-row" key={url}>
+                <input aria-label={t("settingsServerAccessUrlLabel", { url })} readOnly value={url} />
+                <button type="button" className="secondary-button" onClick={() => onCopyUrl(url)}>
+                  {copiedUrl === url ? t("settingsServerCopied") : t("settingsServerCopy")}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }
 

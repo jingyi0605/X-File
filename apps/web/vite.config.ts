@@ -8,7 +8,7 @@ const DEFAULT_SERVER_PORT = 17321;
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
-  const webHost = readHost(env.X_FILE_WEB_HOST, DEFAULT_WEB_HOST);
+  const webHost = DEFAULT_WEB_HOST;
   const webPort = readPort(env.X_FILE_WEB_PORT, DEFAULT_WEB_PORT, "X_FILE_WEB_PORT");
   const serverHost = readHost(env.X_FILE_SERVER_HOST, DEFAULT_SERVER_HOST);
   const serverPort = readPort(env.X_FILE_SERVER_PORT, DEFAULT_SERVER_PORT, "X_FILE_SERVER_PORT");

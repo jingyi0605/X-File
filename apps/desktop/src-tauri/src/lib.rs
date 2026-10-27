@@ -5676,11 +5676,7 @@ fn resolve_local_http_auth(
 }
 
 fn read_local_http_server_state(state: &mut DesktopState) -> Value {
-    let file_path = resolve_local_http_server_state_path();
-    let saved = read_optional_json_file::<Value>(&file_path)
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| json!({}));
+    let saved = read_local_http_server_saved_config();
     let enabled = saved
         .get("enabled")
         .and_then(Value::as_bool)
@@ -5768,11 +5764,19 @@ fn read_local_http_server_state(state: &mut DesktopState) -> Value {
     })
 }
 
+fn read_local_http_server_saved_config() -> Value {
+    read_optional_json_file::<Value>(&resolve_local_http_server_state_path())
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| json!({}))
+}
+
 fn save_local_http_server_state(
     state: &mut DesktopState,
     request: NativeSaveHttpServerStateRequest,
 ) -> Result<Value, String> {
     let current = read_local_http_server_state(state);
+    let saved_config = read_local_http_server_saved_config();
     let enabled = request.enabled.unwrap_or_else(|| {
         current
             .get("enabled")
@@ -5801,7 +5805,7 @@ fn save_local_http_server_state(
             .and_then(Value::as_bool)
             .unwrap_or_else(default_backend_persistence)
     });
-    let auth = resolve_local_http_auth(&current, &request)?;
+    let auth = resolve_local_http_auth(&saved_config, &request)?;
     if auth_enabled && !auth.is_object() {
         return Err(String::from(
             "请先配置并保存局域网访问用户名和密码，再选择非 127.0.0.1 监听地址",
@@ -5819,6 +5823,20 @@ fn save_local_http_server_state(
     });
     write_json_file(&resolve_local_http_server_state_path(), &payload)?;
     state.backend_persistent = persistent;
+    let previous_port = current
+        .get("port")
+        .and_then(Value::as_u64)
+        .unwrap_or(17321) as u16;
+    let external_sidecar_updated = state.backend.child.is_none()
+        && probe_local_http_service("127.0.0.1", previous_port)
+        && sync_external_http_server_config(
+            previous_port,
+            enabled,
+            &host,
+            port,
+            persistent,
+            auth_enabled,
+        )?;
     if enabled {
         let current_host = current
             .get("host")
@@ -5833,17 +5851,79 @@ fn save_local_http_server_state(
         } else {
             host.as_str()
         };
-        if current_host != host
+        if !external_sidecar_updated && (current_host != host
             || current_port != port
-            || !probe_local_http_service(probe_host, port)
+            || !probe_local_http_service(probe_host, port))
         {
             let _ = state.backend.stop();
             let _ = state.backend.start();
         }
-    } else {
+    } else if !external_sidecar_updated {
         let _ = state.backend.stop();
     }
     Ok(read_local_http_server_state(state))
+}
+
+fn sync_external_http_server_config(
+    current_port: u16,
+    enabled: bool,
+    host: &str,
+    port: u16,
+    persistent: bool,
+    auth_enabled: bool,
+) -> Result<bool, String> {
+    let client = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|error| format!("初始化 HTTP 服务配置同步失败：{error}"))?;
+    let response = match client
+        .put(format!("http://127.0.0.1:{current_port}/api/server/state"))
+        .json(&json!({
+            "enabled": enabled,
+            "host": host,
+            "port": port,
+            "persistent": persistent,
+            "authEnabled": auth_enabled,
+        }))
+        .send()
+    {
+        Ok(response) => response,
+        Err(error) if error.is_connect() => return Ok(false),
+        Err(error) => return Err(format!("同步 HTTP 服务监听配置失败：{error}")),
+    };
+    if !response.status().is_success() {
+        return Err(format!(
+            "HTTP 服务拒绝新的监听配置：{}",
+            response.status()
+        ));
+    }
+    if !enabled {
+        return Ok(true);
+    }
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if let Ok(status) = client
+            .get(format!("http://127.0.0.1:{port}/api/server/state"))
+            .send()
+            .and_then(|response| response.error_for_status())
+            .and_then(|response| response.json::<Value>())
+        {
+            if status.get("running").and_then(Value::as_bool) == Some(true)
+                && status.get("actualHost").and_then(Value::as_str) == Some(host)
+                && status.get("actualPort").and_then(Value::as_u64) == Some(port as u64)
+            {
+                return Ok(true);
+            }
+            if status.get("lifecycleState").and_then(Value::as_str) == Some("failed") {
+                let detail = status.get("lastError").and_then(Value::as_str).unwrap_or("未知错误");
+                return Err(format!("HTTP 服务未能应用新监听地址：{detail}"));
+            }
+        }
+        thread::sleep(std::time::Duration::from_millis(50));
+    }
+    Err("等待 HTTP 服务应用新监听地址超时".into())
 }
 
 fn probe_local_http_service(host: &str, port: u16) -> bool {
@@ -6327,6 +6407,57 @@ mod tests {
             env_map.get("X_FILE_SERVER_HOST"),
             Some(&"127.0.0.1".to_string())
         );
+    }
+
+    #[test]
+    fn native_http_server_saving_host_preserves_saved_authentication() {
+        let _guard = test_env_lock().lock().expect("测试环境锁被污染");
+        let temp_dir = env::temp_dir().join(format!("x-file-http-auth-{}", epoch_millis()));
+        fs::create_dir_all(&temp_dir).expect("创建临时目录失败");
+        let state_path = temp_dir.join("http-server-state.json");
+        let saved_auth = json!({
+            "username": "lan-user",
+            "salt": "saved-salt",
+            "passwordHash": "saved-hash"
+        });
+        write_json_file(
+            &state_path,
+            &json!({
+                "host": "127.0.0.1",
+                "port": 17321,
+                "auth": saved_auth
+            }),
+        )
+        .expect("写入 HTTP 服务状态失败");
+
+        let previous_path = env::var("X_FILE_SERVER_STATE_PATH").ok();
+        unsafe {
+            env::set_var("X_FILE_SERVER_STATE_PATH", state_path.to_string_lossy().to_string());
+        }
+
+        let saved_config = read_local_http_server_saved_config();
+        let resolved_auth = resolve_local_http_auth(
+            &saved_config,
+            &NativeSaveHttpServerStateRequest {
+                enabled: None,
+                host: None,
+                persistent: None,
+                port: None,
+                auth_enabled: None,
+                auth_username: None,
+                auth_password: None,
+                clear_auth: None,
+            },
+        )
+        .expect("保存监听地址时应保留已保存的认证凭据");
+
+        match previous_path {
+            Some(value) => unsafe { env::set_var("X_FILE_SERVER_STATE_PATH", value) },
+            None => unsafe { env::remove_var("X_FILE_SERVER_STATE_PATH") },
+        }
+        fs::remove_dir_all(&temp_dir).ok();
+
+        assert_eq!(resolved_auth, saved_auth);
     }
 
     #[test]

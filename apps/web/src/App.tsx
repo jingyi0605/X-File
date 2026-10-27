@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 
+import { getHttpAuthStatus, loginHttpAuth } from "./api/auth";
 import { fetchHealthWithTransport, type HealthResponse } from "./api/health";
 import { toApiErrorMessage } from "./api/http";
 import { LibraryPage, type WorkbenchPlatformData } from "./features/library/LibraryPage";
@@ -17,6 +18,11 @@ import "./styles.css";
 import "./features/library/LibraryV3Interactions.css";
 
 type AppSection = "library" | "health";
+type HttpAuthState =
+  | { status: "checking" }
+  | { status: "authenticated" }
+  | { status: "required"; configured: boolean }
+  | { status: "failed"; error: string };
 
 type HealthState =
   | { status: "checking" }
@@ -39,6 +45,8 @@ export function App() {
     detail: "尚未检查 health",
     updatedAt: null,
   });
+  const [httpAuth, setHttpAuth] = useState<HttpAuthState>({ status: "checking" });
+  const [authRetryKey, setAuthRetryKey] = useState(0);
   const platformData = useWorkbenchPlatformData();
   usePreferencesSelector((state) => state.profile.language);
   const runtimeConfig = useRuntimeConfigSelector((state) => state.config);
@@ -64,6 +72,28 @@ export function App() {
   }
 
   useEffect(() => {
+    let active = true;
+    setHttpAuth({ status: "checking" });
+    void getHttpAuthStatus()
+      .then((result) => {
+        if (!active) {
+          return;
+        }
+        setHttpAuth(result.required && !result.authenticated
+          ? { status: "required", configured: result.configured }
+          : { status: "authenticated" });
+      })
+      .catch((error) => {
+        if (active) {
+          setHttpAuth({ status: "failed", error: toApiErrorMessage(error) });
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [authRetryKey, runtimeConfig.mode, runtimeConfig.remoteApiBaseUrl]);
+
+  useEffect(() => {
     if (!isRuntimeConfigured(runtimeConfig)) {
       setHealth({ status: "offline", error: t("runtimeMirrorApiRequired") });
       setHealthDebug({
@@ -75,6 +105,29 @@ export function App() {
     }
     void checkHealth();
   }, [runtimeConfig.mode, runtimeConfig.remoteApiBaseUrl]);
+
+  if (httpAuth.status === "checking") {
+    return <AuthLoadingScreen />;
+  }
+  if (httpAuth.status === "required") {
+    return (
+      <HttpAuthGate
+        configured={httpAuth.configured}
+        onAuthenticated={() => setHttpAuth({ status: "authenticated" })}
+      />
+    );
+  }
+  if (httpAuth.status === "failed") {
+    return (
+      <AuthUnavailableScreen
+        error={httpAuth.error}
+        onRetry={() => {
+          setHttpAuth({ status: "checking" });
+          setAuthRetryKey((current) => current + 1);
+        }}
+      />
+    );
+  }
 
   if (section === "library") {
     return (
@@ -108,6 +161,100 @@ export function App() {
       </header>
       <HealthPanel health={health} healthDebug={healthDebug} onRetry={() => void checkHealth()} />
     </div>
+  );
+}
+
+function AuthLoadingScreen() {
+  return (
+    <main className="http-auth-page">
+      <section className="http-auth-card" aria-busy="true">
+        <span className="http-auth-eyebrow">X-FILE</span>
+        <h1>{t("httpAuthChecking")}</h1>
+        <p>{t("httpAuthCheckingDescription")}</p>
+      </section>
+    </main>
+  );
+}
+
+function AuthUnavailableScreen({ error, onRetry }: { error: string; onRetry: () => void }) {
+  return (
+    <main className="http-auth-page">
+      <section className="http-auth-card">
+        <span className="http-auth-eyebrow">X-FILE</span>
+        <h1>{t("httpAuthUnavailable")}</h1>
+        <p>{error}</p>
+        <button type="button" className="primary-button" onClick={onRetry}>
+          {t("httpAuthRetry")}
+        </button>
+      </section>
+    </main>
+  );
+}
+
+function HttpAuthGate({
+  configured,
+  onAuthenticated,
+}: {
+  configured: boolean;
+  onAuthenticated: () => void;
+}) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      const result = await loginHttpAuth(username, password);
+      if (result.authenticated) {
+        onAuthenticated();
+      } else {
+        setError(t("httpAuthInvalid"));
+      }
+    } catch (reason) {
+      setError(toApiErrorMessage(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main className="http-auth-page">
+      <section className="http-auth-card">
+        <span className="http-auth-eyebrow">X-FILE</span>
+        <h1>{configured ? t("httpAuthTitle") : t("httpAuthNotConfigured")}</h1>
+        <p>{configured ? t("httpAuthDescription") : t("httpAuthNotConfiguredDescription")}</p>
+        {configured ? (
+          <form className="http-auth-form" onSubmit={(event) => void submit(event)}>
+            <label>
+              <span>{t("httpAuthUsername")}</span>
+              <input
+                autoComplete="username"
+                autoFocus
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+              />
+            </label>
+            <label>
+              <span>{t("httpAuthPassword")}</span>
+              <input
+                type="password"
+                autoComplete="current-password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+              />
+            </label>
+            {error ? <div className="inline-alert" role="alert">{error}</div> : null}
+            <button type="submit" className="primary-button" disabled={busy || !username || !password}>
+              {busy ? t("httpAuthSubmitting") : t("httpAuthSubmit")}
+            </button>
+          </form>
+        ) : null}
+      </section>
+    </main>
   );
 }
 

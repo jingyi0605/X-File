@@ -414,6 +414,11 @@ export interface LibraryFavoritesResult {
 
 export type LibraryServerLifecycleState = "disabled" | "starting" | "running" | "failed" | "stopping";
 
+export interface HttpServerHostOption {
+  value: string;
+  interfaceName: string | null;
+}
+
 export interface HttpServerState {
   enabled: boolean;
   host: string;
@@ -425,12 +430,22 @@ export interface HttpServerState {
   lifecycleState?: LibraryServerLifecycleState;
   startedAt: string | null;
   lastError: string | null;
+  hostOptions?: HttpServerHostOption[];
+  accessUrls?: string[];
+  authEnabled: boolean;
+  authConfigured: boolean;
+  authUsername: string | null;
 }
 
 export interface SaveHttpServerStateInput {
   enabled?: boolean;
+  host?: string;
   port?: number;
   persistent?: boolean;
+  authEnabled?: boolean;
+  authUsername?: string;
+  authPassword?: string;
+  clearAuth?: boolean;
 }
 
 export interface LibraryHealth {

@@ -34,12 +34,31 @@ export async function registerServerStateRoutes(
   }));
 
   app.put("/api/server/state", wrap(async (request, reply) => {
+    const previous = httpServerManager.getState();
     let state;
     try {
-      state = await httpServerManager.applyStateChange(request.body ?? {}, {
-        manageLifecycle: options.manageLifecycle === true,
-        deferStop: true
-      });
+      const input = request.body ?? {};
+      if (options.manageLifecycle && previous.running) {
+        state = httpServerManager.save(input);
+        const bindingChanged = state.host !== previous.host || state.port !== previous.port;
+        const enabledChanged = state.enabled !== previous.enabled;
+        if (bindingChanged || enabledChanged) {
+          reply.raw.once("finish", () => {
+            setTimeout(() => {
+              void httpServerManager.restartListener().catch((error) => {
+                httpServerManager.markError(error);
+              });
+            }, 0);
+          });
+          reply.send(state);
+          return;
+        }
+      } else {
+        state = await httpServerManager.applyStateChange(input, {
+          manageLifecycle: options.manageLifecycle === true,
+          deferStop: true
+        });
+      }
     } catch (error) {
       throw normalizeServerStateError(error);
     }
@@ -56,11 +75,14 @@ function normalizeServerStateError(error: unknown): unknown {
   }
 
   const message = error instanceof Error ? error.message : String(error);
-  if (message.includes("127.0.0.1")) {
+  if (message.includes("监听地址")) {
     return new LibraryError(400, "INVALID_INPUT", message, "host");
   }
   if (message.includes("端口无效")) {
     return new LibraryError(400, "INVALID_INPUT", message, "port");
+  }
+  if (message.includes("HTTP 服务认证") || message.includes("局域网访问认证")) {
+    return new LibraryError(400, "INVALID_INPUT", message, "auth");
   }
 
   return error;

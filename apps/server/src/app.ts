@@ -6,6 +6,7 @@ import {
 } from "./http-server-manager.js";
 import { registerLibraryEngineFeature } from "./library/library-engine-feature.js";
 import { registerWebShellRoutes } from "./web-shell-routes.js";
+import { registerHttpAuthRoutes } from "./routes/http-auth-routes.js";
 
 const APP_VERSION = "0.1.0";
 const ROUTER_MAX_PARAM_LENGTH = 4096;
@@ -19,6 +20,9 @@ export interface CreateServerOptions {
 }
 
 export function createServer(options: CreateServerOptions = {}) {
+  const httpServerManager =
+    options.httpServerManager ??
+    new HttpServerManager(undefined, options.httpServerRuntimeState);
   const server = Fastify({
     logger: true,
     // ONLYOFFICE 预览 token 会把相对路径一起签进 URL，默认参数长度不够时
@@ -40,7 +44,7 @@ export function createServer(options: CreateServerOptions = {}) {
         "GET,POST,PUT,DELETE,OPTIONS",
       );
       reply.header("Access-Control-Allow-Headers", "content-type");
-      reply.header("Access-Control-Allow-Credentials", "false");
+      reply.header("Access-Control-Allow-Credentials", "true");
     }
   });
 
@@ -52,10 +56,13 @@ export function createServer(options: CreateServerOptions = {}) {
     version: APP_VERSION,
   }));
 
+  registerHttpAuthRoutes(server, httpServerManager);
+
   // Node 入口现在只负责装配仍需 HTTP sidecar 的服务；
   // 文档库主读链与 refresh 宿主已经优先走桌面 native 路径。
   registerLibraryEngineFeature(server, {
     ...options,
+    httpServerManager,
     sidecarProfile: options.sidecarProfile ?? "sidecar-only",
   });
   registerWebShellRoutes(server, {
@@ -73,6 +80,8 @@ function isAllowedLocalOrigin(origin: string): boolean {
       (url.hostname === "127.0.0.1" ||
         url.hostname === "localhost" ||
         url.hostname === "::1")
+      || (url.protocol === "tauri:" && url.hostname === "localhost")
+      || (url.protocol === "http:" && url.hostname === "tauri.localhost")
     );
   } catch {
     return false;
