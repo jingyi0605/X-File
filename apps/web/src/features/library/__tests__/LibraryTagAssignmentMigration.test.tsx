@@ -397,6 +397,32 @@ describe("第 10 批：文档与文件夹标签分配、推荐标签和任务进
     });
   });
 
+  it("创建并分配入口只保留单行标签，不再显示底部备注说明", async () => {
+    const matchedTag = createTagDetail({ id: "tag-power", path: "客户/电力咨询", rootType: "客户" });
+    libraryApiMock.listLibraryDocuments.mockResolvedValue(
+      createDocumentList([createDocumentRecord({ documentId: "doc-create", path: "docs/创建.md" })]),
+    );
+    libraryApiMock.listLibraryTagDetails.mockResolvedValue([matchedTag]);
+    libraryApiMock.getDocumentTagDetails.mockResolvedValue(
+      createDocumentTagDetails({ documentId: "doc-create", path: "docs/创建.md" }),
+    );
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
+
+    await openDocumentTagDialog("创建.md");
+    const dialog = screen.getByRole("dialog", { name: "分配标签" });
+    await userEvent.type(within(dialog).getByLabelText("添加标签"), "电力");
+
+    const createButton = within(dialog).getByRole("button", { name: "创建并分配“电力”" });
+    // 备注说明不再占用行内空间，只作为悬停提示保留
+    expect(createButton).not.toHaveTextContent("如果这个标签还不存在");
+    expect(createButton).toHaveAttribute("title", "如果这个标签还不存在，会直接新建后分配。");
+    // 与已有标签使用同一胶囊类名，尺寸由同一套全局样式决定
+    expect(createButton).toHaveClass("affairs-document-tag-suggestion");
+    expect(within(dialog).getByText("客户/电力咨询")).toBeInTheDocument();
+  });
+
 });
 
 async function openDocumentTagDialog(fileName: string): Promise<void> {

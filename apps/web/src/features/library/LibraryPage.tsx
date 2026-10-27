@@ -5966,13 +5966,16 @@ function LibraryQuickTagAssignmentEditor({
               <button
                 type="button"
                 className="affairs-document-tag-suggestion affairs-document-tag-create-suggestion"
+                title={t("libraryTagQuickCreateHint")}
+                aria-label={t("libraryTagQuickCreateAction", { tag: normalizedQuery })}
                 disabled={submitting}
                 onClick={() => {
                   void commitSelection([...assignedTagIds], [normalizedQuery], "create");
                 }}
               >
-                <span className="affairs-document-tag-create-label">{t("libraryTagQuickCreateAction", { tag: normalizedQuery })}</span>
-                <span className="affairs-binding-hint">{t("libraryTagQuickCreateHint")}</span>
+                <span className="affairs-document-tag-create-label">
+                  {t("libraryTagQuickCreateAction", { tag: normalizedQuery })}
+                </span>
               </button>
             ) : null}
             {matchedTags.length === 0 && !canCreateTag ? (

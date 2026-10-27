@@ -237,6 +237,8 @@
   --settings-modal-width: 900px;
   --settings-modal-height: 650px;
   --task-popover-width: 360px;
+  --tag-chip-height: 22px;
+  --tag-chip-padding-x: 8px;
   --modal-inset: 24px;
   --segmented-padding: 2px;
   --preview-min-height: 160px;
@@ -6620,13 +6622,15 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
   align-items: center;
 }
 
+/* “创建并分配”与已有标签保持同一胶囊尺寸，不再占用两行高度 */
 .affairs-document-tag-create-suggestion {
-  align-items: flex-start;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 200px;
-  padding: 8px 10px;
-  border-radius: var(--radius-control);
+  align-items: center;
+  flex-direction: row;
+  gap: 0;
+  min-height: var(--tag-chip-height);
+  max-width: 100%;
+  padding: 0 var(--tag-chip-padding-x);
+  border-radius: var(--radius-pill);
   border: 1px dashed color-mix(in srgb, var(--accent) 26%, var(--modal-control-border));
   background: color-mix(in srgb, var(--accent) 4%, var(--glass-tint));
   text-align: left;
@@ -6638,9 +6642,14 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
 }
 
 .affairs-document-tag-create-label {
+  min-width: 0;
   color: var(--text-primary);
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .affairs-document-tag-token,
@@ -6783,9 +6792,9 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
   --affairs-tag-hue: 210;
   display: inline-flex;
   align-items: center;
-  min-height: 22px;
+  min-height: var(--tag-chip-height);
   max-width: 100%;
-  padding: 0 8px;
+  padding: 0 var(--tag-chip-padding-x);
   border: 1px solid hsl(var(--affairs-tag-hue) 72% 62% / 0.28);
   background: hsl(var(--affairs-tag-hue) 76% 54% / 0.12);
   color: hsl(var(--affairs-tag-hue) 62% 36%);
