@@ -51,10 +51,8 @@ describe("第 10 批：文档与文件夹标签分配、推荐标签和任务进
     const { LibraryPage } = await import("../LibraryPage");
     render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
 
-    await userEvent.click(await screen.findByRole("button", { name: /合同\.md/ }));
-    await userEvent.click(await screen.findByRole("button", { name: "编辑文档标签" }));
-
-    const dialog = await screen.findByRole("dialog", { name: "分配标签" });
+    await openDocumentTagDialog("合同.md");
+    const dialog = screen.getByRole("dialog", { name: "分配标签" });
     const input = within(dialog).getByLabelText("添加标签");
     await userEvent.type(input, "业务/合同");
 
@@ -114,6 +112,12 @@ describe("第 10 批：文档与文件夹标签分配、推荐标签和任务进
     );
     libraryApiMock.listLibraryTagDetails.mockResolvedValue([tag]);
     libraryApiMock.getDocumentTagDetails.mockResolvedValue(createDocumentTagDetails({ documentId: "doc-task", path: "docs/标签任务.md" }));
+    libraryApiMock.listLibraryTasks.mockResolvedValue([{
+      taskId: "running-doc-tag", taskType: "library.tag_assignment", rootDir: "/Users/test/Documents",
+      targetPath: "docs/标签任务.md", source: "test", state: "running", stage: "save_tags",
+      totalCount: 1, processedCount: 0, errorSummary: null,
+      queuedAt: "2026-10-26T00:00:00Z", startedAt: "2026-10-26T00:00:00Z", completedAt: null,
+    }]);
     libraryApiMock.saveDocumentTags.mockImplementation(
       () => new Promise((resolve) => window.setTimeout(() => resolve(createDocumentTagDetails({
         documentId: "doc-task",
@@ -130,7 +134,7 @@ describe("第 10 批：文档与文件夹标签分配、推荐标签和任务进
     await userEvent.type(screen.getByLabelText("添加标签"), "项目/任务");
     await userEvent.keyboard("{Enter}");
 
-    expect(await screen.findByRole("button", { name: /标签任务入口/ })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /任务中心/ })).toBeInTheDocument();
   });
 
   it("文档详情输入不存在的标签时会直接创建并分配", async () => {
@@ -192,6 +196,12 @@ describe("第 10 批：文档与文件夹标签分配、推荐标签和任务进
     );
     libraryApiMock.listLibraryTagDetails.mockResolvedValue([tag]);
     libraryApiMock.getFolderTagDetails.mockResolvedValue(createFolderTagDetails({ folderPath: "任务目录" }));
+    libraryApiMock.listLibraryTasks.mockResolvedValue([{
+      taskId: "running-folder-tag", taskType: "library.tag_assignment", rootDir: "/Users/test/Documents",
+      targetPath: "任务目录", source: "test", state: "running", stage: "save_tags",
+      totalCount: 1, processedCount: 0, errorSummary: null,
+      queuedAt: "2026-10-26T00:00:00Z", startedAt: "2026-10-26T00:00:00Z", completedAt: null,
+    }]);
     libraryApiMock.saveFolderTags.mockImplementation(
       () => new Promise((resolve) => window.setTimeout(() => resolve(createFolderTagDetails({
         folderPath: "任务目录",
@@ -207,10 +217,16 @@ describe("第 10 批：文档与文件夹标签分配、推荐标签和任务进
     await userEvent.type(screen.getByLabelText("添加标签"), "项目/目录任务");
     await userEvent.keyboard("{Enter}");
 
-    expect(await screen.findByRole("button", { name: /标签任务入口/ })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /任务中心/ })).toBeInTheDocument();
   });
 
   it("右上角标签任务入口可以展开最近一次标签任务记录", async () => {
+    libraryApiMock.listLibraryTasks.mockResolvedValue([{
+      taskId: "completed-tag-task", taskType: "library.tag_assignment", rootDir: "/Users/test/Documents",
+      targetPath: "docs/最近任务.md", source: "test", state: "completed", stage: null,
+      totalCount: 1, processedCount: 1, errorSummary: null,
+      queuedAt: "2026-10-26T00:00:00Z", startedAt: "2026-10-26T00:00:00Z", completedAt: "2026-10-26T00:00:01Z",
+    }]);
     const tag = createTagDetail({ id: "tag-last", path: "项目/最近任务", rootType: "项目" });
     libraryApiMock.listLibraryDocuments.mockResolvedValue(
       createDocumentList([createDocumentRecord({ documentId: "doc-last", path: "docs/最近任务.md" })]),
@@ -231,8 +247,9 @@ describe("第 10 批：文档与文件夹标签分配、推荐标签和任务进
     await userEvent.type(screen.getByLabelText("添加标签"), "项目/最近任务");
     await userEvent.keyboard("{Enter}");
 
-    await userEvent.click(await screen.findByRole("button", { name: /标签任务入口/ }));
-    const taskPanel = await screen.findByRole("status", { name: "最近标签任务" });
+    await userEvent.click(await screen.findByRole("button", { name: /任务中心/ }));
+    const taskPanel = await screen.findByRole("dialog", { name: "任务中心" });
+    await userEvent.click(within(taskPanel).getByRole("button", { name: "标签分配" }));
     expect(within(taskPanel).getByText("docs/最近任务.md")).toBeInTheDocument();
     expect(within(taskPanel).getByText("已完成")).toBeInTheDocument();
   });
@@ -260,11 +277,87 @@ describe("第 10 批：文档与文件夹标签分配、推荐标签和任务进
       });
     });
   });
+
+  it("分配标签弹窗不启用背景模糊", async () => {
+    libraryApiMock.listLibraryDocuments.mockResolvedValue(
+      createDocumentList([createDocumentRecord({ documentId: "doc-blur", path: "docs/无模糊.md" })]),
+    );
+    libraryApiMock.listLibraryTagDetails.mockResolvedValue([]);
+    libraryApiMock.getDocumentTagDetails.mockResolvedValue(
+      createDocumentTagDetails({ documentId: "doc-blur", path: "docs/无模糊.md" }),
+    );
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
+
+    await openDocumentTagDialog("无模糊.md");
+    const dialog = screen.getByRole("dialog", { name: "分配标签" });
+    const layer = dialog.closest(".desktop-modal-layer");
+    expect(layer).not.toBeNull();
+    expect(layer?.getAttribute("data-backdrop-visible")).toBe("false");
+  });
+
+  it("标签分配成功后自动关闭弹窗", async () => {
+    const tag = createTagDetail({ id: "tag-auto-close", path: "项目/自动关闭", rootType: "项目" });
+    libraryApiMock.listLibraryDocuments.mockResolvedValue(
+      createDocumentList([createDocumentRecord({ documentId: "doc-close", path: "docs/自动关闭.md" })]),
+    );
+    libraryApiMock.listLibraryTagDetails.mockResolvedValue([tag]);
+    libraryApiMock.getDocumentTagDetails.mockResolvedValue(
+      createDocumentTagDetails({ documentId: "doc-close", path: "docs/自动关闭.md" }),
+    );
+    libraryApiMock.saveDocumentTags.mockResolvedValue(createDocumentTagDetails({
+      documentId: "doc-close",
+      path: "docs/自动关闭.md",
+      manualTagIds: [tag.id],
+      resolvedTags: [resolvedTag(tag)],
+    }));
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
+
+    await openDocumentTagDialog("自动关闭.md");
+    await userEvent.type(screen.getByLabelText("添加标签"), "项目/自动关闭");
+    await userEvent.keyboard("{Enter}");
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "分配标签" })).not.toBeInTheDocument();
+    });
+    expect(libraryApiMock.saveDocumentTags).toHaveBeenCalledWith("doc-close", {
+      tagIds: [tag.id],
+      createTagPaths: [],
+    });
+  });
+
+  it("标签分配失败时保留弹窗并展示错误", async () => {
+    libraryApiMock.listLibraryDocuments.mockResolvedValue(
+      createDocumentList([createDocumentRecord({ documentId: "doc-fail", path: "docs/失败.md" })]),
+    );
+    libraryApiMock.listLibraryTagDetails.mockResolvedValue([]);
+    libraryApiMock.getDocumentTagDetails.mockResolvedValue(
+      createDocumentTagDetails({ documentId: "doc-fail", path: "docs/失败.md" }),
+    );
+    libraryApiMock.saveDocumentTags.mockRejectedValue(new Error("保存失败"));
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
+
+    await openDocumentTagDialog("失败.md");
+    await userEvent.type(screen.getByLabelText("添加标签"), "项目/失败");
+    await userEvent.keyboard("{Enter}");
+
+    await waitFor(() => {
+      expect(libraryApiMock.saveDocumentTags).toHaveBeenCalled();
+    });
+    expect(screen.getByRole("dialog", { name: "分配标签" })).toBeInTheDocument();
+  });
+
 });
 
 async function openDocumentTagDialog(fileName: string): Promise<void> {
-  await userEvent.click(await screen.findByRole("button", { name: new RegExp(fileName) }));
-  await userEvent.click(await screen.findByRole("button", { name: "编辑文档标签" }));
+  const item = await screen.findByRole("button", { name: new RegExp(fileName) });
+  fireEvent.contextMenu(item, { clientX: 10, clientY: 10 });
+  await userEvent.click(await screen.findByRole("menuitem", { name: "标签" }));
   await screen.findByRole("dialog", { name: "分配标签" });
 }
 
