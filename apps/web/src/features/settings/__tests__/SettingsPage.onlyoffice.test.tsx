@@ -18,6 +18,7 @@ vi.mock("../../../api/agent-integration", async (importOriginal) => ({
   getAgentIntegrationSettings: async () => ({
     enabled: false, apiKeyConfigured: false, updatedAt: null,
     executablePath: "/host/x-file", dataDir: "/host/.x-file", platform: "linux",
+    capabilities: [{ name: "xfile_status", description: "读取应用状态", readOnly: true, destructive: false, requiresBinding: false }],
   }),
 }));
 

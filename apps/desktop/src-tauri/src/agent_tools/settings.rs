@@ -39,6 +39,68 @@ pub(crate) struct SettingsView {
     executable_path: String,
     data_dir: String,
     platform: &'static str,
+    capabilities: Vec<AgentCapability>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentCapability {
+    name: String,
+    description: String,
+    read_only: bool,
+    destructive: bool,
+    requires_binding: bool,
+    parameters: Vec<AgentCapabilityParameter>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentCapabilityParameter {
+    name: String,
+    value_type: String,
+    required: bool,
+    description: Option<String>,
+    allowed_values: Vec<String>,
+}
+
+fn capability_parameters(schema: &serde_json::Value) -> Vec<AgentCapabilityParameter> {
+    let properties = match schema.get("properties").and_then(serde_json::Value::as_object) {
+        Some(properties) => properties,
+        None => return Vec::new(),
+    };
+    let required = schema.get("required")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .collect::<std::collections::HashSet<_>>();
+    properties.iter().map(|(name, property)| {
+        let value_type = property.get("type").map(|value| match value {
+            serde_json::Value::String(value) => value.clone(),
+            serde_json::Value::Array(values) => values.iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect::<Vec<_>>()
+                .join(" | "),
+            _ => "object".to_owned(),
+        }).unwrap_or_else(|| "object".to_owned());
+        AgentCapabilityParameter {
+            name: name.clone(),
+            value_type,
+            required: required.contains(name.as_str()),
+            description: property.get("description")
+                .and_then(serde_json::Value::as_str).map(str::to_owned),
+            allowed_values: property.get("enum")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|value| match value {
+                    serde_json::Value::String(value) => Some(value.clone()),
+                    serde_json::Value::Null => Some("null".to_owned()),
+                    other => Some(other.to_string()),
+                })
+                .collect(),
+        }
+    }).collect()
 }
 
 #[derive(Serialize)]
@@ -66,6 +128,24 @@ fn view(directory: &Path, record: SettingsRecord) -> Result<SettingsView, ToolEr
         executable_path: std::env::current_exe()?.to_string_lossy().into_owned(),
         data_dir: std::path::absolute(directory)?.to_string_lossy().into_owned(),
         platform: std::env::consts::OS,
+        capabilities: super::catalog()
+            .iter()
+            .map(|definition| AgentCapability {
+                name: definition.tool.name.to_string(),
+                description: definition.tool.description.as_deref().unwrap_or("").to_owned(),
+                read_only: super::is_read_only(&definition.tool),
+                destructive: definition.tool.annotations.as_ref()
+                    .and_then(|annotations| annotations.destructive_hint)
+                    .unwrap_or(false),
+                requires_binding: definition.tool.meta.as_ref()
+                    .and_then(|meta| meta.get("requiresBinding"))
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
+                parameters: capability_parameters(
+                    &serde_json::Value::Object(definition.tool.input_schema.as_ref().clone()),
+                ),
+            })
+            .collect(),
     })
 }
 
@@ -237,6 +317,46 @@ pub(super) fn authorize() -> Result<(), ToolError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worker_reuses_settings_and_never_echoes_invalid_secrets() {
+        let directory = std::env::temp_dir().join(format!("x-file-settings-worker-{}", std::process::id()));
+        let result = (|| -> Result<(), ToolError> {
+            let initial = worker_response(&directory, r#"{"operation":"get"}"#);
+            assert_eq!(initial["result"]["enabled"], false);
+            let initial_capabilities = initial["result"]["capabilities"].as_array().unwrap();
+            assert_eq!(initial_capabilities.len(), super::super::catalog().len());
+            let status = initial_capabilities.iter().find(|tool| tool["name"] == "xfile_status").unwrap();
+            assert_eq!(status["readOnly"], true);
+            assert_eq!(status["requiresBinding"], false);
+            let file_operation = initial_capabilities.iter().find(|tool| tool["name"] == "xfile_file_operation").unwrap();
+            assert_eq!(file_operation["destructive"], true);
+            assert_eq!(file_operation["requiresBinding"], true);
+            let saved = worker_response(&directory,
+                r#"{"operation":"save","input":{"generateApiKey":true,"enabled":true}}"#);
+            assert_eq!(saved["ok"], true);
+            let key = saved["result"]["apiKey"].as_str().unwrap();
+            verify(&read_record(&directory)?, Some(key))?;
+            let public = worker_response(&directory, r#"{"operation":"get"}"#);
+            assert_eq!(public["result"]["apiKeyConfigured"], true);
+            assert!(!public.to_string().contains(key));
+            for raw in [
+                "sensitive-invalid-json".to_owned(),
+                serde_json::json!({"operation": "save", "input": {"enabled": key}}).to_string(),
+                serde_json::json!({"operation": "get", "dataDir": key}).to_string(),
+                "s".repeat(8193),
+            ] {
+                let rejected = worker_response(&directory, &raw);
+                assert_eq!(rejected["error"]["code"], "INVALID_ARGUMENT");
+                assert!(!rejected.to_string().contains(key));
+                assert!(!rejected.to_string().contains("sensitive-invalid-json"));
+                verify(&read_record(&directory)?, Some(key))?;
+            }
+            Ok(())
+        })();
+        let _ = fs::remove_dir_all(directory);
+        result.unwrap();
+    }
 
     #[test]
     fn credentials_require_enabled_and_match_without_exposing_secrets() {

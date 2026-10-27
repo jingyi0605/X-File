@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentIntegrationSettings as Settings } from "@x-file/shared";
@@ -21,6 +21,20 @@ const initial: Settings = {
   executablePath: "/Applications/X-File.app/Contents/MacOS/x-file-desktop",
   dataDir: "/Users/example/.x-file",
   platform: "macos",
+  capabilities: [
+    {
+      name: "xfile_status", description: "读取应用状态。", readOnly: true,
+      destructive: false, requiresBinding: false, parameters: [],
+    },
+    {
+      name: "xfile_file_operation", description: "创建、移动或删除文件。", readOnly: false,
+      destructive: true, requiresBinding: true,
+      parameters: [{
+        name: "opType", valueType: "string", required: true,
+        description: "需要执行的文件操作。", allowedValues: ["create_file", "delete"],
+      }],
+    },
+  ],
 };
 
 describe("外部 Agent 接入设置", () => {
@@ -42,29 +56,32 @@ describe("外部 Agent 接入设置", () => {
     render(<AgentIntegrationSettings />);
 
     const toggle = await screen.findByRole("switch", { name: "启用外部 Agent 接入" });
-    const keyInput = screen.getByLabelText(/设置新的 API Key/);
+    const keyInput = screen.getByLabelText("API Key 输入");
     expect(toggle).toBeDisabled();
     expect(screen.queryByRole("button", { name: "复制新密钥" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "生成 API Key" }));
-    expect(saveAgentIntegrationSettings).toHaveBeenLastCalledWith({ generateApiKey: true }, "");
-    expect(screen.getByLabelText(/设置新的 API Key/)).toBe(keyInput);
+    expect(saveAgentIntegrationSettings).toHaveBeenLastCalledWith({ generateApiKey: true });
+    expect(screen.getByLabelText("API Key 输入")).toBe(keyInput);
     expect(keyInput).toHaveValue(key);
     expect(keyInput).toHaveAttribute("type", "text");
     expect(keyInput).toHaveFocus();
     expect((keyInput as HTMLInputElement).selectionStart).toBe(0);
     expect((keyInput as HTMLInputElement).selectionEnd).toBe(key.length);
-    expect(screen.getAllByLabelText(/设置新的 API Key/)).toHaveLength(1);
+    expect(screen.getAllByLabelText("API Key 输入")).toHaveLength(1);
     const copyButton = screen.getByRole("button", { name: "复制新密钥" });
     expect(keyInput.parentElement).toContainElement(copyButton);
     expect(copyButton.querySelector("svg")).toBeInTheDocument();
     expect(copyButton.textContent).toBe("");
     expect(screen.queryByRole("button", { name: "关闭密钥显示" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "保存 API Key" })).toBeDisabled();
-    const mcp = screen.getByLabelText("MCP 客户端配置（JSON）");
+    await user.click(screen.getByRole("button", { name: "查看配置方式" }));
+    const configModal = screen.getByRole("dialog", { name: "推荐配置方式" });
+    const mcp = within(configModal).getByLabelText("MCP 客户端配置（JSON）");
     const config = JSON.parse(mcp.textContent!);
     expect(config.mcpServers["x-file"].command).toBe(initial.executablePath);
     expect(config.mcpServers["x-file"].args).toEqual(["mcp", "--data-dir", initial.dataDir, "--read-only"]);
     expect(mcp.textContent).not.toContain(key);
+    await user.click(configModal.querySelector(".desktop-modal-footer button")!);
 
     await user.tab();
     expect(keyInput).toHaveAttribute("type", "password");
@@ -78,13 +95,13 @@ describe("外部 Agent 接入设置", () => {
     expect(keyInput).not.toBeVisible();
     expect(toggle).toBeVisible();
     await user.click(toggle);
-    expect(saveAgentIntegrationSettings).toHaveBeenLastCalledWith({ enabled: true }, "");
+    expect(saveAgentIntegrationSettings).toHaveBeenLastCalledWith({ enabled: true });
     await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
     expect(disclosure).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByDisplayValue(key)).not.toBeInTheDocument();
     await user.click(disclosure);
     await user.click(screen.getByRole("button", { name: "撤销密钥并关闭接入" }));
-    expect(saveAgentIntegrationSettings).toHaveBeenLastCalledWith({ clearApiKey: true }, "");
+    expect(saveAgentIntegrationSettings).toHaveBeenLastCalledWith({ clearApiKey: true });
     await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "false"));
     expect(toggle).toBeDisabled();
     expect(keyInput).toHaveValue("");
@@ -102,7 +119,7 @@ describe("外部 Agent 接入设置", () => {
     const clipboard = vi.spyOn(navigator.clipboard, "writeText");
     render(<AgentIntegrationSettings />);
     await user.click(await screen.findByRole("button", { name: "生成 API Key" }));
-    const input = screen.getByLabelText(/设置新的 API Key/);
+    const input = screen.getByLabelText("API Key 输入");
     const copyButton = screen.getByRole("button", { name: "复制新密钥" });
     const copyIconPath = copyButton.querySelector("path")!.getAttribute("d")!;
 
@@ -137,12 +154,12 @@ describe("外部 Agent 接入设置", () => {
     vi.mocked(saveAgentIntegrationSettings).mockResolvedValue({ settings: keyed, apiKey: key });
     const view = render(<AgentIntegrationSettings />);
     await user.click(await screen.findByRole("button", { name: "生成 API Key" }));
-    expect(screen.getByLabelText(/设置新的 API Key/)).toHaveAttribute("type", "text");
+    expect(screen.getByLabelText("API Key 输入")).toHaveAttribute("type", "text");
     view.unmount();
 
     vi.mocked(getAgentIntegrationSettings).mockResolvedValue(keyed);
     render(<AgentIntegrationSettings />);
-    const input = await screen.findByLabelText(/设置新的 API Key/);
+    const input = await screen.findByLabelText("API Key 输入");
     expect(input).toHaveAttribute("type", "password");
     expect(input).toHaveValue("");
     expect(input).toHaveAttribute("placeholder", "\u2022".repeat(12));
@@ -164,7 +181,7 @@ describe("外部 Agent 接入设置", () => {
       .mockResolvedValueOnce({ settings: keyed });
     render(<AgentIntegrationSettings />);
     await user.click(await screen.findByRole("button", { name: "生成 API Key" }));
-    const input = screen.getByLabelText(/设置新的 API Key/);
+    const input = screen.getByLabelText("API Key 输入");
     await user.click(screen.getByRole("button", { name: "复制新密钥" }));
     expect(screen.getByRole("button", { name: "已复制。" })).toHaveAttribute("data-copied", "true");
     await user.click(screen.getByRole("button", { name: "重新生成 API Key" }));
@@ -181,7 +198,7 @@ describe("外部 Agent 接入设置", () => {
     expect(input).toHaveAttribute("type", "password");
     expect(screen.queryByRole("button", { name: "复制新密钥" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "保存 API Key" }));
-    expect(saveAgentIntegrationSettings).toHaveBeenLastCalledWith({ apiKey: customKey }, "");
+    expect(saveAgentIntegrationSettings).toHaveBeenLastCalledWith({ apiKey: customKey });
     await waitFor(() => expect(input).toHaveValue(""));
     expect(input).toHaveAttribute("placeholder", "\u2022".repeat(12));
   });
@@ -190,7 +207,7 @@ describe("外部 Agent 接入设置", () => {
     const user = userEvent.setup();
     vi.mocked(saveAgentIntegrationSettings).mockRejectedValue(new Error("写入失败"));
     render(<AgentIntegrationSettings />);
-    const input = await screen.findByLabelText(/设置新的 API Key/);
+    const input = await screen.findByLabelText("API Key 输入");
     await user.type(input, "custom-key-with-at-least-thirty-two-characters");
     const disclosure = screen.getByRole("button", { name: "外部 Agent 接入" });
     await user.click(disclosure);
@@ -201,58 +218,92 @@ describe("外部 Agent 接入设置", () => {
     await user.click(screen.getByRole("button", { name: "保存 API Key" }));
     expect(saveAgentIntegrationSettings).toHaveBeenCalledWith({
       apiKey: "custom-key-with-at-least-thirty-two-characters",
-    }, "");
+    });
     expect(await screen.findByRole("alert")).toHaveTextContent("写入失败");
     expect(screen.getByRole("switch")).toHaveAttribute("aria-checked", "false");
   });
 
-  it("只读和读写模板切换，复制安装命令并报告剪贴板错误", async () => {
+  it("能力页以表格列出工具权限、说明和调用参数", async () => {
     const user = userEvent.setup();
     render(<AgentIntegrationSettings />);
     await screen.findByRole("switch");
-    for (const title of ["API Key", "推荐配置方式", "SKILL 安装说明"]) {
+    for (const title of ["API Key", "推荐配置方式"]) {
       expect(screen.getByRole("heading", { name: title })).toBeVisible();
       expect(screen.queryByRole("button", { name: title })).not.toBeInTheDocument();
     }
+    expect(screen.queryByRole("heading", { name: "SKILL 安装说明" })).not.toBeInTheDocument();
+    expect(screen.queryByText("默认关闭。请先配置 API Key；关闭后，已有连接的后续工具调用也会被拒绝。")).not.toBeInTheDocument();
+    expect(screen.queryByText("推荐使用本机 MCP stdio，将下方对象合并到 Agent 客户端配置。把占位符替换为密钥，优先使用客户端的密钥或环境变量管理。CLI 适用于脚本调用；未提供远程 HTTP MCP 服务。")).not.toBeInTheDocument();
+    expect(screen.queryByText("设置新的 API Key（32 至 512 位，无空白 ASCII 字符）")).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "查看配置方式" }));
+    const modal = screen.getByRole("dialog", { name: "推荐配置方式" });
+    const configurationTab = within(modal).getByRole("tab", { name: "配置方式" });
+    const capabilitiesTab = within(modal).getByRole("tab", { name: "MCP 能力" });
+    expect(configurationTab).toHaveAttribute("aria-selected", "true");
+    expect(capabilitiesTab).toHaveAttribute("aria-selected", "false");
+    expect(modal).toBeInTheDocument();
     expect(screen.getByLabelText("MCP 客户端配置（JSON）")).toBeVisible();
     expect(screen.getByLabelText("安装命令")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "SKILL 安装说明" })).toBeVisible();
+    expect(screen.getByText(/下方命令将内嵌 SKILL 导出到/)).toBeVisible();
+    expect(screen.queryByRole("list", { name: "MCP 能力" })).not.toBeInTheDocument();
     await user.selectOptions(screen.getByLabelText("配置示例的访问权限"), "write");
     expect(screen.getByLabelText("MCP 客户端配置（JSON）")).not.toHaveTextContent("--read-only");
     const clipboard = vi.spyOn(navigator.clipboard, "writeText");
-    await user.click(screen.getByRole("button", { name: "复制 安装命令" }));
-    expect(clipboard).toHaveBeenCalledWith(expect.stringContaining('.agents/skills/x-file/SKILL.md'));
-    expect(clipboard).toHaveBeenCalledWith(expect.stringContaining("cli skill"));
-    expect(await screen.findByRole("status")).toHaveTextContent("已复制");
+    await user.click(within(modal).getAllByRole("button", { name: "复制" })[0]!);
+    expect(clipboard).toHaveBeenCalledWith(expect.stringContaining('"mcpServers"'));
     clipboard.mockRejectedValueOnce(new Error("denied"));
-    await user.click(screen.getByRole("button", { name: "复制 CLI 调用示例" }));
+    await user.click(within(modal).getAllByRole("button", { name: "复制" })[1]!);
     expect(await screen.findByRole("alert")).toHaveTextContent("无法访问剪贴板");
+    await user.click(capabilitiesTab);
+    expect(capabilitiesTab).toHaveAttribute("aria-selected", "true");
+    expect(configurationTab).toHaveAttribute("aria-selected", "false");
+    const table = screen.getByRole("table", { name: "MCP 能力" });
+    expect(within(table).getByRole("columnheader", { name: "工具名称" })).toBeVisible();
+    expect(within(table).getByRole("columnheader", { name: "权限" })).toBeVisible();
+    expect(within(table).getByRole("columnheader", { name: "能力说明" })).toBeVisible();
+    expect(within(table).getByRole("columnheader", { name: "调用参数" })).toBeVisible();
+    const statusRow = within(table).getByRole("row", { name: /xfile_status/ });
+    expect(within(statusRow).getByText("只读")).toBeVisible();
+    expect(within(statusRow).getByText("读取应用状态。")).toBeVisible();
+    expect(within(statusRow).getByText("无需参数")).toBeVisible();
+    const fileRow = within(table).getByRole("row", { name: /xfile_file_operation/ });
+    expect(within(fileRow).getByText("可写")).toBeVisible();
+    expect(within(fileRow).getByText("需要资料库")).toBeVisible();
+    expect(within(fileRow).getByText("opType")).toBeVisible();
+    expect(within(fileRow).getByText("string")).toBeVisible();
+    expect(within(fileRow).getByText("必填")).toBeVisible();
+    expect(within(fileRow).getByText("可选值：create_file, delete")).toBeVisible();
+    expect(screen.getByText("可能有破坏性")).toBeVisible();
+    expect(screen.queryByLabelText("MCP 客户端配置（JSON）")).not.toBeInTheDocument();
+    await user.click(configurationTab);
+    await user.click(within(modal).getAllByRole("button", { name: "复制" })[2]!);
+    expect(clipboard).toHaveBeenCalledWith(expect.stringContaining("cli skill"));
+    await user.click(modal.querySelector(".desktop-modal-footer button")!);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "查看配置方式" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("已复制");
   });
 
-  it("镜像管理显示目标主机，令牌只用于当前页面，并在换主机时清除密钥与旧响应", async () => {
-    const user = userEvent.setup();
-    const token = "management-token-at-least-thirty-two-characters";
+  it("镜像管理显示目标主机；切换主机清除一次性密钥并丢弃旧响应", async () => {
     await updateRuntimeConfig({ mode: "mirror", remoteApiBaseUrl: "https://primary.example.com" });
-    vi.mocked(getAgentIntegrationSettings).mockRejectedValueOnce(new ApiClientError("", 401, "请输入有效的主机管理令牌。"));
-    render(<AgentIntegrationSettings />);
-    expect(await screen.findByRole("alert")).toHaveTextContent("管理令牌");
-    expect(screen.getByText(/配置目标：https:\/\/primary.example.com/)).toBeVisible();
+    vi.mocked(getAgentIntegrationSettings).mockRejectedValueOnce(new ApiClientError("", 401, "请先登录后访问 X-File"));
+    const view = render(<AgentIntegrationSettings />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("请先登录");
     expect(screen.getByText(/当前管理的是远端资料库主机/)).toBeVisible();
-    await user.type(screen.getByLabelText("主机管理令牌"), token);
-    await user.click(screen.getByRole("button", { name: "连接 / 刷新配置" }));
+    await userEvent.click(screen.getByRole("button", { name: "重试读取" }));
     await screen.findByRole("switch");
-    expect(getAgentIntegrationSettings).toHaveBeenLastCalledWith(token);
+    expect(getAgentIntegrationSettings).toHaveBeenLastCalledWith();
     let completeSave!: (value: { settings: Settings; apiKey: string }) => void;
     vi.mocked(saveAgentIntegrationSettings).mockImplementationOnce(() => new Promise((resolve) => { completeSave = resolve; }));
-    await user.click(screen.getByRole("button", { name: "生成 API Key" }));
-    expect(saveAgentIntegrationSettings).toHaveBeenLastCalledWith({ generateApiKey: true }, token);
+    await userEvent.click(screen.getByRole("button", { name: "生成 API Key" }));
+    expect(saveAgentIntegrationSettings).toHaveBeenLastCalledWith({ generateApiKey: true });
     await act(() => updateRuntimeConfig({ remoteApiBaseUrl: "https://other.example.com" }));
     await screen.findByRole("switch");
-    expect(screen.getByLabelText("主机管理令牌")).toHaveValue("");
-    expect(getAgentIntegrationSettings).toHaveBeenLastCalledWith("");
     await act(async () => completeSave({ settings: initial, apiKey: "old-host-generated-key" }));
-    expect(screen.getByLabelText(/设置新的 API Key/)).toHaveValue("");
-    expect(JSON.stringify(Object.keys(localStorage).map((key) => localStorage.getItem(key)))).not.toContain(token);
-    expect(localStorage.getItem("x-file.runtime.config")).not.toContain(token);
+    expect(screen.getByLabelText("API Key 输入")).toHaveValue("");
+    expect(localStorage.getItem("x-file.runtime.config")).not.toContain("management-token");
   });
 
   it("旧主机接口缺失时显示升级提示并可重试", async () => {
@@ -261,7 +312,7 @@ describe("外部 Agent 接入设置", () => {
     render(<AgentIntegrationSettings />);
     expect(await screen.findByRole("alert")).toHaveTextContent("请更新主机服务");
     expect(screen.queryByRole("switch")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "连接 / 刷新配置" }));
+    await userEvent.click(screen.getByRole("button", { name: "重试读取" }));
     expect(await screen.findByRole("switch")).toBeInTheDocument();
   });
 

@@ -4,12 +4,12 @@ import type { AgentIntegrationSettings as Settings, SaveAgentIntegrationSettings
 import { t } from "../../i18n";
 import { ApiClientError, resolveApiUrl, toApiErrorMessage } from "../../api/http";
 import { InterfaceIcon } from "../../shared/InterfaceIcon";
+import { DesktopModal, ModalActions, ModalEmptyState, ModalSection } from "../../shared/modal";
 import { SettingsModule } from "./SettingsModule";
 import {
   AGENT_SETTINGS_PATH,
   getAgentIntegrationSettings,
   saveAgentIntegrationSettings,
-  usesNativeAgentSettings,
 } from "../../api/agent-integration";
 import { useRuntimeConfigSelector } from "../../runtime/runtime-config-store";
 
@@ -63,14 +63,12 @@ export function buildAgentExamples(settings: Settings, readOnly: boolean) {
 
 export function AgentIntegrationSettings() {
   const runtime = useRuntimeConfigSelector((state) => state.config);
-  const native = usesNativeAgentSettings();
-  const target = native ? "native" : new URL(resolveApiUrl(AGENT_SETTINGS_PATH), window.location.href).href;
-  // 主机或模式变化时卸载表单，防止旧主机的令牌、密钥和异步结果流入新主机。
-  return <AgentIntegrationForm key={`${runtime.mode}:${target}`} native={native}
-    target={native ? t("agentLocalHost") : new URL(target).origin} mirrorMode={runtime.mode === "mirror"} />;
+  // 主机或模式变化时卸载表单，清除一次性密钥并丢弃旧主机的异步结果。
+  return <AgentIntegrationForm key={`${runtime.mode}:${resolveApiUrl(AGENT_SETTINGS_PATH)}`}
+    mirrorMode={runtime.mode === "mirror"} />;
 }
 
-function AgentIntegrationForm({ native, target, mirrorMode }: { native: boolean; target: string; mirrorMode: boolean }) {
+function AgentIntegrationForm({ mirrorMode }: { mirrorMode: boolean }) {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -80,9 +78,8 @@ function AgentIntegrationForm({ native, target, mirrorMode }: { native: boolean;
   const [readOnly, setReadOnly] = useState(true);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  const [tokenDraft, setTokenDraft] = useState("");
-  const [connection, setConnection] = useState({ token: "", revision: 0 });
-  const tokenInputId = useId();
+  const [retryKey, setRetryKey] = useState(0);
+  const [configurationOpen, setConfigurationOpen] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -91,7 +88,7 @@ function AgentIntegrationForm({ native, target, mirrorMode }: { native: boolean;
     setKeyInput({ value: "", mode: "draft" });
     setError("");
     setMessage("");
-    void getAgentIntegrationSettings(connection.token)
+    void getAgentIntegrationSettings()
       .then((value) => { if (active) setSettings(value); })
       .catch((reason) => {
         if (active) setError(reason instanceof ApiClientError && reason.status === 404
@@ -99,7 +96,7 @@ function AgentIntegrationForm({ native, target, mirrorMode }: { native: boolean;
       })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [connection]);
+  }, [retryKey]);
 
   useEffect(() => {
     if (keyInput.mode === "generated") {
@@ -115,7 +112,7 @@ function AgentIntegrationForm({ native, target, mirrorMode }: { native: boolean;
     // 每次修改都移除上一次的一次性明文。
     setKeyInput((current) => current.mode === "draft" ? current : { value: "", mode: "draft" });
     try {
-      const result = await saveAgentIntegrationSettings(input, connection.token);
+      const result = await saveAgentIntegrationSettings(input);
       setSettings(result.settings);
       setKeyInput({ value: result.apiKey ?? "", mode: result.apiKey ? "generated" : "draft" });
       setMessage(t(result.apiKey ? "agentKeyOnce" : "agentSaved"));
@@ -176,25 +173,15 @@ function AgentIntegrationForm({ native, target, mirrorMode }: { native: boolean;
         </>
       ) : null}
     >
-      <p className="settings-helper-text">{t("agentTargetHost", { host: target })}</p>
-      {!native ? (
-        <form className="settings-agent-form" onSubmit={(event) => {
-          event.preventDefault();
-          if (!busy && !loading) setConnection((current) => ({ token: tokenDraft.trim(), revision: current.revision + 1 }));
-        }}>
-          <div className="modal-field">
-            <label htmlFor={tokenInputId}>{t("agentManagementToken")}</label>
-            <input id={tokenInputId} type="password" value={tokenDraft} autoComplete="off" maxLength={512}
-              onChange={(event) => setTokenDraft(event.target.value)} disabled={busy || loading} />
-          </div>
-          <p className="settings-helper-text">{t("agentManagementHint")}</p>
-          <div className="button-row">
-            <button type="submit" className="secondary-button" disabled={busy || loading}>{t("agentConnect")}</button>
-          </div>
-        </form>
-      ) : null}
       {loading ? <p>{t("agentLoading")}</p> : null}
       {mirrorMode ? <p className="inline-note">{t("agentMirrorNotice")}</p> : null}
+      {!loading && !settings ? (
+        <div className="button-row">
+          <button type="button" className="secondary-button" onClick={() => setRetryKey((current) => current + 1)}>
+            {t("agentRetry")}
+          </button>
+        </div>
+      ) : null}
       {settings && examples ? (
         <>
           <section className="settings-module-group" aria-label="API Key">
@@ -202,15 +189,14 @@ function AgentIntegrationForm({ native, target, mirrorMode }: { native: boolean;
               <h4 className="settings-module-title">API Key</h4>
               <span className="settings-module-status">{t(settings.apiKeyConfigured ? "agentKeyConfigured" : "agentKeyMissing")}</span>
             </div>
-            <p className="settings-helper-text">{t("agentGateHint")}</p>
             <form className="settings-agent-form" onSubmit={(event) => {
               event.preventDefault();
               if (canSaveKey) void save({ apiKey: keyInput.value });
             }}>
               <div className="modal-field">
-                <label htmlFor={keyInputId}>{t("agentKeyLabel")}</label>
                 <div className="input-with-action" data-has-action={canCopyKey ? "true" : undefined}>
                   <input id={keyInputId} ref={keyInputRef} type={keyInput.mode === "generated" ? "text" : "password"}
+                    aria-label={t("agentKeyInputLabel")}
                     value={keyInput.value} placeholder={settings.apiKeyConfigured ? "\u2022".repeat(12) : undefined}
                     autoComplete="new-password" minLength={32} maxLength={512}
                     onChange={(event) => setKeyInput({ value: event.target.value, mode: "draft" })}
@@ -238,27 +224,210 @@ function AgentIntegrationForm({ native, target, mirrorMode }: { native: boolean;
             <p className="settings-helper-text">{t("agentKeyHint")}</p>
           </section>
           <section className="settings-module-group" aria-label={t("agentConfiguration")}>
-            <h4 className="settings-module-title">{t("agentConfiguration")}</h4>
-            <p className="settings-helper-text">{t("agentConfigHint")}</p>
-            <label>
+            <div className="settings-heading-row">
+              <div>
+                <h4 className="settings-module-title">{t("agentConfiguration")}</h4>
+                <p className="settings-helper-text">{t("agentConfigurationSummary")}</p>
+              </div>
+              <button type="button" className="secondary-button" onClick={() => setConfigurationOpen(true)}>
+                {t("agentViewConfiguration")}
+              </button>
+            </div>
+          </section>
+        </>
+      ) : null}
+      {settings && examples ? (
+        <AgentConfigurationModal
+          open={configurationOpen}
+          settings={settings}
+          examples={examples}
+          readOnly={readOnly}
+          onReadOnlyChange={setReadOnly}
+          onCopy={copy}
+          onClose={() => setConfigurationOpen(false)}
+        />
+      ) : null}
+    </SettingsModule>
+  );
+}
+
+function AgentConfigurationModal({
+  open,
+  settings,
+  examples,
+  readOnly,
+  onReadOnlyChange,
+  onCopy,
+  onClose,
+}: {
+  open: boolean;
+  settings: Settings;
+  examples: ReturnType<typeof buildAgentExamples>;
+  readOnly: boolean;
+  onReadOnlyChange: (value: boolean) => void;
+  onCopy: (text: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [activeTab, setActiveTab] = useState<"configuration" | "capabilities">("configuration");
+  const tabsId = useId();
+  return (
+    <DesktopModal
+      open={open}
+      title={t("agentConfiguration")}
+      description={t("agentConfigurationModalDescription")}
+      size="xwide"
+      layout="form"
+      className="settings-agent-configuration-modal"
+      bodyClassName="settings-agent-configuration-modal-body"
+      onClose={onClose}
+      footer={(
+        <ModalActions>
+          <button type="button" className="secondary-button" onClick={onClose}>{t("actionClose")}</button>
+        </ModalActions>
+      )}
+    >
+      <div className="settings-agent-modal-tabs" role="tablist" aria-label={t("agentConfigurationTabs")}>
+        <button
+          type="button"
+          role="tab"
+          id={`${tabsId}-configuration-tab`}
+          aria-controls={`${tabsId}-configuration-panel`}
+          aria-selected={activeTab === "configuration"}
+          className={`settings-agent-modal-tab${activeTab === "configuration" ? " active" : ""}`}
+          onClick={() => setActiveTab("configuration")}
+        >
+          {t("agentConfigurationTab")}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id={`${tabsId}-capabilities-tab`}
+          aria-controls={`${tabsId}-capabilities-panel`}
+          aria-selected={activeTab === "capabilities"}
+          className={`settings-agent-modal-tab${activeTab === "capabilities" ? " active" : ""}`}
+          onClick={() => setActiveTab("capabilities")}
+        >
+          {t("agentCapabilitiesTab")}
+        </button>
+      </div>
+      {activeTab === "configuration" ? (
+        <div id={`${tabsId}-configuration-panel`} className="settings-agent-tab-panel"
+          role="tabpanel" aria-labelledby={`${tabsId}-configuration-tab`}>
+          <ModalSection
+            heading={t("agentConfigurationStepsTitle")}
+            description={t("agentConfigurationStepsDescription")}
+          >
+            <ol className="settings-agent-steps">
+              <li>{t("agentConfigurationStepKey")}</li>
+              <li>{t("agentConfigurationStepClient")}</li>
+              <li>{t("agentConfigurationStepRun")}</li>
+            </ol>
+          </ModalSection>
+          <ModalSection
+            heading={t("agentMcpExample")}
+            description={t("agentMcpExampleDescription")}
+            actions={(
+              <button type="button" className="secondary-button" onClick={() => void onCopy(examples.mcp)}>
+                {t("agentCopy")}
+              </button>
+            )}
+          >
+            <label className="settings-agent-access-field">
               <span>{t("agentAccessMode")}</span>
-              <select value={readOnly ? "read" : "write"} onChange={(event) => setReadOnly(event.target.value === "read")}>
+              <select value={readOnly ? "read" : "write"} onChange={(event) => onReadOnlyChange(event.target.value === "read")}>
                 <option value="read">{t("agentReadOnly")}</option>
                 <option value="write">{t("agentReadWrite")}</option>
               </select>
             </label>
-            <Example label={t("agentMcpExample")} text={examples.mcp} onCopy={copy} />
-            <Example label={t("agentCliExample")} text={examples.cli} onCopy={copy} />
-          </section>
-          <section className="settings-module-group" aria-label={t("agentSkillTitle")}>
-            <h4 className="settings-module-title">{t("agentSkillTitle")}</h4>
-            <p className="settings-helper-text">{t("agentSkillHint")}</p>
-            <Example label={t("agentSkillCommands")} text={examples.skill} onCopy={copy} />
+            <pre className="settings-code-block" aria-label={t("agentMcpExample")}><code>{examples.mcp}</code></pre>
+          </ModalSection>
+          <ModalSection
+            heading={t("agentCliExample")}
+            description={t("agentCliExampleDescription")}
+            actions={(
+              <button type="button" className="secondary-button" onClick={() => void onCopy(examples.cli)}>
+                {t("agentCopy")}
+              </button>
+            )}
+          >
+            <pre className="settings-code-block" aria-label={t("agentCliExample")}><code>{examples.cli}</code></pre>
+          </ModalSection>
+          <ModalSection
+            heading={t("agentSkillTitle")}
+            description={t("agentSkillHint")}
+            actions={(
+              <button type="button" className="secondary-button" onClick={() => void onCopy(examples.skill)}>
+                {t("agentCopy")}
+              </button>
+            )}
+          >
+            <pre className="settings-code-block" aria-label={t("agentSkillCommands")}><code>{examples.skill}</code></pre>
             <p className="settings-helper-text">{t("agentSkillVerify")}</p>
-          </section>
-        </>
-      ) : null}
-    </SettingsModule>
+          </ModalSection>
+        </div>
+      ) : (
+        <div id={`${tabsId}-capabilities-panel`} className="settings-agent-tab-panel"
+          role="tabpanel" aria-labelledby={`${tabsId}-capabilities-tab`}>
+          <ModalSection
+            heading={t("agentCapabilitiesTitle")}
+            description={t("agentCapabilitiesDescription")}
+          >
+            {settings.capabilities?.length ? (
+              <div className="settings-agent-capability-table-scroll">
+                <table className="settings-agent-capability-table" aria-label={t("agentCapabilitiesTitle")}>
+                  <thead>
+                    <tr>
+                      <th scope="col">{t("agentCapabilityNameHeader")}</th>
+                      <th scope="col">{t("agentCapabilityPermissionHeader")}</th>
+                      <th scope="col">{t("agentCapabilityDescriptionHeader")}</th>
+                      <th scope="col">{t("agentCapabilityParametersHeader")}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {settings.capabilities.map((capability) => (
+                      <tr key={capability.name}>
+                        <th scope="row"><code>{capability.name}</code></th>
+                        <td>
+                          <span className="settings-agent-capability-tags">
+                            <span className="settings-agent-capability-tag">{capability.readOnly ? t("agentCapabilityReadOnly") : t("agentCapabilityWrite")}</span>
+                            {capability.requiresBinding ? <span className="settings-agent-capability-tag">{t("agentCapabilityRequiresLibrary")}</span> : null}
+                            {capability.destructive ? <span className="settings-agent-capability-tag" data-tone="danger">{t("agentCapabilityDestructive")}</span> : null}
+                          </span>
+                        </td>
+                        <td>{capability.description}</td>
+                        <td>
+                          {capability.parameters?.length ? (
+                            <ul className="settings-agent-parameters">
+                              {capability.parameters.map((parameter) => (
+                                <li key={parameter.name}>
+                                  <div className="settings-agent-parameter-heading">
+                                    <code>{parameter.name}</code>
+                                    <span className="settings-agent-parameter-type">{parameter.valueType}</span>
+                                    {parameter.required ? <span className="settings-agent-parameter-required">{t("agentCapabilityRequiredParameter")}</span> : null}
+                                  </div>
+                                  {parameter.description ? <p>{parameter.description}</p> : null}
+                                  {parameter.allowedValues.length ? (
+                                    <span className="settings-agent-parameter-enum">
+                                      {t("agentCapabilityAllowedValues", { values: parameter.allowedValues.join(", ") })}
+                                    </span>
+                                  ) : null}
+                                </li>
+                              ))}
+                            </ul>
+                          ) : <span className="settings-agent-no-parameters">{t("agentCapabilityNoParameters")}</span>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <ModalEmptyState title={t("agentCapabilitiesUnavailable")} compact />
+            )}
+          </ModalSection>
+        </div>
+      )}
+    </DesktopModal>
   );
 }
 
