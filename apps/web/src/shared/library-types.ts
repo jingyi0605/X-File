@@ -7,6 +7,7 @@ export type {
   LibraryDirectoryState,
   LibraryDocumentList,
   LibraryDocumentRecord,
+  LibraryTagDirectory,
   LibraryDownload,
   LibraryFavoriteKind,
   LibraryFavoriteRecord,

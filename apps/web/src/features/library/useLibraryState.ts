@@ -202,7 +202,14 @@ export function useLibraryState(): LibraryState {
   );
   const visibleEntryTotal = useMemo(
     () => resolveVisibleEntryTotal(documentPage, fileItems, entries.length, viewState),
-    [documentPage, entries.length, fileItems, viewState.browseMode]
+    [
+      documentPage,
+      entries.length,
+      fileItems,
+      viewState.browseMode,
+      viewState.selectedTagPaths.length,
+      viewState.tagResultStructureMode,
+    ]
   );
 
   const selectedDocument = useMemo(
@@ -1014,6 +1021,7 @@ function buildLibraryListSignature(
   const tagFacetSignature = JSON.stringify(
     Object.entries(documents.tagFacetCounts ?? {}).sort(([left], [right]) => left.localeCompare(right)),
   );
+  const tagDirectorySignature = JSON.stringify(documents.tagDirectories ?? []);
 
   return [
     documents.total,
@@ -1026,6 +1034,7 @@ function buildLibraryListSignature(
     documentSignature,
     fileSignature,
     tagFacetSignature,
+    tagDirectorySignature,
   ].join("\u001a");
 }
 
@@ -1063,6 +1072,10 @@ function buildEntries(
           documentCount: resolveFolderCount(folderDocumentCountMap, item.path),
           updatedAt: item.updatedAt
         }))
+    : viewState.browseMode === "tag" &&
+      viewState.selectedTagPaths.length > 0 &&
+      viewState.tagResultStructureMode === "file"
+      ? buildTagDirectoryFolderEntries(documentPage)
     : [];
 
   const documentEntries: LibraryEntry[] = (documentPage?.items ?? []).map((item) => ({
@@ -1071,6 +1084,21 @@ function buildEntries(
   }));
 
   return [...folderEntries, ...documentEntries];
+}
+
+function buildTagDirectoryFolderEntries(documentPage: LibraryDocumentList | null): LibraryEntry[] {
+  return (documentPage?.tagDirectories ?? []).flatMap((directory) => {
+    const normalizedPath = normalizeFolderPath(directory.path);
+    if (!normalizedPath) return [];
+    return [{
+      kind: "folder" as const,
+      path: normalizedPath,
+      name: getPathName(normalizedPath),
+      documentCount: directory.documentCount,
+      updatedAt: directory.updatedAt,
+      directoryOrigin: "tag-directory" as const,
+    }];
+  });
 }
 
 function resolveVisibleEntryTotal(
@@ -1097,15 +1125,21 @@ function resolveVisibleEntryTotal(
     return Math.max(entryCount, directoryCount, normalizedServerVisibleTotal ?? 0);
   }
 
+  const tagDirectoryCount =
+    viewState.browseMode === "tag" &&
+    viewState.selectedTagPaths.length > 0 &&
+    viewState.tagResultStructureMode === "file"
+      ? documentPage?.tagDirectories?.length ?? 0
+      : 0;
   if (typeof serverVisibleTotal === "number" && Number.isFinite(serverVisibleTotal)) {
-    return Math.max(entryCount, Math.floor(serverVisibleTotal));
+    return Math.max(entryCount, Math.floor(serverVisibleTotal) + tagDirectoryCount);
   }
 
   const documentTotal = documentPage?.total;
   if (typeof documentTotal !== "number" || !Number.isFinite(documentTotal)) {
     return entryCount;
   }
-  return Math.max(entryCount, Math.floor(documentTotal));
+  return Math.max(entryCount, Math.floor(documentTotal) + tagDirectoryCount);
 }
 
 function buildTagDirectoryEntries(

@@ -55,6 +55,7 @@ export type LibraryEntry =
       name: string;
       documentCount: number;
       updatedAt: string | null;
+      directoryOrigin?: "tag-directory";
     }
   | {
       kind: "tag-directory";
@@ -131,6 +132,13 @@ export function normalizeLibrarySortState(value: Partial<LibrarySortState> | nul
 export function sortLibraryEntries(entries: LibraryEntry[], sort: LibrarySortState): LibraryEntry[] {
   const direction = sort.direction === "asc" ? 1 : -1;
   return [...entries].sort((left, right) => {
+    if (left.kind === "folder" && right.kind === "folder") {
+      const leftTagDirectory = left.directoryOrigin === "tag-directory";
+      const rightTagDirectory = right.directoryOrigin === "tag-directory";
+      if (leftTagDirectory !== rightTagDirectory) {
+        return leftTagDirectory ? -1 : 1;
+      }
+    }
     if (left.kind !== right.kind) {
       return left.kind === "document" ? 1 : right.kind === "document" ? -1 : left.kind.localeCompare(right.kind);
     }

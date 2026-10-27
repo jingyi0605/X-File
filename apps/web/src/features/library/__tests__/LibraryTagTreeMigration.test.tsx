@@ -208,6 +208,79 @@ describe("第 8 批：标签筛选树、多选过滤、徽标计数、排序、�
     expect(within(tree).queryByRole("button", { name: /Markdown/ })).not.toBeInTheDocument();
   });
 
+  it("单标签筛选的文件视图将直接绑定目录置于匹配文件之前", async () => {
+    mockTags([tag("项目", 1)]);
+    libraryApiMock.listLibraryDocuments.mockImplementation(async (query) => createDocumentList(
+      [createDocumentRecord({ documentId: "tagged-file", path: "客户/合同.md" })],
+      {
+        total: 1,
+        tagDirectories: query.selectedTagPaths?.length
+          ? [{
+              path: "已标记目录",
+              documentCount: 1,
+              updatedAt: "2026-06-09T00:00:00.000Z",
+              matchedTagPaths: ["项目"],
+            }]
+          : [],
+      },
+    ));
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={() => undefined} platformData={platformData} />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "项目 1" }));
+    await userEvent.click(await screen.findByRole("button", { name: "列表" }));
+
+    const directory = await screen.findByRole("button", { name: /已标记目录/ });
+    const file = await screen.findByRole("button", { name: /合同\.md/ });
+    const visibleRows = Array.from(document.querySelectorAll(".affairs-finder-virtual > *"));
+    expect(visibleRows.indexOf(directory.parentElement!)).toBeLessThan(visibleRows.indexOf(file));
+    expect(screen.queryByRole("button", { name: /客户/ })).not.toBeInTheDocument();
+  });
+
+  it("多标签筛选的文件视图在文件前显示命中任一所选标签的直接绑定目录", async () => {
+    mockTags([tag("项目", 1), tag("业务", 1)]);
+    libraryApiMock.listLibraryDocuments.mockImplementation(async (query) => createDocumentList(
+      [createDocumentRecord({ documentId: "tagged-file", path: "客户/合同.md" })],
+      {
+        total: 1,
+        tagFacetCounts: query.selectedTagPaths?.length ? { "项目": 1, "业务": 1 } : {},
+        tagDirectories: query.selectedTagPaths?.length
+          ? [{
+              path: "项目目录",
+              documentCount: 1,
+              updatedAt: "2026-06-09T00:00:00.000Z",
+              matchedTagPaths: ["项目"],
+            }, {
+              path: "业务目录",
+              documentCount: 1,
+              updatedAt: "2026-06-09T00:00:00.000Z",
+              matchedTagPaths: ["业务"],
+            }]
+          : [],
+      },
+    ));
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={() => undefined} platformData={platformData} />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "项目 1" }));
+    await userEvent.click(await screen.findByRole("button", { name: "业务 1" }));
+    await userEvent.click(await screen.findByRole("button", { name: "列表" }));
+
+    await waitFor(() => {
+      expect(libraryApiMock.listLibraryDocuments).toHaveBeenLastCalledWith(expect.objectContaining({
+        selectedTagPaths: ["项目", "业务"],
+      }));
+    });
+    const projectDirectory = await screen.findByRole("button", { name: /项目目录/ });
+    const businessDirectory = await screen.findByRole("button", { name: /业务目录/ });
+    const file = await screen.findByRole("button", { name: /合同\.md/ });
+    const visibleRows = Array.from(document.querySelectorAll(".affairs-finder-virtual > *"));
+    expect(visibleRows.indexOf(projectDirectory.parentElement!)).toBeLessThan(visibleRows.indexOf(file));
+    expect(visibleRows.indexOf(businessDirectory.parentElement!)).toBeLessThan(visibleRows.indexOf(file));
+  });
+
   it("标签筛选在列表视图可以切到目录视图，按文件实际路径分组显示", async () => {
     mockTags([tag("项目", 2), tag("项目/Alpha", 2, { parentPath: "项目", depth: 1 })]);
     libraryApiMock.listLibraryDocuments.mockResolvedValue(
