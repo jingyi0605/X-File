@@ -18,7 +18,8 @@ use native_core::tag_core::{
     expand_local_tag_ancestor_paths, get_native_document_tag_details,
     get_native_folder_tag_details, get_native_library_tag_detail,
     get_native_library_tag_recompute_task, list_native_library_tag_details,
-    request_native_library_tag_recompute, save_native_document_tags, save_native_folder_tags,
+    read_local_library_tags_store, request_native_library_tag_recompute,
+    save_native_document_tags, save_native_folder_tags,
     update_native_library_tag, NativeFolderTagDetailsRequest, NativeLibraryTagIdRequest,
     NativeSaveDocumentTagsRequest, NativeSaveFolderTagsRequest,
     NativeSaveLibraryTagDefinitionRequest,
@@ -826,8 +827,20 @@ struct LocalLibraryDocumentList {
     offset: usize,
     limit: usize,
     items: Vec<LocalLibraryDocumentRecord>,
+    tag_directories: Vec<LocalLibraryTagDirectory>,
     tag_facet_counts: HashMap<String, usize>,
     directory_status: Option<LocalLibraryDirectoryStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalLibraryTagDirectory {
+    path: String,
+    document_count: usize,
+    updated_at: Option<String>,
+    matched_tag_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3350,6 +3363,12 @@ fn read_local_library_documents(
     let total = items.len();
     // 标签树统计完整筛选结果，避免计数和可见节点随分页变化。
     let tag_facet_counts = count_document_tag_facets(&items);
+    let tag_directories = if request.browse_mode == "tag" && !selected_tags.is_empty() {
+        let store = read_local_library_tags_store(&binding)?;
+        build_local_library_tag_directories(&store, &selected_tags, &items)
+    } else {
+        Vec::new()
+    };
     let mut paged_items = items
         .into_iter()
         .skip(offset)
@@ -3367,6 +3386,7 @@ fn read_local_library_documents(
         offset,
         limit,
         items: paged_items,
+        tag_directories,
         tag_facet_counts,
         directory_status: Some(LocalLibraryDirectoryStatus {
             path: normalize_folder_path(request.selected_folder_path.as_deref().unwrap_or(".")),
@@ -3436,6 +3456,7 @@ fn empty_local_library_documents_for_running_index(
         offset: request.offset.unwrap_or(0),
         limit: request.limit.unwrap_or(50),
         items: vec![],
+        tag_directories: vec![],
         tag_facet_counts: HashMap::new(),
         directory_status: Some(LocalLibraryDirectoryStatus {
             path: normalize_folder_path(request.selected_folder_path.as_deref().unwrap_or(".")),
@@ -4552,6 +4573,88 @@ fn normalize_folder_path(value: &str) -> String {
     } else {
         normalized
     }
+}
+
+fn build_local_library_tag_directories(
+    store: &LocalStoredLibraryTags,
+    selected_tag_paths: &[String],
+    documents: &[LocalLibraryDocumentRecord],
+) -> Vec<LocalLibraryTagDirectory> {
+    let active_tag_paths: HashMap<&str, &str> = store
+        .tags
+        .iter()
+        .filter(|tag| tag.status == "active")
+        .map(|tag| (tag.id.as_str(), tag.path.as_str()))
+        .collect();
+    let mut counts_by_directory = HashMap::<String, (usize, Option<String>)>::new();
+
+    for document in documents {
+        let mut directory = String::from(".");
+        let root = counts_by_directory.entry(directory.clone()).or_default();
+        root.0 += 1;
+        if root
+            .1
+            .as_deref()
+            .map_or(true, |date| document.updated_at.as_str() > date)
+        {
+            root.1 = Some(document.updated_at.clone());
+        }
+        let segments = document
+            .path
+            .split('/')
+            .filter(|segment| !segment.is_empty())
+            .collect::<Vec<_>>();
+        for segment in segments.iter().take(segments.len().saturating_sub(1)) {
+            directory = if directory == "." {
+                segment.to_owned()
+            } else {
+                format!("{directory}/{segment}")
+            };
+            let entry = counts_by_directory.entry(directory.clone()).or_default();
+            entry.0 += 1;
+            if entry
+                .1
+                .as_deref()
+                .map_or(true, |date| document.updated_at.as_str() > date)
+            {
+                entry.1 = Some(document.updated_at.clone());
+            }
+        }
+    }
+
+    store
+        .folder_tags
+        .iter()
+        .filter_map(|binding| {
+            let path = normalize_folder_path(&binding.folder_path);
+            let mut seen_tag_paths = HashSet::new();
+            let matched_tag_paths = binding
+                .binding_tag_ids
+                .iter()
+                .filter_map(|tag_id| active_tag_paths.get(tag_id.as_str()).copied())
+                .filter(|tag_path| {
+                    selected_tag_paths.iter().any(|selected| {
+                        *tag_path == selected.as_str()
+                            || tag_path.starts_with(&format!("{selected}/"))
+                    }) && seen_tag_paths.insert(*tag_path)
+                })
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            if matched_tag_paths.is_empty() {
+                return None;
+            }
+            let (document_count, updated_at) = counts_by_directory
+                .get(&path)
+                .cloned()
+                .unwrap_or_default();
+            Some(LocalLibraryTagDirectory {
+                path,
+                document_count,
+                updated_at,
+                matched_tag_paths,
+            })
+        })
+        .collect()
 }
 
 fn normalize_document_path(value: &str) -> String {

@@ -248,8 +248,16 @@ export interface LibraryDocumentList {
   offset: number;
   limit: number;
   items: LibraryDocumentRecord[];
+  tagDirectories?: LibraryTagDirectory[];
   tagFacetCounts?: Record<string, number>;
   directoryStatus?: LibraryDirectoryStatus | null;
+}
+
+export interface LibraryTagDirectory {
+  path: string;
+  documentCount: number;
+  updatedAt: string | null;
+  matchedTagPaths: string[];
 }
 
 export interface ListLibraryFilesInput {

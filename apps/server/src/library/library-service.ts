@@ -31,6 +31,7 @@ import { LibraryConfigStore } from "../storage/library-config-store.js";
 import { IndexRuntimeStore } from "../storage/index-runtime-store.js";
 import { LibraryExportReader } from "../storage/library-export-reader.js";
 import { LibraryFavoritesStore } from "../storage/library-favorites-store.js";
+import { TagStore } from "../storage/tag-store.js";
 import { LibraryError } from "./library-errors.js";
 import { LibraryIndexService } from "./index-service.js";
 import { TaskManager } from "../tasks/task-manager.js";
@@ -113,7 +114,8 @@ export class LibraryService {
     private readonly exportReader = new LibraryExportReader(),
     private readonly indexService: LibraryIndexService | null = createDefaultIndexService(),
     private readonly configStore = new LibraryConfigStore(),
-    private readonly favoritesStore = new LibraryFavoritesStore()
+    private readonly favoritesStore = new LibraryFavoritesStore(),
+    private readonly tagStore = new TagStore(),
   ) {}
 
   getBinding(): LibraryBinding | null {
@@ -166,6 +168,16 @@ export class LibraryService {
 
   listDocuments(input: ListLibraryDocumentsInput): LibraryDocumentList {
     const binding = this.bindingStore.read();
+    const selectedTagPaths = input.selectedTagPaths?.length
+      ? input.selectedTagPaths
+      : input.selectedTagPath
+        ? [input.selectedTagPath]
+        : [];
+    const tagDirectoryBindings = binding && input.browseMode === "tag" && selectedTagPaths.length > 0
+      ? resolveTagDirectoryBindings(
+          this.tagStore.read(binding.libraryId, binding.rootDir),
+        )
+      : [];
     const result = this.exportReader.listDocuments(binding, {
       browseMode: input.browseMode,
       selectedFolderPath: input.selectedFolderPath,
@@ -178,7 +190,8 @@ export class LibraryService {
       updatedAtOrder: input.updatedAtOrder,
       offset: normalizeNonNegativeInteger(input.offset, 0),
       limit: normalizeLimit(input.limit, 50),
-      favorites: binding ? this.readFavorites(binding) : []
+      favorites: binding ? this.readFavorites(binding) : [],
+      tagDirectoryBindings
     });
     // 对齐父仓库 affairs-library-service.ts:948-958：导出分片链路只携带 mtime，
     // 「大小(sizeBytes)」与「创建时间(createdAt=birthtime)」在此对当前页文档实时补全；
@@ -595,6 +608,24 @@ export class LibraryService {
       targetPath
     });
   }
+}
+
+function resolveTagDirectoryBindings(store: ReturnType<TagStore["read"]>): Array<{
+  path: string;
+  tagPaths: string[];
+}> {
+  const tagPathsById = new Map(
+    store.tags
+      .filter((tag) => tag.status === "active")
+      .map((tag) => [tag.id, tag.path]),
+  );
+  return store.folderTags.map((folder) => ({
+    path: folder.folderPath,
+    tagPaths: folder.bindingTagIds.flatMap((tagId) => {
+      const tagPath = tagPathsById.get(tagId);
+      return tagPath ? [tagPath] : [];
+    }),
+  }));
 }
 
 function createEmptyStatus(state: LibraryIndexStatus["state"] = "fresh"): LibraryIndexStatus {

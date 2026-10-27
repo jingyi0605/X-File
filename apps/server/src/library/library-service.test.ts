@@ -12,6 +12,7 @@ import { IndexRuntimeStore } from "../storage/index-runtime-store.js";
 import { LibraryRuntimeStatusStore } from "../storage/library-runtime-status-store.js";
 import { LibraryConfigStore } from "../storage/library-config-store.js";
 import { LibraryFavoritesStore } from "../storage/library-favorites-store.js";
+import { TagStore } from "../storage/tag-store.js";
 import { TaskManager } from "../tasks/task-manager.js";
 import { LibraryError } from "./library-errors.js";
 
@@ -254,6 +255,74 @@ test("收藏会持久化并参与列表筛选", () => {
 
   const reloaded = createService();
   assert.equal(reloaded.getSnapshot().favorites[0]?.path, "主题/后端");
+});
+
+test("标签筛选返回直接绑定目录，并按完整筛选文件集计算目录计数", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "x-file-library-tag-directories-"));
+  const dataDir = path.join(tempDir, "data");
+  const rootDir = path.join(tempDir, "library");
+  writeExportFixture(rootDir);
+  const exportFile = path.join(rootDir, ".ai-index", "exports", "meta", "meta_docs.json");
+  const exportData = JSON.parse(fs.readFileSync(exportFile, "utf8")) as {
+    documents: Array<{ document_id: string; path: string; direct_tags: string[] }>;
+  };
+  exportData.documents[0]!.direct_tags = ["主题/后端", "项目/Alpha"];
+  exportData.documents.push(
+    { document_id: "doc_backend_2", path: "docs/another.md", direct_tags: ["主题/后端", "项目/Alpha"] },
+    { document_id: "doc_backend_nested", path: "docs/child/nested.md", direct_tags: ["主题/后端", "项目/Alpha"] },
+    { document_id: "doc_unmatched", path: "docs/unmatched.md", direct_tags: [] },
+  );
+  fs.writeFileSync(exportFile, JSON.stringify(exportData), "utf8");
+
+  const bindingStore = new LibraryBindingStore({ dataDir });
+  const tagStore = new TagStore({ dataDir });
+  const service = new LibraryService(
+    bindingStore,
+    new LibraryExportReader(),
+    null,
+    new LibraryConfigStore(),
+    new LibraryFavoritesStore({ dataDir }),
+    tagStore,
+  );
+  const binding = service.saveBinding({ rootDir, completeInitialization: true });
+  tagStore.write({
+    libraryId: binding.libraryId,
+    rootDir: binding.rootDir,
+    tags: [
+      { id: "backend", path: "主题/后端", name: "后端", rootType: "主题", parentId: null, parentPath: "主题", description: null, status: "active", createdAt: "2026-06-08T00:00:00.000Z", updatedAt: "2026-06-08T00:00:00.000Z", disabledAt: null },
+      { id: "alpha", path: "项目/Alpha", name: "Alpha", rootType: "项目", parentId: null, parentPath: "项目", description: null, status: "active", createdAt: "2026-06-08T00:00:00.000Z", updatedAt: "2026-06-08T00:00:00.000Z", disabledAt: null },
+    ],
+    tagRules: [],
+    documentTags: [],
+    folderTags: [{ folderPath: "docs", bindingTagIds: ["backend", "alpha"], updatedAt: "2026-06-08T00:00:00.000Z" }],
+    updatedAt: "2026-06-08T00:00:00.000Z",
+  });
+
+  const singleTagResult = service.listDocuments({
+    browseMode: "tag",
+    selectedTagPaths: ["主题"],
+    offset: 0,
+    limit: 1,
+  });
+  assert.deepEqual(singleTagResult.items.map((item) => item.path), ["docs/another.md"]);
+  assert.deepEqual(singleTagResult.tagDirectories, [{
+    path: "docs",
+    documentCount: 3,
+    updatedAt: "2026-06-08T00:00:00.000Z",
+    matchedTagPaths: ["主题/后端"],
+  }]);
+
+  const multiTagResult = service.listDocuments({
+    browseMode: "tag",
+    selectedTagPaths: ["主题/后端", "项目"],
+    offset: 0,
+    limit: 1,
+  });
+  assert.equal(multiTagResult.total, 3);
+  assert.deepEqual(multiTagResult.tagDirectories?.[0]?.matchedTagPaths, ["主题/后端", "项目/Alpha"]);
+
+  const unfilteredResult = service.listDocuments({ browseMode: "folder", offset: 0, limit: 10 });
+  assert.deepEqual(unfilteredResult.tagDirectories, []);
 });
 
 test("刷新任务按同 rootDir 同类任务去重", () => {

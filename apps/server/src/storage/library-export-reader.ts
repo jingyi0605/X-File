@@ -11,6 +11,7 @@ import type {
   LibraryIndexProgress,
   LibraryIndexStatus,
   LibrarySnapshot,
+  LibraryTagDirectory,
   LibraryTagNode,
 } from "@x-file/shared";
 
@@ -29,6 +30,7 @@ export interface ReadLibraryDocumentsInput {
   offset: number;
   limit: number;
   favorites?: LibraryFavoriteRecord[];
+  tagDirectoryBindings?: Array<{ path: string; tagPaths: string[] }>;
 }
 
 interface SearchMatchState {
@@ -216,12 +218,14 @@ export class LibraryExportReader {
       }
       return compareSearchRank(left, right, searchMatch);
     });
+    const selectedTags = input.browseMode === "tag" ? resolveSelectedTagPaths(input) : [];
     return {
       total: filtered.length,
       visibleEntryTotal: filtered.length,
       offset: input.offset,
       limit: input.limit,
       items: filtered.slice(input.offset, input.offset + input.limit),
+      tagDirectories: buildTagDirectories(filtered, input.tagDirectoryBindings ?? [], selectedTags),
       tagFacetCounts: countTags(filtered),
       directoryStatus: {
         path: normalizeFolderPath(input.selectedFolderPath ?? ""),
@@ -291,6 +295,58 @@ export class LibraryExportReader {
     this.documentViews.set(source, documents);
     return documents;
   }
+}
+
+function resolveSelectedTagPaths(input: ReadLibraryDocumentsInput): string[] {
+  return input.selectedTagPaths?.length
+    ? input.selectedTagPaths
+    : input.selectedTagPath
+      ? [input.selectedTagPath]
+      : [];
+}
+
+function buildTagDirectories(
+  documents: LibraryDocumentRecord[],
+  bindings: Array<{ path: string; tagPaths: string[] }>,
+  selectedTags: string[],
+): LibraryTagDirectory[] {
+  if (selectedTags.length === 0 || bindings.length === 0) {
+    return [];
+  }
+
+  const countsByDirectory = new Map<string, { count: number; updatedAt: string | null }>();
+  for (const document of documents) {
+    const segments = normalizeFolderPath(path.posix.dirname(document.path))
+      .split("/")
+      .filter((segment) => segment && segment !== ".");
+    const directoryPaths = [".", ...segments.map((_, index) => segments.slice(0, index + 1).join("/"))];
+    for (const directoryPath of directoryPaths) {
+      const current = countsByDirectory.get(directoryPath) ?? { count: 0, updatedAt: null };
+      current.count += 1;
+      current.updatedAt = !current.updatedAt || document.updatedAt > current.updatedAt
+        ? document.updatedAt
+        : current.updatedAt;
+      countsByDirectory.set(directoryPath, current);
+    }
+  }
+
+  return bindings.flatMap(({ path: folderPath, tagPaths }) => {
+    const normalizedPath = normalizeFolderPath(folderPath);
+    const matchedTagPaths = Array.from(new Set(tagPaths.filter((tagPath) =>
+      selectedTags.some((selectedPath) => tagPath === selectedPath || tagPath.startsWith(`${selectedPath}/`)),
+    )));
+    if (!normalizedPath || matchedTagPaths.length === 0) {
+      return [];
+    }
+
+    const directoryStats = countsByDirectory.get(normalizedPath);
+    return [{
+      path: normalizedPath,
+      documentCount: directoryStats?.count ?? 0,
+      updatedAt: directoryStats?.updatedAt ?? null,
+      matchedTagPaths,
+    }];
+  });
 }
 
 function resolveExportDir(rootDir: string): string {
@@ -367,6 +423,7 @@ function emptyDocumentList(
     offset: input.offset,
     limit: input.limit,
     items: [],
+    tagDirectories: [],
     tagFacetCounts: {},
     directoryStatus: null,
   };
