@@ -13,6 +13,14 @@ import { initializeRuntimeConfig } from "../../../runtime/runtime-config-store";
 
 installLibraryApiMock();
 
+vi.mock("../../../api/agent-integration", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../api/agent-integration")>(),
+  getAgentIntegrationSettings: async () => ({
+    enabled: false, apiKeyConfigured: false, updatedAt: null,
+    executablePath: "/host/x-file", dataDir: "/host/.x-file", platform: "linux",
+  }),
+}));
+
 const nativeBridgeMock = {
   clearNativeApplicationData: vi.fn(),
   requestNativeAppRestart: vi.fn(),
@@ -41,6 +49,38 @@ describe("SettingsPage 文档库索引配置迁移行为", () => {
     nativeBridgeMock.clearNativeApplicationData.mockReset();
     nativeBridgeMock.requestNativeAppRestart.mockReset();
     delete (window as typeof window & { __TAURI_INTERNALS__?: object }).__TAURI_INTERNALS__;
+  });
+
+  it("外观设置只展示一次语言和主题标题，并保留控件的可访问名称", async () => {
+    const { SettingsPage } = await import("../SettingsPage");
+    render(<SettingsPage />);
+
+    await waitFor(() => expect(libraryApiMock.getHttpServerState).toHaveBeenCalled());
+    expect(screen.getAllByText("语言")).toHaveLength(1);
+    expect(screen.getAllByText("主题")).toHaveLength(1);
+    expect(screen.getByRole("group", { name: "语言" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "主题" })).toBeInTheDocument();
+    expect(screen.queryByText("选择界面显示语言。")).not.toBeInTheDocument();
+  });
+
+  it("ONLYOFFICE 加载失败只在所属模块提示，其他设置仍可用且可以重试", async () => {
+    libraryApiMock.getOnlyOfficeSettings.mockRejectedValueOnce(new Error("文档服务暂不可用"));
+    const { SettingsPage } = await import("../SettingsPage");
+    render(<SettingsPage />);
+
+    await waitFor(() => expect(libraryApiMock.getHttpServerState).toHaveBeenCalled());
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: "网络服务" }));
+    expect(screen.getByRole("button", { name: "保存服务设置" })).toBeEnabled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("tab", { name: "集成服务" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("文档服务暂不可用");
+    await userEvent.click(screen.getByRole("button", { name: "OnlyOffice" }));
+    expect(screen.getByRole("button", { name: "配置集成" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "刷新 OnlyOffice 状态" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "配置集成" })).toBeEnabled());
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("默认支持后缀保持原样保存时，仍提交空白名单让索引器走默认范围", async () => {

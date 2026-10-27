@@ -688,13 +688,13 @@ export const zhCN = {
   settingsBindingDescription:
     "填写本地资料根目录。X-File 只会在这个目录内读取、预览和操作文件。",
   settingsMirrorBindingDescription:
-    "镜像模式下，这里只保存本机镜像目录；真正的索引、标签和资料列表都来自远端本地模式实例。",
+    "本机仅保存镜像文件，索引和标签来自主服务端。",
   settingsLocalBindingDescription:
     "本地模式下，这里就是后端扫描、索引和对外提供 API 的唯一真实源目录。",
   settingsMirrorSourceApiDescription:
-    "填写本地模式实例开放出来的 HTTP 服务地址，例如 http://127.0.0.1:17321；镜像模式的 H5 页面、列表、索引状态和标签都从这里读取。开发态如果还在单独跑 Vite，17320 只是兼容用的前端调试地址。",
+    "填写主服务端的 HTTP 地址，列表、索引和标签将从此处读取。",
   settingsMirrorLocalDirDescription:
-    "这里只记录镜像端本机目录，用于本地落地镜像文件或后续本机打开文件。",
+    "镜像文件在本机的保存位置。",
   settingsRemoteOwnerTitle: "主服务端设置",
   settingsMirrorConfigRemoteNotice:
     "你当前在镜像模式下编辑的是主服务端的索引范围配置。保存后会通过镜像连接写入源端本地模式实例，不是写到镜像端本机。",
@@ -764,8 +764,8 @@ export const zhCN = {
   settingsResetRestarting: "正在清理数据并重启应用…",
   settingsOnlyOfficeTitle: "OnlyOffice",
   settingsOnlyOfficeDescription:
-    "用于主服务端的在线预览和编辑 Office 文档。没有配置时，文档库仍可正常浏览。",
-  settingsOnlyOfficeModalDescription: "OnlyOffice 作为单独集成项管理。这里只做启用、连通和安全配置，不把它继续摊在集成首页里。",
+    "在线预览和编辑 Office 文档。",
+  settingsOnlyOfficeModalDescription: "配置文档服务连接、协作身份和 JWT 校验。",
   settingsOnlyOfficeConfigureAction: "配置集成",
   settingsOnlyOfficeStatusPanelTitle: "OnlyOffice 状态指标",
   settingsOnlyOfficeStatusLabel: "Office 集成",
@@ -1619,8 +1619,8 @@ export const enUS = {
   settingsResetSubmit: "Reset now",
   settingsResetRestarting: "Clearing data and restarting…",
   settingsOnlyOfficeTitle: "OnlyOffice",
-  settingsOnlyOfficeDescription: "Used for online preview and editing of Office documents. Without configuration, the library can still be browsed normally.",
-  settingsOnlyOfficeModalDescription: "OnlyOffice is managed as a separate integration item. Configure enablement, connectivity, and security here instead of dumping the whole form into the integration overview.",
+  settingsOnlyOfficeDescription: "Preview and edit Office documents online.",
+  settingsOnlyOfficeModalDescription: "Configure the document server, collaboration identity, and JWT verification.",
   settingsOnlyOfficeConfigureAction: "Configure",
   settingsOnlyOfficeStatusPanelTitle: "OnlyOffice status metrics",
   settingsOnlyOfficeStatusLabel: "Office integration",

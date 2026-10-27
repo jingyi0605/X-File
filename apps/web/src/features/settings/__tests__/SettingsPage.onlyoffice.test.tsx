@@ -1,6 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   createOnlyOfficeSettings,
@@ -12,6 +12,14 @@ import {
 import { initializeRuntimeConfig } from "../../../runtime/runtime-config-store";
 
 installLibraryApiMock();
+
+vi.mock("../../../api/agent-integration", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../api/agent-integration")>(),
+  getAgentIntegrationSettings: async () => ({
+    enabled: false, apiKeyConfigured: false, updatedAt: null,
+    executablePath: "/host/x-file", dataDir: "/host/.x-file", platform: "linux",
+  }),
+}));
 
 describe("SettingsPage OnlyOffice 设置区", () => {
   beforeEach(() => {
@@ -67,7 +75,7 @@ describe("SettingsPage OnlyOffice 设置区", () => {
     expect(within(statusList).getAllByRole("listitem")).toHaveLength(3);
 
     await userEvent.click(screen.getByRole("button", { name: "配置集成" }));
-    expect(await screen.findByText("OnlyOffice 作为单独集成项管理。这里只做启用、连通和安全配置，不把它继续摊在集成首页里。")).toBeInTheDocument();
+    expect(await screen.findByText("配置文档服务连接、协作身份和 JWT 校验。")).toBeInTheDocument();
     expect(screen.getByText("如果主服务端的 ONLYOFFICE 开启了 JWT 校验，这里必须填写同一份密钥；未开启则保持留空。")).toBeInTheDocument();
   });
 

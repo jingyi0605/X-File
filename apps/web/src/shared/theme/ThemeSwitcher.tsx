@@ -3,7 +3,7 @@ import type { CSSProperties } from "react";
 import { t } from "../../i18n";
 import { THEMES, getThemeLabel, useTheme, type ThemeId } from "./theme";
 
-export function ThemeSwitcher() {
+export function ThemeSwitcher({ showSummary = true }: { showSummary?: boolean }) {
   const { theme, selectedTheme, autoTheme, setTheme, setAutoTheme } = useTheme();
 
   function handleChange(newTheme: ThemeId): void {
@@ -12,10 +12,10 @@ export function ThemeSwitcher() {
 
   return (
     <div className="theme-switcher">
-      <div className="settings-current">
+      {showSummary ? <div className="settings-current">
         <span>{t("theme.switchLabel")}</span>
         <strong>{autoTheme ? t("theme.auto") : t(`theme.${selectedTheme}`)}</strong>
-      </div>
+      </div> : null}
       <div className="theme-switcher-options" role="group" aria-label={t("theme.switchLabel")}>
         {THEMES.map((item) => (
           <button

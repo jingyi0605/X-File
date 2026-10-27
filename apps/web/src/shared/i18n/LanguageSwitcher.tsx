@@ -9,9 +9,10 @@ const LANGUAGE_OPTIONS: Array<{ id: AppLanguage; labelKey: string }> = [
 interface LanguageSwitcherProps {
   variant?: "default" | "compact";
   className?: string;
+  showLabel?: boolean;
 }
 
-export function LanguageSwitcher({ variant = "default", className }: LanguageSwitcherProps) {
+export function LanguageSwitcher({ variant = "default", className, showLabel = true }: LanguageSwitcherProps) {
   const language = usePreferencesSelector((state) => state.profile.language);
 
   function handleLanguageChange(nextLanguage: AppLanguage): void {
@@ -24,7 +25,7 @@ export function LanguageSwitcher({ variant = "default", className }: LanguageSwi
 
   return (
     <label className={`language-switcher language-switcher-${variant}${className ? ` ${className}` : ""}`}>
-      <span className="language-switcher-label">{t("common.language")}</span>
+      {showLabel ? <span className="language-switcher-label">{t("common.language")}</span> : null}
       <div className="language-switcher-options" role="group" aria-label={t("common.language")}>
         {LANGUAGE_OPTIONS.map((option) => (
           <button

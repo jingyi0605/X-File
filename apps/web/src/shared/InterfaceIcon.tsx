@@ -10,6 +10,7 @@ const iconPaths = {
   preview: "M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Zm10-3a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z",
   download: "M12 3v12m-4-4 4 4 4-4M4 16v5h16v-5",
   copy: "M9 9h12v12H9zM5 15H3V3h12v2",
+  check: "m5 12 4 4L19 6",
   rename: "m14 5 5 5M4 20l5-1L21 7l-5-5L4 14v6Z",
   delete: "M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7",
 } as const;

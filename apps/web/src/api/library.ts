@@ -384,7 +384,7 @@ export function getLibraryTagRecomputeTask(): Promise<LibraryTagRecomputeTask | 
 }
 
 export async function getOnlyOfficeSettings(): Promise<OnlyOfficeSettings> {
-  if (getRuntimeConfigSnapshot().config.mode === "local") {
+  if (shouldUseNativeLibraryBridge()) {
     const native = await getNativeOnlyOfficeSettings();
     if (native) {
       return native;
@@ -397,7 +397,7 @@ export async function getOnlyOfficeSettings(): Promise<OnlyOfficeSettings> {
 export async function saveOnlyOfficeSettings(
   input: UpdateOnlyOfficeSettingsInput,
 ): Promise<OnlyOfficeSettings> {
-  if (getRuntimeConfigSnapshot().config.mode === "local") {
+  if (shouldUseNativeLibraryBridge()) {
     const native = await saveNativeOnlyOfficeSettings(input);
     if (native) {
       return native;
@@ -408,7 +408,7 @@ export async function saveOnlyOfficeSettings(
 }
 
 export async function getOnlyOfficeStatus(): Promise<OnlyOfficeStatus> {
-  if (getRuntimeConfigSnapshot().config.mode === "local") {
+  if (shouldUseNativeLibraryBridge()) {
     const native = await getNativeOnlyOfficeStatus();
     if (native) {
       return native;
@@ -419,7 +419,7 @@ export async function getOnlyOfficeStatus(): Promise<OnlyOfficeStatus> {
 }
 
 export async function getHttpServerState(): Promise<HttpServerState> {
-  if (getRuntimeConfigSnapshot().config.mode === "local") {
+  if (shouldUseNativeLibraryBridge()) {
     const native = await getNativeHttpServerState();
     if (native) {
       return native;
@@ -432,7 +432,7 @@ export async function getHttpServerState(): Promise<HttpServerState> {
 export async function saveHttpServerState(
   input: SaveHttpServerStateInput,
 ): Promise<HttpServerState> {
-  if (getRuntimeConfigSnapshot().config.mode === "local") {
+  if (shouldUseNativeLibraryBridge()) {
     const native = await saveNativeHttpServerState(input);
     if (native) {
       return native;

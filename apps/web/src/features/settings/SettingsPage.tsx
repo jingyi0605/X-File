@@ -29,6 +29,7 @@ import { normalizeBaseUrl } from "../../runtime/runtime-config";
 import { LanguageSwitcher } from "../../shared/i18n/LanguageSwitcher";
 import { ThemeSwitcher } from "../../shared/theme/ThemeSwitcher";
 import { formatDateTime } from "../../shared/format";
+import { InterfaceIcon } from "../../shared/InterfaceIcon";
 import { DesktopModal, ModalActions } from "../../shared/modal";
 import { UpdatePanel } from "./UpdatePanel";
 import { AgentIntegrationSettings } from "./AgentIntegrationSettings";
@@ -129,32 +130,26 @@ const LIBRARY_PRESET_EXTENSIONS = [
 const SETTINGS_TABS: Array<{
   id: SettingsTabId;
   titleKey: string;
-  descriptionKey: string;
 }> = [
   {
     id: "appearance",
-    titleKey: "settingsTabAppearance",
-    descriptionKey: "settingsTabAppearanceDescription"
+    titleKey: "settingsTabAppearance"
   },
   {
     id: "library",
-    titleKey: "settingsTabLibrary",
-    descriptionKey: "settingsTabLibraryDescription"
+    titleKey: "settingsTabLibrary"
   },
   {
     id: "integration",
-    titleKey: "settingsTabIntegration",
-    descriptionKey: "settingsTabIntegrationDescription"
+    titleKey: "settingsTabIntegration"
   },
   {
     id: "network",
-    titleKey: "settingsTabNetwork",
-    descriptionKey: "settingsTabNetworkDescription"
+    titleKey: "settingsTabNetwork"
   },
   {
     id: "updates",
-    titleKey: "settingsTabUpdates",
-    descriptionKey: "settingsTabUpdatesDescription"
+    titleKey: "settingsTabUpdates"
   }
 ];
 
@@ -213,6 +208,7 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [configUnavailable, setConfigUnavailable] = useState<string | null>(null);
+  const [onlyOfficeUnavailable, setOnlyOfficeUnavailable] = useState<string | null>(null);
   const [serverUnavailable, setServerUnavailable] = useState<string | null>(null);
   const [directoryBrowserOpen, setDirectoryBrowserOpen] = useState(false);
   const [directoryBrowserLoading, setDirectoryBrowserLoading] = useState(false);
@@ -230,6 +226,7 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
     setLoading(true);
     setError(null);
     setConfigUnavailable(null);
+    setOnlyOfficeUnavailable(null);
     setServerUnavailable(null);
 
     try {
@@ -266,7 +263,7 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
       applyOnlyOffice(settings);
       setOnlyOfficeStatus(await getOnlyOfficeStatus());
     } catch (err) {
-      setError((current) => current ?? toApiErrorMessage(err));
+      setOnlyOfficeUnavailable(toApiErrorMessage(err));
     }
 
     try {
@@ -373,10 +370,13 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
   async function refreshOnlyOfficeStatus(): Promise<void> {
     try {
       setOnlyOfficeModal((current) => ({ ...current, refreshing: true }));
-      setError(null);
+      setOnlyOfficeUnavailable(null);
+      if (!onlyOffice) {
+        applyOnlyOffice(await getOnlyOfficeSettings());
+      }
       setOnlyOfficeStatus(await getOnlyOfficeStatus());
     } catch (err) {
-      setError(toApiErrorMessage(err));
+      setOnlyOfficeUnavailable(toApiErrorMessage(err));
     } finally {
       setOnlyOfficeModal((current) => ({ ...current, refreshing: false }));
     }
@@ -600,22 +600,20 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
   const tabPanels: Record<SettingsTabId, ReactNode> = {
     appearance: (
       <section className="settings-module-stack">
-        <h2>{t("settingsAppearanceTitle")}</h2>
-        <SettingsModule title={t("settingsLanguageTitle")} description={t("settingsLanguageDescription")}>
-          <LanguageSwitcher />
+        <SettingsModule title={t("settingsLanguageTitle")}>
+          <LanguageSwitcher showLabel={false} />
         </SettingsModule>
-        <SettingsModule title={t("settingsThemeTitle")} description={t("settingsThemeDescription")}>
-          <ThemeSwitcher />
+        <SettingsModule title={t("settingsThemeTitle")}>
+          <ThemeSwitcher showSummary={false} />
         </SettingsModule>
       </section>
     ),
     library: (
       <section className="settings-grid">
         <SettingsModule title={t("settingsBindingTitle")}
-          description={isMirrorMode ? t("settingsMirrorBindingDescription") : t("settingsLocalBindingDescription")}
-          status={runtimeModeLabel}>
+          description={isMirrorMode ? t("settingsMirrorBindingDescription") : undefined}>
           <form className="settings-module-form" onSubmit={(event) => void submitBinding(event)}>
-            <div className="settings-runtime-mode-switcher">
+            <div className="button-row settings-runtime-mode-switcher">
               <button type="button" className={runtimeForm.mode === "local" ? "primary-button" : "secondary-button"} onClick={() => setRuntimeForm((current) => ({ ...current, mode: "local" }))}>
                 {t("runtimeModeLocal")}
               </button>
@@ -659,7 +657,7 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
           </form>
         </SettingsModule>
 
-        <SettingsModule title={t("settingsConfigTitle")} description={t("settingsTabLibraryDescription")}>
+        <SettingsModule title={t("settingsConfigTitle")}>
           <form className="settings-module-form" onSubmit={(event) => void submitConfig(event)}>
             {isMirrorMode ? (
               <div className="settings-remote-owner-note" data-tone="danger">
@@ -721,7 +719,7 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
                 <textarea
                   value={configForm.includedHiddenPaths}
                   placeholder={t("settingsIncludedHiddenPathsHint")}
-                  rows={4}
+                  rows={2}
                   onChange={(event) => setConfigForm((current) => ({ ...current, includedHiddenPaths: event.target.value }))}
                 />
               </label>
@@ -767,18 +765,13 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
     ),
     integration: (
       <section className="settings-integration-section">
-        <div className="settings-integration-header">
-          <div>
-            <h2>{t("settingsIntegrationHubTitle")}</h2>
-          </div>
-        </div>
-
         <div className="settings-integration-cards" role="list" aria-label={t("settingsIntegrationHubTitle")}>
-          <AgentIntegrationSettings mirrorMode={isMirrorMode} />
+          <AgentIntegrationSettings />
           <SettingsModule
             title={t("settingsOnlyOfficeTitle")}
             description={t("settingsOnlyOfficeDescription")}
             status={onlyOfficeForm.enabled ? t("settingsIntegrationEnabled") : t("settingsIntegrationDisabled")}
+            feedback={onlyOfficeUnavailable ? <div className="inline-note" role="alert">{onlyOfficeUnavailable}</div> : null}
             listItem
             defaultExpanded={false}
           >
@@ -789,14 +782,9 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
               </div>
             ) : null}
             <div className="settings-current">
-              <span>{t("settingsOnlyOfficeEnabled")}</span>
-              <strong>{onlyOfficeForm.enabled ? t("settingsIntegrationEnabled") : t("settingsIntegrationDisabled")}</strong>
-            </div>
-            <div className="settings-current">
               <span>{t("settingsOnlyOfficeInstance")}</span>
               <strong>{onlyOfficeForm.serverUrl || t("commonNotSet")}</strong>
             </div>
-            <p className="settings-helper-text">{onlyOfficeStatus?.summary ?? t("settingsOnlyOfficeStatusUnknown")}</p>
             <div className="settings-onlyoffice-metrics settings-onlyoffice-metrics-compact" role="list" aria-label={t("settingsOnlyOfficeStatusPanelTitle")}>
               {buildOnlyOfficeStatusCards(onlyOfficeStatus).slice(0, 4).map((card) => (
                 <div
@@ -818,6 +806,7 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
               <button
                 type="button"
                 className="secondary-button"
+                disabled={!onlyOffice}
                 onClick={() => setOnlyOfficeModal({ open: true, refreshing: false })}
               >
                 {t("settingsOnlyOfficeConfigureAction")}
@@ -825,6 +814,7 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
               <button
                 type="button"
                 className="secondary-button"
+                disabled={onlyOfficeModal.refreshing}
                 onClick={() => void refreshOnlyOfficeStatus()}
               >
                 {onlyOfficeModal.refreshing ? t("healthChecking") : t("settingsOnlyOfficeRefreshStatus")}
@@ -836,7 +826,7 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
       </section>
     ),
     network: (
-      <SettingsModule title={t("settingsServerTitle")} description={t("settingsTabNetworkDescription")}
+      <SettingsModule title={t("settingsServerTitle")}
         status={t(serverState?.running ? "settingsServerRunning" : "settingsServerStopped")}>
         <form className="settings-module-form" onSubmit={(event) => void submitServer(event)}>
           {isMirrorMode ? (
@@ -898,9 +888,8 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
 
   const content = (
     <main className="settings-page">
-      <section className="page-heading">
+      {!onClose ? <section className="page-heading">
         <div>
-          <p className="eyebrow">{t("navSettings")}</p>
           <div className="settings-heading-row">
             <h1>{t("settingsTitle")}</h1>
             <span className="settings-runtime-badge" data-mode={runtimeForm.mode}>
@@ -911,7 +900,7 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
         <button type="button" className="secondary-button" onClick={() => void loadSettings()}>
           {loading ? t("healthChecking") : t("libraryReload")}
         </button>
-      </section>
+      </section> : null}
 
       <nav className="settings-tabbar" role="tablist" aria-label={t("settingsTitle")}>
         {SETTINGS_TABS.map((tab) => (
@@ -925,14 +914,13 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
             aria-controls={`settings-panel-${tab.id}`}
             onClick={() => setActiveTab(tab.id)}
           >
-            <span>{t(tab.titleKey)}</span>
-            <small>{t(tab.descriptionKey)}</small>
+            <InterfaceIcon name={tab.id} className="settings-tab-icon" />
+            <span className="settings-tab-copy">
+              <span>{t(tab.titleKey)}</span>
+            </span>
           </button>
         ))}
       </nav>
-
-      {message ? <section className="inline-success">{message}</section> : null}
-      {error ? <section className="inline-alert">{error}</section> : null}
 
       <section
         key={activeTab}
@@ -941,6 +929,8 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
         role="tabpanel"
         aria-labelledby={`settings-tab-${activeTab}`}
       >
+        {message ? <div className="inline-success" role="status">{message}</div> : null}
+        {error ? <div className="inline-alert" role="alert">{error}</div> : null}
         {tabPanels[activeTab]}
       </section>
     </main>
@@ -952,6 +942,7 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
         {content}
         <OnlyOfficeSettingsModal
           open={onlyOfficeModal.open}
+          error={onlyOfficeUnavailable}
           isMirrorMode={isMirrorMode}
           refreshing={onlyOfficeModal.refreshing}
           onlyOffice={onlyOffice}
@@ -1012,6 +1003,7 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
       </DesktopModal>
       <OnlyOfficeSettingsModal
         open={onlyOfficeModal.open}
+        error={onlyOfficeUnavailable}
         isMirrorMode={isMirrorMode}
         refreshing={onlyOfficeModal.refreshing}
         onlyOffice={onlyOffice}
@@ -1054,6 +1046,7 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
 
 function OnlyOfficeSettingsModal({
   open,
+  error,
   isMirrorMode,
   refreshing,
   onlyOffice,
@@ -1065,6 +1058,7 @@ function OnlyOfficeSettingsModal({
   onChange,
 }: {
   open: boolean;
+  error: string | null;
   isMirrorMode: boolean;
   refreshing: boolean;
   onlyOffice: OnlyOfficeSettings | null;
@@ -1087,9 +1081,9 @@ function OnlyOfficeSettingsModal({
       onClose={onClose}
     >
       <form className="settings-onlyoffice-panel" onSubmit={(event) => void onSubmit(event)}>
+        {error ? <div className="inline-alert" role="alert">{error}</div> : null}
         <div className="settings-onlyoffice-status-summary">
           <div className="settings-onlyoffice-status-copy">
-            <h2 className="settings-onlyoffice-status-title">{t("settingsOnlyOfficeStatus")}</h2>
             <p className="settings-onlyoffice-status-description">{onlyOfficeStatus?.summary ?? t("settingsOnlyOfficeStatusUnknown")}</p>
             {isMirrorMode ? (
               <div className="settings-remote-owner-note" data-tone="danger">
@@ -1097,10 +1091,6 @@ function OnlyOfficeSettingsModal({
                 <span>{t("settingsMirrorOnlyOfficeRemoteNotice")}</span>
               </div>
             ) : null}
-          </div>
-          <div className="settings-instance-card settings-onlyoffice-instance-card">
-            <span>{t("settingsOnlyOfficeInstance")}</span>
-            <strong>{onlyOfficeForm.serverUrl || t("commonNotSet")}</strong>
           </div>
         </div>
 
@@ -1151,7 +1141,6 @@ function OnlyOfficeSettingsModal({
           />
           <TextInput
             label={t("settingsOnlyOfficeCallbackBaseUrl")}
-            description={t("settingsOnlyOfficeCallbackBaseUrlDescription")}
             value={onlyOfficeForm.callbackBaseUrl}
             placeholder={t("settingsOnlyOfficeCallbackBaseUrlPlaceholder")}
             onChange={(value) => onChange((current) => ({ ...current, callbackBaseUrl: value }))}
@@ -1161,19 +1150,16 @@ function OnlyOfficeSettingsModal({
         <section className="settings-onlyoffice-form-section">
           <div className="settings-section-title">
             <strong>{t("settingsOnlyOfficeIdentitySection")}</strong>
-            <span className="settings-row-description">{t("settingsOnlyOfficeIdentitySectionDescription")}</span>
           </div>
 
           <TextInput
             label={t("settingsOnlyOfficeUserName")}
-            description={t("settingsOnlyOfficeUserNameDescription")}
             value={onlyOfficeForm.userDisplayName}
             placeholder={t("settingsOnlyOfficeUserNamePlaceholder")}
             onChange={(value) => onChange((current) => ({ ...current, userDisplayName: value }))}
           />
           <TextInput
             label={t("settingsOnlyOfficeAvatar")}
-            description={t("settingsOnlyOfficeAvatarDescription")}
             value={onlyOfficeForm.userAvatarUrl}
             placeholder={t("settingsOnlyOfficeAvatarPlaceholder")}
             onChange={(value) => onChange((current) => ({ ...current, userAvatarUrl: value }))}
@@ -1183,7 +1169,7 @@ function OnlyOfficeSettingsModal({
         <section className="settings-onlyoffice-form-section">
           <div className="settings-section-title">
             <strong>{t("settingsOnlyOfficeSecuritySection")}</strong>
-            <span className="settings-row-description">{t("settingsOnlyOfficeSecuritySectionDescription")}</span>
+            <span className="settings-module-status">{onlyOffice?.jwtSecretConfigured ? t("settingsOnlyOfficeJwtConfigured") : t("settingsOnlyOfficeJwtNotConfigured")}</span>
           </div>
 
           <TextInput
@@ -1207,11 +1193,6 @@ function OnlyOfficeSettingsModal({
             />
           </label>
         </section>
-
-        <div className="settings-current settings-onlyoffice-summary-row">
-          <span>{t("settingsOnlyOfficeJwtSecret")}</span>
-          <strong>{onlyOffice?.jwtSecretConfigured ? t("settingsOnlyOfficeJwtConfigured") : t("settingsOnlyOfficeJwtNotConfigured")}</strong>
-        </div>
 
         <ModalActions align="between" className="settings-onlyoffice-modal-actions">
           <button type="button" className="secondary-button" onClick={onClose}>
@@ -1490,7 +1471,6 @@ function LibraryIndexStatusCard({
         <span className={`affairs-stage-status-dot state-${resolveIndexStatusDotState(status?.state)}`} />
         <div>
           <strong>{resolveIndexStatusLabel(status?.state, binding)}</strong>
-          <span>{binding?.rootDir ?? t("commonNotSet")}</span>
         </div>
       </div>
       <div className="settings-index-status-grid">
@@ -1522,8 +1502,9 @@ function LibraryIndexStatusCard({
           </div>
         </div>
       ) : null}
-      <div className="settings-index-status-grid">
-        <StatusMetric label={t("settingsIndexUpdatedAt")} value={formatDateTime(status?.lastCompletedAt)} />
+      <div className="settings-index-status-updated">
+        <span>{t("settingsIndexUpdatedAt")}</span>
+        <time dateTime={status?.lastCompletedAt ?? undefined}>{formatDateTime(status?.lastCompletedAt)}</time>
       </div>
       {status?.errorSummary ? <div className="inline-alert compact">{status.errorSummary}</div> : null}
     </section>
@@ -1659,7 +1640,6 @@ function ServerStatus({ state }: { state: HttpServerState | null }) {
     <div className="server-status">
       <div><span>{t("settingsServerConfiguredHost")}</span><strong>{state?.host ?? t("commonUnknown")}</strong></div>
       <div><span>{t("settingsServerConfiguredPort")}</span><strong>{state?.port ?? t("commonUnknown")}</strong></div>
-      <div><span>{t("settingsServerRunning")}</span><strong>{state?.running ? t("settingsServerRunning") : t("settingsServerStopped")}</strong></div>
       <div><span>{t("settingsServerActualHost")}</span><strong>{state?.actualHost ?? t("commonUnknown")}</strong></div>
       <div><span>{t("settingsServerActualPort")}</span><strong>{state?.actualPort ?? t("commonUnknown")}</strong></div>
       <div><span>{t("settingsServerLifecycle")}</span><strong>{state?.lifecycleState ?? t("commonUnknown")}</strong></div>
