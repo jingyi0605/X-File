@@ -4074,6 +4074,28 @@ mark {
   animation: auth-page-fade-in 0.6s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+.http-auth-stack {
+  display: grid;
+  width: min(100%, 440px);
+  justify-items: center;
+  gap: var(--space-5);
+}
+
+.http-auth-brand {
+  display: grid;
+  width: calc(var(--brand-mark-size) * 3);
+  aspect-ratio: 1;
+  place-items: center;
+  border: 1px solid var(--glass-control-border);
+  border-radius: calc(var(--radius-control) * 1.5);
+  background:
+    radial-gradient(ellipse at 30% 15%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 72%),
+    var(--glass-control-surface);
+  box-shadow: var(--glass-control-shadow), var(--glass-panel-shadow);
+  backdrop-filter: var(--workbench-glass-blur);
+  -webkit-backdrop-filter: var(--workbench-glass-blur);
+}
+
 @keyframes auth-page-fade-in {
   from {
     opacity: 0;
@@ -4146,26 +4168,9 @@ mark {
   opacity: 0.6;
 }
 
-.http-auth-eyebrow {
-  color: var(--accent);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  opacity: 0.95;
-  animation: auth-eyebrow-fade 0.6s cubic-bezier(0.16, 1, 0.3, 1) 0.2s both;
-}
-
-@keyframes auth-eyebrow-fade {
-  from {
-    opacity: 0;
-    transform: translateY(-4px);
-  }
-  to {
-    opacity: 0.95;
-    transform: translateY(0);
-  }
+.http-auth-logo {
+  width: calc(var(--brand-mark-size) * 2);
+  aspect-ratio: 1;
 }
 
 .http-auth-card h1 {
@@ -4249,6 +4254,7 @@ mark {
 
   .http-auth-page {
     padding: var(--space-4);
+    overflow-y: auto;
   }
 
   .http-auth-card {

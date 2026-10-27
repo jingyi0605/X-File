@@ -223,37 +223,44 @@ function HttpAuthGate({
 
   return (
     <main className="http-auth-page">
-      <section className="http-auth-card">
-        <span className="http-auth-eyebrow">X-FILE</span>
-        <h1>{configured ? t("httpAuthTitle") : t("httpAuthNotConfigured")}</h1>
-        <p>{configured ? t("httpAuthDescription") : t("httpAuthNotConfiguredDescription")}</p>
-        {configured ? (
-          <form className="http-auth-form" onSubmit={(event) => void submit(event)}>
-            <label>
-              <span>{t("httpAuthUsername")}</span>
-              <input
-                autoComplete="username"
-                autoFocus
-                value={username}
-                onChange={(event) => setUsername(event.target.value)}
-              />
-            </label>
-            <label>
-              <span>{t("httpAuthPassword")}</span>
-              <input
-                type="password"
-                autoComplete="current-password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-              />
-            </label>
-            {error ? <div className="inline-alert" role="alert">{error}</div> : null}
-            <button type="submit" className="primary-button" disabled={busy || !username || !password}>
-              {busy ? t("httpAuthSubmitting") : t("httpAuthSubmit")}
-            </button>
-          </form>
-        ) : null}
-      </section>
+      <div className="http-auth-stack">
+        <div className="http-auth-brand" role="img" aria-label={t("appTitle")}>
+          <span className="http-auth-logo x-file-logo" aria-hidden="true">
+            <img className="x-file-logo-light" src="/x-file-logo-light.png" alt="" />
+            <img className="x-file-logo-dark" src="/x-file-logo-dark.png" alt="" />
+          </span>
+        </div>
+        <section className="http-auth-card">
+          <h1>{configured ? t("httpAuthTitle") : t("httpAuthNotConfigured")}</h1>
+          <p>{configured ? t("httpAuthDescription") : t("httpAuthNotConfiguredDescription")}</p>
+          {configured ? (
+            <form className="http-auth-form" onSubmit={(event) => void submit(event)}>
+              <label>
+                <span>{t("httpAuthUsername")}</span>
+                <input
+                  autoComplete="username"
+                  autoFocus
+                  value={username}
+                  onChange={(event) => setUsername(event.target.value)}
+                />
+              </label>
+              <label>
+                <span>{t("httpAuthPassword")}</span>
+                <input
+                  type="password"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                />
+              </label>
+              {error ? <div className="inline-alert" role="alert">{error}</div> : null}
+              <button type="submit" className="primary-button" disabled={busy || !username || !password}>
+                {busy ? t("httpAuthSubmitting") : t("httpAuthSubmit")}
+              </button>
+            </form>
+          ) : null}
+        </section>
+      </div>
     </main>
   );
 }
