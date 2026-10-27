@@ -2158,22 +2158,6 @@ html[data-workbench-finder-column-resizing="true"] * {
   margin: 0 10px;
 }
 
-.affairs-doc-grid-loading-overlay {
-  display: flex;
-  justify-content: center;
-  padding: 8px;
-}
-
-.affairs-doc-grid-loading {
-  min-height: 28px;
-  padding: 0 12px;
-  border-radius: 9px;
-  background: var(--panel-bg);
-  color: var(--text-secondary);
-  font-size: 12px;
-  font-weight: 600;
-}
-
 .affairs-library-error-strip {
   position: absolute;
   z-index: 4;

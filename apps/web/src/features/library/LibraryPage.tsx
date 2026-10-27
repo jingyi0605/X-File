@@ -349,6 +349,7 @@ type StageLibraryState = Pick<
   | "documentsLoading"
   | "cancelPreview"
   | "entries"
+  | "error"
   | "hasMore"
   | "loading"
   | "loadMore"
@@ -482,7 +483,8 @@ export function LibraryPage({
     && platformData.osFamily === "macos"
     && platformData.overlayTitlebar;
 
-  useEffect(() => {
+  // 子视图会在 effect 中继续预加载，必须先同步分页回调使用的最新状态。
+  useLayoutEffect(() => {
     libraryRef.current = library;
   }, [library]);
 
@@ -941,6 +943,7 @@ export function LibraryPage({
     documentPage: library.documentPage,
     documentsLoading: library.documentsLoading,
     entries: library.entries,
+    error: library.error,
     hasMore: library.hasMore,
     loading: library.loading,
     loadMore: callLibraryLoadMore,
@@ -970,6 +973,7 @@ export function LibraryPage({
     library.documentPage,
     library.documentsLoading,
     library.entries,
+    library.error,
     library.hasMore,
     library.loading,
     library.refreshPending,
@@ -2713,18 +2717,6 @@ function LibraryStage({
             onOpenLibraryViewer={onOpenLibraryViewer}
           />
         )}
-        {library.hasMore ? (
-          <div className="affairs-doc-grid-loading-overlay" aria-hidden="true">
-            <button
-              type="button"
-              className="affairs-doc-grid-loading"
-              disabled={library.documentsLoading}
-              onClick={() => void library.loadMore()}
-            >
-              {t("libraryLoadMore")}
-            </button>
-          </div>
-        ) : null}
       </div>
     </section>
   );
@@ -3061,7 +3053,6 @@ const VIRTUAL_GRID_MIN_ITEMS = 80;
 const VIRTUAL_LIST_ROW_HEIGHT = 40;
 const VIRTUAL_OVERSCAN = 2;
 const VIRTUAL_LIST_OVERSCAN = 8;
-const VIRTUAL_LOAD_MORE_DISTANCE = 320;
 const LIBRARY_SELECTION_PRESS_ANIMATION_MS = 140;
 const LIBRARY_DETAIL_SETTLE_DELAY_MS = 500;
 
@@ -3084,6 +3075,38 @@ const EMPTY_SETTLED_LIBRARY_DETAIL_SELECTION: SettledLibraryDetailSelection = {
   documentIds: [],
   folderPaths: [],
 };
+
+function useLibraryViewportPreload(
+  library: StageLibraryState,
+  loadedCount: number,
+  visibleEndIndex: number,
+  preloadCount: number,
+  viewportHeight: number,
+): void {
+  const { hasMore, documentsLoading, error, loadMore } = library;
+  useEffect(() => {
+    if (
+      viewportHeight <= 0 ||
+      !hasMore ||
+      documentsLoading ||
+      error ||
+      visibleEndIndex < loadedCount - preloadCount
+    ) {
+      return;
+    }
+    // 分页完成后继续补齐当前视口与预加载区，快速滚动时不依赖下一次滚动事件。
+    void loadMore();
+  }, [
+    hasMore,
+    documentsLoading,
+    error,
+    loadMore,
+    loadedCount,
+    visibleEndIndex,
+    preloadCount,
+    viewportHeight,
+  ]);
+}
 
 function VirtualLibraryGrid({
   library,
@@ -3259,6 +3282,20 @@ function VirtualLibraryGrid({
       )
     : buildVirtualLibraryEntrySlots(entries, 0, entries.length);
 
+  useLibraryViewportPreload(
+    library,
+    entries.length,
+    metrics.endIndex,
+    Math.max(
+      18,
+      columns * Math.max(
+        3,
+        Math.ceil(viewport.height / (measuredItemHeight + measuredRowGap)),
+      ),
+    ),
+    viewport.height,
+  );
+
   function handleScroll(element: HTMLDivElement): void {
     setViewport((current) => ({
       ...current,
@@ -3266,16 +3303,6 @@ function VirtualLibraryGrid({
       width: measureStageScrollContentWidth(element),
       height: element.clientHeight,
     }));
-    if (!library.hasMore || library.documentsLoading) return;
-    const remaining =
-      element.scrollHeight - element.scrollTop - element.clientHeight;
-    const preloadRows = Math.max(columns * 3, 18);
-    if (
-      metrics.endIndex >= entries.length - preloadRows ||
-      remaining <= VIRTUAL_LOAD_MORE_DISTANCE
-    ) {
-      void library.loadMore();
-    }
   }
 
   const grid = (
@@ -3511,6 +3538,14 @@ function VirtualLibraryFinderList({
     metrics.endIndex,
   );
 
+  useLibraryViewportPreload(
+    library,
+    entries.length,
+    metrics.endIndex,
+    Math.max(12, Math.ceil(viewport.height / measuredRowHeight)),
+    viewport.height,
+  );
+
   function syncScrollViewport(element: HTMLDivElement): void {
     const nextScrollTop = clampScrollTop(
       element.scrollTop,
@@ -3526,28 +3561,6 @@ function VirtualLibraryFinderList({
       scrollTop: nextScrollTop,
       height: element.clientHeight,
     }));
-    if (!library.hasMore || library.documentsLoading) return;
-    const remaining =
-      element.scrollHeight - element.scrollTop - element.clientHeight;
-    const preloadRows = Math.max(
-      12,
-      Math.ceil(
-        Math.max(viewport.height, measuredRowHeight) / measuredRowHeight,
-      ),
-    );
-    const currentMetrics = computeVirtualListMetrics(
-      virtualItemCount,
-      element.clientHeight,
-      nextScrollTop,
-      { rowHeight: measuredRowHeight },
-    );
-    const loadedEndIndex = Math.min(currentMetrics.endIndex, entries.length);
-    if (
-      loadedEndIndex >= entries.length - preloadRows ||
-      remaining <= VIRTUAL_LOAD_MORE_DISTANCE
-    ) {
-      void library.loadMore();
-    }
   }
 
   function handleScroll(element: HTMLDivElement): void {
