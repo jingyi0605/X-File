@@ -14,7 +14,7 @@ use crate::{
     LocalLibraryTagListResult, LocalLibraryTagListSummary, LocalLibraryTagRecommendation,
     LocalLibraryTagRecomputeStatus, LocalLibraryTagRecomputeTask, LocalLibraryTagRuleView,
     LocalResolvedTagSource, LocalRuntimeExportCatalogSnapshot, LocalRuntimeSnapshotDocument,
-    LocalRuntimeSnapshotTag, LocalStoredDocumentTagBinding, LocalStoredFolderTagBinding,
+    LocalRuntimeSnapshotTag, LocalSuppressedTagSource, LocalStoredDocumentTagBinding, LocalStoredFolderTagBinding,
     LocalStoredLibraryTags, LocalStoredTagDefinition, LocalStoredTagRule, MetaDocument,
 };
 
@@ -617,6 +617,7 @@ pub fn read_local_document_tag_details(
     let binding = read_local_library_binding()?.ok_or_else(|| "当前未绑定文档库".to_string())?;
     let store = read_local_library_tags_store(&binding)?;
     let documents = read_local_tag_documents_core(&binding)?;
+    let count_by_path = count_local_tags(&documents);
     let target = documents
         .into_iter()
         .find(|item| {
@@ -625,11 +626,37 @@ pub fn read_local_document_tag_details(
         })
         .ok_or_else(|| "文档不存在".to_string())?;
     let normalized_path = normalize_document_path(&target.path);
+    let target_title = target
+        .title
+        .clone()
+        .unwrap_or_else(|| file_name_from_path(&normalized_path));
     let manual_binding = store
         .document_tags
         .iter()
         .find(|item| item.document_id == target.document_id || item.path == normalized_path);
     let folder_bindings = collect_effective_folder_bindings(&store, &normalized_path);
+    let mut excluded_tag_ids = manual_binding
+        .map(|item| item.manual_tag_ids.clone())
+        .unwrap_or_default();
+    excluded_tag_ids.extend(folder_bindings.iter().filter_map(|binding| {
+        binding
+            .get("tagId")
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+    }));
+    let excluded_tag_paths = target
+        .direct_tags
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .chain(target.derived_tags.clone().unwrap_or_default())
+        .chain(folder_bindings.iter().filter_map(|binding| {
+            binding
+                .get("tagPath")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        }))
+        .collect::<HashSet<_>>();
     let mut resolved_tags = Vec::new();
     for tag_id in manual_binding
         .map(|item| item.manual_tag_ids.clone())
@@ -663,6 +690,73 @@ pub fn read_local_document_tag_details(
             priority: 80,
         });
     }
+    let runtime_document = LocalRuntimeSnapshotDocument {
+        document_id: target.document_id.clone(),
+        title: target.title.clone().unwrap_or_else(|| target_title.clone()),
+        path: normalized_path.clone(),
+        summary: target.summary.clone().unwrap_or_default(),
+        tags: target.direct_tags.clone().unwrap_or_default(),
+        derived_tags: target.derived_tags.clone().unwrap_or_default(),
+        mtime: target.mtime.clone().unwrap_or_default(),
+    };
+    for tag in store.tags.iter().filter(|tag| tag.status == "active") {
+        let rules = store.tag_rules.iter()
+            .filter(|rule| rule.enabled && rule.tag_id == tag.id)
+            .collect::<Vec<_>>();
+        if let Some(rule) = resolve_local_tag_rule(
+            &runtime_document,
+            LocalTagRecommendationTargetKind::Document,
+            &rules,
+        ) {
+            resolved_tags.push(LocalResolvedTagSource {
+                path: tag.path.clone(),
+                source_type: "smart_rule".into(),
+                source_ref: Some(rule.id.clone()),
+                evidence: Some(local_tag_rule_evidence(rule)),
+                confidence: 1.0,
+                priority: 60,
+            });
+        }
+    }
+    for tag_path in &runtime_document.tags {
+        if resolved_tags.iter().any(|source| source.path == *tag_path) {
+            continue;
+        }
+        let Some(tag) = store.tags.iter().find(|tag| tag.path == *tag_path) else {
+            continue;
+        };
+        let rules = store.tag_rules.iter()
+            .filter(|rule| rule.enabled && rule.tag_id == tag.id)
+            .collect::<Vec<_>>();
+        let rule = resolve_local_tag_rule(
+            &runtime_document,
+            LocalTagRecommendationTargetKind::Document,
+            &rules,
+        );
+        resolved_tags.push(LocalResolvedTagSource {
+            path: tag.path.clone(),
+            source_type: if rule.is_some() { "smart_rule" } else { "system_derived" }.into(),
+            source_ref: rule.map(|rule| rule.id.clone()),
+            evidence: rule.map(local_tag_rule_evidence),
+            confidence: 1.0,
+            priority: if rule.is_some() { 60 } else { 40 },
+        });
+    }
+    for tag_path in &runtime_document.derived_tags {
+        if resolved_tags.iter().any(|source| source.path == *tag_path) {
+            continue;
+        }
+        resolved_tags.push(LocalResolvedTagSource {
+            path: tag_path.clone(),
+            source_type: "system_derived".into(),
+            source_ref: None,
+            evidence: Some("system-derived tag".into()),
+            confidence: 1.0,
+            priority: 40,
+        });
+    }
+    let (resolved_tags, suppressed_tags) =
+        resolve_local_tag_sources(&store, resolved_tags, &folder_bindings);
     Ok(LocalLibraryDocumentTagDetails {
         document_id: target.document_id,
         path: normalized_path.clone(),
@@ -674,12 +768,19 @@ pub fn read_local_document_tag_details(
             .unwrap_or_default(),
         effective_folder_bindings: folder_bindings,
         resolved_tags,
+        suppressed_tags,
         recommended_tags: build_local_tag_recommendations(
             &store,
-            &normalized_path,
-            manual_binding
-                .map(|item| item.manual_tag_ids.clone())
-                .unwrap_or_default(),
+            &LocalTagRecommendationTarget {
+                kind: LocalTagRecommendationTargetKind::Document,
+                path: &normalized_path,
+                title: &target_title,
+                summary: target.summary.as_deref().unwrap_or_default(),
+                mtime: target.mtime.as_deref(),
+            },
+            excluded_tag_ids,
+            excluded_tag_paths,
+            &count_by_path,
         ),
     })
 }
@@ -727,6 +828,8 @@ pub fn read_local_folder_tag_details(
 ) -> Result<LocalLibraryFolderTagDetails, String> {
     let binding = read_local_library_binding()?.ok_or_else(|| "当前未绑定文档库".to_string())?;
     let store = read_local_library_tags_store(&binding)?;
+    let documents = read_local_tag_documents_core(&binding).unwrap_or_default();
+    let count_by_path = count_local_tags(&documents);
     let normalized_folder = normalize_folder_path(folder_path);
     let folder_binding = store
         .folder_tags
@@ -747,6 +850,16 @@ pub fn read_local_folder_tag_details(
             })
         })
         .collect::<Vec<_>>();
+    let excluded_tag_paths = bindings
+        .iter()
+        .filter_map(|binding| {
+            binding
+                .get("tagPath")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .collect::<HashSet<_>>();
+    let folder_title = file_name_from_path(&normalized_folder);
     Ok(LocalLibraryFolderTagDetails {
         folder_path: normalized_folder.clone(),
         exists: true,
@@ -754,8 +867,16 @@ pub fn read_local_folder_tag_details(
         bindings,
         recommended_tags: build_local_tag_recommendations(
             &store,
-            &normalized_folder,
+            &LocalTagRecommendationTarget {
+                kind: LocalTagRecommendationTargetKind::Folder,
+                path: &normalized_folder,
+                title: &folder_title,
+                summary: "",
+                mtime: None,
+            },
             binding_tag_ids,
+            excluded_tag_paths,
+            &count_by_path,
         ),
     })
 }
@@ -955,30 +1076,530 @@ fn collect_effective_folder_bindings(
     bindings
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalTagRecommendationTargetKind {
+    Document,
+    Folder,
+}
+
+struct LocalTagRecommendationTarget<'a> {
+    kind: LocalTagRecommendationTargetKind,
+    path: &'a str,
+    title: &'a str,
+    summary: &'a str,
+    mtime: Option<&'a str>,
+}
+
+fn set_local_tag_recommendation(
+    candidates: &mut BTreeMap<String, LocalLibraryTagRecommendation>,
+    tag: &LocalStoredTagDefinition,
+    score: f64,
+    reason: &str,
+    evidence: String,
+) {
+    let candidate = LocalLibraryTagRecommendation {
+        tag_id: tag.id.clone(),
+        path: tag.path.clone(),
+        name: tag.name.clone(),
+        score,
+        reason: reason.to_string(),
+        evidence,
+    };
+    let should_replace = candidates
+        .get(&tag.id)
+        .map(|current| current.score <= candidate.score)
+        .unwrap_or(true);
+    if should_replace {
+        candidates.insert(tag.id.clone(), candidate);
+    }
+}
+
+const GENERIC_RECOMMENDATION_TOKENS: &[&str] = &[
+    "文档", "文件", "资料", "附件", "其他", "相关", "临时", "新建", "默认", "document",
+    "documents", "file", "files", "other", "misc", "temp", "有限公司", "有限责任公司",
+    "股份有限公司", "集团有限公司", "公司", "集团",
+];
+
+const MEANINGLESS_RECOMMENDATION_WORDS: &[&str] = &[
+    "集团有限公司", "股份有限公司", "有限责任公司", "有限公司", "集团公司", "总公司", "分公司",
+    "公司", "集团", "co.,ltd", "coltd", "ltd", "inc", "llc", "corp", "corporation",
+    "company", "采购", "服务", "管理", "建设",
+];
+
+fn normalize_local_recommendation_text(value: &str) -> String {
+    let mut normalized = String::new();
+    let mut previous_space = true;
+    for character in value.trim().to_lowercase().chars() {
+        if matches!(character, '\\' | '/' | '_' | '-' | '–' | '—' | '.' | '(' | ')' | '[' | ']' | '{' | '}' | '【' | '】' | '（' | '）')
+        {
+            if !previous_space {
+                normalized.push(' ');
+                previous_space = true;
+            }
+        } else if character.is_whitespace() {
+            if !previous_space {
+                normalized.push(' ');
+                previous_space = true;
+            }
+        } else {
+            normalized.push(character);
+            previous_space = false;
+        }
+    }
+    normalized.trim().to_string()
+}
+
+fn compact_local_recommendation_text(value: &str) -> String {
+    normalize_local_recommendation_text(value)
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect()
+}
+
+fn strip_local_recommendation_noise(value: &str) -> String {
+    let mut result = value.to_string();
+    for _ in 0..MEANINGLESS_RECOMMENDATION_WORDS.len() {
+        let previous = result.clone();
+        for word in MEANINGLESS_RECOMMENDATION_WORDS {
+            result = result.replace(word, "");
+        }
+        if result == previous {
+            break;
+        }
+    }
+    result
+}
+
+fn is_generic_recommendation_token(value: &str) -> bool {
+    GENERIC_RECOMMENDATION_TOKENS.contains(&value)
+}
+
+fn is_useful_recommendation_token(value: &str) -> bool {
+    value.chars().count() >= 2 && !is_generic_recommendation_token(value)
+}
+
+fn is_useful_tag_match_text(value: &str) -> bool {
+    value.chars().count() >= 3
+        && !is_generic_recommendation_token(value)
+        && !MEANINGLESS_RECOMMENDATION_WORDS.contains(&value)
+}
+
+fn build_local_recommendation_target_text(target_path: &str, title: &str) -> String {
+    let basename = target_path.rsplit('/').next().unwrap_or(target_path);
+    let split_path = target_path
+        .chars()
+        .map(|character| {
+            if matches!(character, '/' | '.' | '_' | '-' | ' ' | '\\' | '–' | '—') {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    let mut values = Vec::new();
+    for part in [target_path, basename, title, &split_path] {
+        let normalized = normalize_local_recommendation_text(part);
+        let compact = compact_local_recommendation_text(part);
+        let stripped = strip_local_recommendation_noise(&compact);
+        for value in [normalized, compact, stripped] {
+            if !value.is_empty() && !values.contains(&value) {
+                values.push(value);
+            }
+        }
+    }
+    values.join(" ")
+}
+
+fn recommendation_tokens(value: &str) -> Vec<String> {
+    value
+        .split_whitespace()
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn longest_common_recommendation_text(left: &str, right: &str) -> usize {
+    let left = compact_local_recommendation_text(left)
+        .chars()
+        .collect::<Vec<_>>();
+    let right = compact_local_recommendation_text(right)
+        .chars()
+        .collect::<Vec<_>>();
+    let mut longest = 0;
+    for length in (3..=left.len().min(right.len())).rev() {
+        for start in 0..=left.len() - length {
+            let fragment = left[start..start + length].iter().collect::<String>();
+            if is_useful_tag_match_text(&fragment)
+                && right.windows(length).any(|window| window == &left[start..start + length])
+            {
+                longest = length;
+                break;
+            }
+        }
+        if longest > 0 {
+            break;
+        }
+    }
+    longest
+}
+
+fn score_recommendation_overlap(overlap: usize, tag_text_length: usize) -> f64 {
+    let coverage = overlap as f64 / tag_text_length.max(1) as f64;
+    if overlap >= 6 || coverage >= 0.72 {
+        92.0
+    } else if overlap >= 4 || coverage >= 0.56 {
+        86.0
+    } else {
+        80.0
+    }
+}
+
+fn levenshtein_distance(left: &[char], right: &[char]) -> usize {
+    let mut previous = (0..=right.len()).collect::<Vec<_>>();
+    let mut current = vec![0; right.len() + 1];
+    for (left_index, left_character) in left.iter().enumerate() {
+        current[0] = left_index + 1;
+        for (right_index, right_character) in right.iter().enumerate() {
+            current[right_index + 1] = (current[right_index] + 1)
+                .min(previous[right_index + 1] + 1)
+                .min(previous[right_index] + usize::from(left_character != right_character));
+        }
+        previous.copy_from_slice(&current);
+    }
+    previous[right.len()]
+}
+
+fn similarity_ratio(left: &str, right: &str) -> f64 {
+    if left.is_empty() || right.is_empty() {
+        return 0.0;
+    }
+    if left == right {
+        return 1.0;
+    }
+    let left = left.chars().collect::<Vec<_>>();
+    let right = right.chars().collect::<Vec<_>>();
+    let max_length = left.len().max(right.len());
+    (max_length - levenshtein_distance(&left, &right)) as f64 / max_length as f64
+}
+
+fn build_local_tag_match_texts(tag: &LocalStoredTagDefinition) -> Vec<String> {
+    let mut values = BTreeSet::new();
+    for raw_name in [tag.name.as_str(), tag.path.rsplit('/').next().unwrap_or(&tag.path)] {
+        let compact = compact_local_recommendation_text(raw_name);
+        let stripped = strip_local_recommendation_noise(&compact);
+        for candidate in [compact, stripped] {
+            if is_useful_tag_match_text(&candidate) {
+                values.insert(candidate);
+            }
+        }
+    }
+    let mut values = values.into_iter().collect::<Vec<_>>();
+    values.sort_by_key(|value| std::cmp::Reverse(value.chars().count()));
+    values
+}
+
+fn local_recommendation_name_score(tag: &LocalStoredTagDefinition, target_text: &str) -> f64 {
+    let tokens = recommendation_tokens(target_text);
+    let segments = tag
+        .path
+        .split('/')
+        .map(normalize_local_recommendation_text)
+        .filter(|segment| is_useful_recommendation_token(segment));
+    let tag_name = normalize_local_recommendation_text(&tag.name);
+    let tag_path = normalize_local_recommendation_text(&tag.path);
+    let tag_name_tokens = recommendation_tokens(&tag_name)
+        .into_iter()
+        .filter(|token| is_useful_recommendation_token(token));
+    let match_texts = build_local_tag_match_texts(tag);
+    let mut score: f64 = 0.0;
+
+    if is_useful_recommendation_token(&tag_name) && tokens.iter().any(|token| token == &tag_name) {
+        score = score.max(90.0);
+    }
+    if is_useful_recommendation_token(&tag_name)
+        && tokens
+            .iter()
+            .any(|token| token.chars().count() > tag_name.chars().count() && token.contains(&tag_name))
+    {
+        score = score.max(86.0);
+    }
+    if !tag_path.is_empty() && target_text.contains(&tag_path) {
+        score = score.max(94.0);
+    }
+
+    for tag_text in match_texts {
+        let overlap = longest_common_recommendation_text(&tag_text, target_text);
+        if overlap >= 3 {
+            score = score.max(score_recommendation_overlap(
+                overlap,
+                tag_text.chars().count(),
+            ));
+            continue;
+        }
+        let best_similarity = tokens
+            .iter()
+            .map(|token| {
+                similarity_ratio(&tag_text, &strip_local_recommendation_noise(token))
+            })
+            .fold(0.0, f64::max);
+        if tag_text.chars().count() >= 4 && best_similarity >= 0.88 {
+            score = score.max(76.0 + ((best_similarity - 0.88) * 70.0).round());
+        }
+    }
+
+    let segments = segments.collect::<Vec<_>>();
+    let matched_segments = segments
+        .iter()
+        .filter(|segment| tokens.iter().any(|token| token == *segment))
+        .count();
+    if matched_segments >= 2 {
+        score = score.max(84.0 + (matched_segments * 3) as f64);
+    }
+    let tag_name_tokens = tag_name_tokens.collect::<Vec<_>>();
+    let matched_name_tokens = tag_name_tokens
+        .iter()
+        .filter(|name_token| tokens.iter().any(|token| token == *name_token))
+        .count();
+    if tag_name_tokens.len() >= 2 && matched_name_tokens == tag_name_tokens.len() {
+        score = score.max(88.0);
+    }
+
+    if score == 0.0 && tag_name.chars().count() >= 3 {
+        let best_similarity = tokens
+            .iter()
+            .map(|token| similarity_ratio(&tag_name, token))
+            .fold(0.0, f64::max);
+        if best_similarity >= 0.86 {
+            score = score.max(78.0 + ((best_similarity - 0.86) * 60.0).round());
+        }
+    }
+    score.min(94.0)
+}
+
+fn score_local_folder_context(
+    target_kind: LocalTagRecommendationTargetKind,
+    target_path: &str,
+    binding_folder_path: &str,
+) -> f64 {
+    let target_folder = if target_kind == LocalTagRecommendationTargetKind::Document {
+        PathBuf::from(target_path)
+            .parent()
+            .map(|value| normalize_folder_path(&value.to_string_lossy().replace('\\', "/")))
+            .unwrap_or_else(|| ".".into())
+    } else {
+        normalize_folder_path(target_path)
+    };
+    let binding_folder = normalize_folder_path(binding_folder_path);
+    if binding_folder == "." {
+        return 0.0;
+    }
+    if binding_folder == target_folder {
+        return 86.0;
+    }
+    if target_folder.starts_with(&format!("{binding_folder}/")) {
+        return 80.0;
+    }
+    let parent_folder = PathBuf::from(&target_folder)
+        .parent()
+        .map(|value| normalize_folder_path(&value.to_string_lossy().replace('\\', "/")))
+        .unwrap_or_else(|| ".".into());
+    if binding_folder == parent_folder {
+        return 76.0;
+    }
+    if parent_folder != "."
+        && PathBuf::from(&binding_folder)
+            .parent()
+            .map(|value| normalize_folder_path(&value.to_string_lossy().replace('\\', "/")))
+            .unwrap_or_else(|| ".".into())
+            == parent_folder
+        && are_local_sibling_folder_names_related(&target_folder, &binding_folder)
+    {
+        return 72.0;
+    }
+    0.0
+}
+
+fn are_local_sibling_folder_names_related(left_path: &str, right_path: &str) -> bool {
+    let left_name = normalize_local_recommendation_text(
+        left_path.rsplit('/').next().unwrap_or(left_path),
+    );
+    let right_name = normalize_local_recommendation_text(
+        right_path.rsplit('/').next().unwrap_or(right_path),
+    );
+    if left_name.is_empty() || right_name.is_empty() {
+        return false;
+    }
+    let left_tokens = recommendation_tokens(&left_name)
+        .into_iter()
+        .filter(|token| is_useful_recommendation_token(token))
+        .collect::<Vec<_>>();
+    let right_tokens = recommendation_tokens(&right_name)
+        .into_iter()
+        .filter(|token| is_useful_recommendation_token(token))
+        .collect::<Vec<_>>();
+    if left_tokens
+        .iter()
+        .any(|token| right_tokens.iter().any(|other| token == other))
+    {
+        return true;
+    }
+    similarity_ratio(&left_name, &right_name) >= 0.82
+}
+
+fn score_local_recent_modified_at(modified_at: &str) -> f64 {
+    let Ok(modified_at) = chrono::DateTime::parse_from_rfc3339(modified_at) else {
+        return 0.0;
+    };
+    let day_distance = (chrono::Utc::now() - modified_at.with_timezone(&chrono::Utc)).num_seconds() / 86_400;
+    if day_distance <= 7 {
+        54.0
+    } else if day_distance <= 30 {
+        44.0
+    } else {
+        0.0
+    }
+}
+
+fn is_local_time_like_tag(tag: &LocalStoredTagDefinition) -> bool {
+    let text = format!("{}/{}", tag.path, tag.name).to_lowercase();
+    [
+        "最近", "近期", "本周", "本月", "待处理", "跟进", "urgent", "recent", "week", "month",
+        "todo", "follow",
+    ]
+    .iter()
+    .any(|keyword| text.contains(keyword))
+}
+
 fn build_local_tag_recommendations(
     store: &LocalStoredLibraryTags,
-    target_path: &str,
+    target: &LocalTagRecommendationTarget,
     excluded_tag_ids: Vec<String>,
+    excluded_tag_paths: HashSet<String>,
+    count_by_path: &HashMap<String, usize>,
 ) -> Vec<LocalLibraryTagRecommendation> {
     let excluded: HashSet<String> = excluded_tag_ids.into_iter().collect();
-    store
+    let mut candidates = BTreeMap::new();
+    let target_text = build_local_recommendation_target_text(target.path, target.title);
+    let target_document = LocalRuntimeSnapshotDocument {
+        document_id: String::new(),
+        title: target.title.to_string(),
+        path: target.path.to_string(),
+        summary: target.summary.to_string(),
+        tags: Vec::new(),
+        derived_tags: Vec::new(),
+        mtime: target.mtime.unwrap_or_default().to_string(),
+    };
+
+    for tag in store
         .tags
         .iter()
-        .filter(|tag| tag.status == "active" && !excluded.contains(&tag.id))
         .filter(|tag| {
-            let tag_path = tag.path.to_lowercase();
-            let target = target_path.to_lowercase();
-            tag_path.contains(&target) || target.contains(&tag_path)
+            tag.status == "active"
+                && !excluded.contains(&tag.id)
+                && !excluded_tag_paths.contains(&tag.path)
         })
-        .map(|tag| LocalLibraryTagRecommendation {
-            tag_id: tag.id.clone(),
-            path: tag.path.clone(),
-            name: tag.name.clone(),
-            score: 1.0,
-            reason: "name_match".to_string(),
-            evidence: "native local tag bridge".to_string(),
-        })
-        .collect()
+    {
+        let name_score = local_recommendation_name_score(tag, &target_text);
+        if name_score > 0.0 {
+            set_local_tag_recommendation(
+                &mut candidates,
+                tag,
+                name_score,
+                "name_match",
+                "文件夹或文件名称里出现了这个标签的关键词".to_string(),
+            );
+        }
+
+    }
+
+    for binding in &store.folder_tags {
+        let binding_folder = normalize_folder_path(&binding.folder_path);
+        let relation_score =
+            score_local_folder_context(target.kind, target.path, &binding_folder);
+        if relation_score <= 0.0 {
+            continue;
+        }
+        for tag_id in &binding.binding_tag_ids {
+            let Some(tag) = store.tags.iter().find(|tag| {
+                tag.id == *tag_id
+                    && tag.status == "active"
+                    && !excluded.contains(&tag.id)
+                    && !excluded_tag_paths.contains(&tag.path)
+            }) else {
+                continue;
+            };
+            set_local_tag_recommendation(
+                &mut candidates,
+                tag,
+                relation_score,
+                "folder_context",
+                if binding_folder == "." {
+                    "根目录已经配置过这个标签".to_string()
+                } else {
+                    format!("相关文件夹“{binding_folder}”已经配置过这个标签")
+                },
+            );
+        }
+    }
+
+    for tag in store.tags.iter().filter(|tag| {
+        tag.status == "active"
+            && !excluded.contains(&tag.id)
+            && !excluded_tag_paths.contains(&tag.path)
+    }) {
+        let rules = store
+            .tag_rules
+            .iter()
+            .filter(|rule| rule.enabled && rule.tag_id == tag.id)
+            .collect::<Vec<_>>();
+        if let Some(rule) = resolve_local_tag_rule(&target_document, target.kind, &rules) {
+            set_local_tag_recommendation(
+                &mut candidates,
+                tag,
+                82.0,
+                "smart_rule",
+                local_tag_rule_evidence(rule),
+            );
+        }
+    }
+
+    if target.kind == LocalTagRecommendationTargetKind::Document {
+        if let Some(modified_at) = target.mtime {
+            let time_score = score_local_recent_modified_at(modified_at);
+            if time_score > 0.0 {
+                for tag in store.tags.iter().filter(|tag| {
+                    tag.status == "active"
+                        && !excluded.contains(&tag.id)
+                        && !excluded_tag_paths.contains(&tag.path)
+                        && is_local_time_like_tag(tag)
+                }) {
+                    set_local_tag_recommendation(
+                        &mut candidates,
+                        tag,
+                        time_score,
+                        "time_pattern",
+                        "最近修改时间和这个标签有关".to_string(),
+                    );
+                }
+            }
+        }
+    }
+
+    let mut recommendations = candidates.into_values().collect::<Vec<_>>();
+    for recommendation in &mut recommendations {
+        let count = count_by_path.get(&recommendation.path).copied().unwrap_or(0);
+        let count_bonus = ((count + 1) as f64).log2() * 1.5;
+        recommendation.score = (recommendation.score + count_bonus.min(8.0)).min(100.0);
+        recommendation.score = (recommendation.score * 100.0).round() / 100.0;
+    }
+    recommendations.sort_by(|left, right| {
+        right
+            .score
+            .partial_cmp(&left.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    recommendations.truncate(8);
+    recommendations
 }
 
 fn is_local_descendant_tag(
@@ -1350,6 +1971,18 @@ pub fn run_tag_assignment_core(
 }
 
 fn matches_tag_rule(document: &LocalRuntimeSnapshotDocument, rule: &LocalStoredTagRule) -> bool {
+    matches_tag_rule_for_target(
+        document,
+        LocalTagRecommendationTargetKind::Document,
+        rule,
+    )
+}
+
+fn matches_tag_rule_for_target(
+    document: &LocalRuntimeSnapshotDocument,
+    target_kind: LocalTagRecommendationTargetKind,
+    rule: &LocalStoredTagRule,
+) -> bool {
     let keyword = rule.matcher["keyword"]
         .as_str()
         .unwrap_or("")
@@ -1372,7 +2005,7 @@ fn matches_tag_rule(document: &LocalRuntimeSnapshotDocument, rule: &LocalStoredT
         }
         "file_extension_in" => rule.matcher["extensions"]
             .as_array()
-            .is_some_and(|extensions| {
+            .is_some_and(|extensions| target_kind == LocalTagRecommendationTargetKind::Document && {
                 let extension = PathBuf::from(&document.path)
                     .extension()
                     .map(|ext| format!(".{}", ext.to_string_lossy().to_lowercase()))
@@ -1383,9 +2016,15 @@ fn matches_tag_rule(document: &LocalRuntimeSnapshotDocument, rule: &LocalStoredT
             }),
         "document_path_in_folder" => {
             let folder = normalize_folder_path(rule.matcher["folderPath"].as_str().unwrap_or("."));
-            folder == "." || document.path.starts_with(&format!("{folder}/"))
+            folder == "."
+                || (target_kind == LocalTagRecommendationTargetKind::Folder
+                    && document.path == folder)
+                || document.path.starts_with(&format!("{folder}/"))
         }
         "modified_time_between" => {
+            if target_kind != LocalTagRecommendationTargetKind::Document {
+                return false;
+            }
             let parse = |value: &str| chrono::DateTime::parse_from_rfc3339(value).ok();
             let Some(time) = parse(&document.mtime) else {
                 return false;

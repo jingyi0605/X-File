@@ -5,6 +5,7 @@ import { readCatalogSnapshot, runNativeLibraryWorker } from "@x-file/indexer";
 import type {
   LibraryDocumentTagDetails,
   LibraryFolderTagDetails,
+  LibraryResolvedTagSource,
   LibraryTagDetailWithRules,
   LibraryTagNodeDetail,
 } from "@x-file/shared";
@@ -788,18 +789,39 @@ function readCatalogDocumentContext(rootDir: string, documentId: string, filePat
   return document ? { ...document, modifiedAt: document.mtime } : null;
 }
 
-function readCatalogResolvedTags(rootDir: string, documentId: string, data: StoredLibraryTags) {
+function readCatalogResolvedTags(
+  rootDir: string,
+  documentId: string,
+  data: StoredLibraryTags,
+): LibraryResolvedTagSource[] {
   const document = readCatalogSnapshot(rootDir)?.documents.find(item => item.documentId === documentId);
   if (!document) return [];
-  return [...document.tags, ...document.derivedTags].map(tagPath => {
+  const resolved = new Map<string, LibraryResolvedTagSource>();
+  for (const tagPath of [...document.tags, ...document.derivedTags]) {
     const tag = data.tags.find(item => item.path === tagPath);
     const rules = data.tagRules.filter(rule => rule.enabled && rule.tagId === tag?.id);
     const rule = resolveMatchedRecommendationRule({ kind: "document", path: document.path,
       title: document.title, content: document.summary, extension: path.extname(document.path), modifiedAt: document.mtime }, rules);
-    return { path: tagPath, sourceType: rule ? "smart_rule" as const : "system_derived" as const,
+    resolved.set(tagPath, { path: tagPath, sourceType: rule ? "smart_rule" : "system_derived",
       sourceRef: rule?.id ?? null, evidence: rule ? resolveRecommendationRuleEvidence(rule) : null,
-      confidence: 1, priority: rule ? 60 : 40 };
-  });
+      confidence: 1, priority: rule ? 60 : 40 });
+  }
+  for (const tag of data.tags.filter(item => item.status === "active")) {
+    const rules = data.tagRules.filter(rule => rule.enabled && rule.tagId === tag.id);
+    const rule = resolveMatchedRecommendationRule({ kind: "document", path: document.path,
+      title: document.title, content: document.summary, extension: path.extname(document.path), modifiedAt: document.mtime }, rules);
+    if (rule) {
+      resolved.set(tag.path, {
+        path: tag.path,
+        sourceType: "smart_rule",
+        sourceRef: rule.id,
+        evidence: resolveRecommendationRuleEvidence(rule),
+        confidence: 1,
+        priority: 60,
+      });
+    }
+  }
+  return [...resolved.values()];
 }
 
 function mergeResolvedTagSources<

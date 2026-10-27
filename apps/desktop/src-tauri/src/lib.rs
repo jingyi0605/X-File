@@ -1182,6 +1182,18 @@ struct LocalResolvedTagSource {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct LocalSuppressedTagSource {
+    path: String,
+    source_type: String,
+    source_ref: Option<String>,
+    evidence: Option<String>,
+    confidence: f64,
+    priority: i64,
+    suppressed_by_path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct LocalLibraryTagRecommendation {
     tag_id: String,
     path: String,
@@ -1200,6 +1212,7 @@ struct LocalLibraryDocumentTagDetails {
     manual_tag_ids: Vec<String>,
     effective_folder_bindings: Vec<Value>,
     resolved_tags: Vec<LocalResolvedTagSource>,
+    suppressed_tags: Vec<LocalSuppressedTagSource>,
     recommended_tags: Vec<LocalLibraryTagRecommendation>,
 }
 
