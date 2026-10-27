@@ -1,13 +1,23 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { AgentIntegrationSettings as Settings, SaveAgentIntegrationSettingsInput } from "@x-file/shared";
 
 import { t } from "../../i18n";
-import { toApiErrorMessage } from "../../api/http";
+import { ApiClientError, resolveApiUrl, toApiErrorMessage } from "../../api/http";
+import { InterfaceIcon } from "../../shared/InterfaceIcon";
 import { SettingsModule } from "./SettingsModule";
 import {
-  getNativeAgentIntegrationSettings,
-  saveNativeAgentIntegrationSettings,
-} from "../../runtime/native-library-bridge";
+  AGENT_SETTINGS_PATH,
+  getAgentIntegrationSettings,
+  saveAgentIntegrationSettings,
+  usesNativeAgentSettings,
+} from "../../api/agent-integration";
+import { useRuntimeConfigSelector } from "../../runtime/runtime-config-store";
+
+interface ApiKeyInputState {
+  value: string;
+  mode: "draft" | "generated" | "masked";
+  copied?: boolean;
+}
 
 // 终端示例使用对应平台的字面量转义，路径不作为可执行脚本拼接。
 function quote(value: string, windows: boolean): string {
@@ -51,47 +61,64 @@ export function buildAgentExamples(settings: Settings, readOnly: boolean) {
   };
 }
 
-export function AgentIntegrationSettings({ mirrorMode }: { mirrorMode: boolean }) {
+export function AgentIntegrationSettings() {
+  const runtime = useRuntimeConfigSelector((state) => state.config);
+  const native = usesNativeAgentSettings();
+  const target = native ? "native" : new URL(resolveApiUrl(AGENT_SETTINGS_PATH), window.location.href).href;
+  // 主机或模式变化时卸载表单，防止旧主机的令牌、密钥和异步结果流入新主机。
+  return <AgentIntegrationForm key={`${runtime.mode}:${target}`} native={native}
+    target={native ? t("agentLocalHost") : new URL(target).origin} mirrorMode={runtime.mode === "mirror"} />;
+}
+
+function AgentIntegrationForm({ native, target, mirrorMode }: { native: boolean; target: string; mirrorMode: boolean }) {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [key, setKey] = useState("");
-  const [generatedKey, setGeneratedKey] = useState("");
+  const [keyInput, setKeyInput] = useState<ApiKeyInputState>({ value: "", mode: "draft" });
+  const keyInputRef = useRef<HTMLInputElement>(null);
+  const keyInputId = useId();
   const [readOnly, setReadOnly] = useState(true);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [tokenDraft, setTokenDraft] = useState("");
+  const [connection, setConnection] = useState({ token: "", revision: 0 });
+  const tokenInputId = useId();
 
   useEffect(() => {
     let active = true;
     setLoading(true);
     setSettings(null);
-    setGeneratedKey("");
-    setKey("");
+    setKeyInput({ value: "", mode: "draft" });
     setError("");
-    if (mirrorMode) {
-      setLoading(false);
-      return;
-    }
-    void getNativeAgentIntegrationSettings()
+    setMessage("");
+    void getAgentIntegrationSettings(connection.token)
       .then((value) => { if (active) setSettings(value); })
-      .catch((reason) => { if (active) setError(toApiErrorMessage(reason)); })
+      .catch((reason) => {
+        if (active) setError(reason instanceof ApiClientError && reason.status === 404
+          ? t("agentUnavailable") : toApiErrorMessage(reason));
+      })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [mirrorMode]);
+  }, [connection]);
+
+  useEffect(() => {
+    if (keyInput.mode === "generated") {
+      keyInputRef.current?.focus({ preventScroll: true });
+      keyInputRef.current?.select();
+    }
+  }, [keyInput]);
 
   async function save(input: SaveAgentIntegrationSettingsInput) {
     setBusy(true);
     setError("");
     setMessage("");
     // 每次修改都移除上一次的一次性明文。
-    setGeneratedKey("");
+    setKeyInput((current) => current.mode === "draft" ? current : { value: "", mode: "draft" });
     try {
-      const result = await saveNativeAgentIntegrationSettings(input);
-      if (!result) throw new Error(t("agentUnavailable"));
+      const result = await saveAgentIntegrationSettings(input, connection.token);
       setSettings(result.settings);
-      setKey("");
-      setGeneratedKey(result.apiKey ?? "");
-      setMessage(t("agentSaved"));
+      setKeyInput({ value: result.apiKey ?? "", mode: result.apiKey ? "generated" : "draft" });
+      setMessage(t(result.apiKey ? "agentKeyOnce" : "agentSaved"));
     } catch (reason) {
       setError(toApiErrorMessage(reason));
     } finally {
@@ -99,16 +126,31 @@ export function AgentIntegrationSettings({ mirrorMode }: { mirrorMode: boolean }
     }
   }
 
-  async function copy(text: string) {
+  async function copy(text: string, onCopied?: () => void) {
+    setError("");
+    setMessage("");
     try {
       await navigator.clipboard.writeText(text);
+      onCopied?.();
       setMessage(t("agentCopied"));
     } catch {
       setError(t("agentCopyFailed"));
     }
   }
 
+  async function copyKey() {
+    const value = keyInput.value;
+    setKeyInput((current) => ({ ...current, copied: false }));
+    await copy(value, () => setKeyInput((current) =>
+      current.mode !== "draft" && current.value === value
+        ? { ...current, copied: true }
+        : current,
+    ));
+  }
+
   const examples = settings ? buildAgentExamples(settings, readOnly) : null;
+  const canSaveKey = !busy && keyInput.mode === "draft" && keyInput.value.length >= 32;
+  const canCopyKey = keyInput.mode !== "draft" && keyInput.value.length > 0;
   return (
     <SettingsModule
       title={t("agentTitle")}
@@ -134,9 +176,25 @@ export function AgentIntegrationSettings({ mirrorMode }: { mirrorMode: boolean }
         </>
       ) : null}
     >
+      <p className="settings-helper-text">{t("agentTargetHost", { host: target })}</p>
+      {!native ? (
+        <form className="settings-agent-form" onSubmit={(event) => {
+          event.preventDefault();
+          if (!busy && !loading) setConnection((current) => ({ token: tokenDraft.trim(), revision: current.revision + 1 }));
+        }}>
+          <div className="modal-field">
+            <label htmlFor={tokenInputId}>{t("agentManagementToken")}</label>
+            <input id={tokenInputId} type="password" value={tokenDraft} autoComplete="off" maxLength={512}
+              onChange={(event) => setTokenDraft(event.target.value)} disabled={busy || loading} />
+          </div>
+          <p className="settings-helper-text">{t("agentManagementHint")}</p>
+          <div className="button-row">
+            <button type="submit" className="secondary-button" disabled={busy || loading}>{t("agentConnect")}</button>
+          </div>
+        </form>
+      ) : null}
       {loading ? <p>{t("agentLoading")}</p> : null}
       {mirrorMode ? <p className="inline-note">{t("agentMirrorNotice")}</p> : null}
-      {!loading && !mirrorMode && !settings ? <p className="inline-note">{t("agentUnavailable")}</p> : null}
       {settings && examples ? (
         <>
           <section className="settings-module-group" aria-label="API Key">
@@ -147,15 +205,30 @@ export function AgentIntegrationSettings({ mirrorMode }: { mirrorMode: boolean }
             <p className="settings-helper-text">{t("agentGateHint")}</p>
             <form className="settings-agent-form" onSubmit={(event) => {
               event.preventDefault();
-              void save({ apiKey: key });
+              if (canSaveKey) void save({ apiKey: keyInput.value });
             }}>
-              <label>
-                <span>{t("agentKeyLabel")}</span>
-                <input type="password" value={key} autoComplete="new-password" minLength={32} maxLength={512}
-                  onChange={(event) => setKey(event.target.value)} disabled={busy} />
-              </label>
+              <div className="modal-field">
+                <label htmlFor={keyInputId}>{t("agentKeyLabel")}</label>
+                <div className="input-with-action" data-has-action={canCopyKey ? "true" : undefined}>
+                  <input id={keyInputId} ref={keyInputRef} type={keyInput.mode === "generated" ? "text" : "password"}
+                    value={keyInput.value} placeholder={settings.apiKeyConfigured ? "\u2022".repeat(12) : undefined}
+                    autoComplete="new-password" minLength={32} maxLength={512}
+                    onChange={(event) => setKeyInput({ value: event.target.value, mode: "draft" })}
+                    onBlur={() => setKeyInput((current) => current.mode === "generated" ? { ...current, mode: "masked" } : current)}
+                    disabled={busy} />
+                  {canCopyKey ? (
+                    <button type="button" className="secondary-button input-with-action-button"
+                      aria-label={t(keyInput.copied ? "agentCopied" : "agentCopyKey")}
+                      title={t(keyInput.copied ? "agentCopied" : "agentCopyKey")}
+                      data-copied={keyInput.copied ? "true" : undefined} disabled={busy}
+                      onClick={() => void copyKey()}>
+                      <InterfaceIcon name={keyInput.copied ? "check" : "copy"} />
+                    </button>
+                  ) : null}
+                </div>
+              </div>
               <div className="button-row">
-                <button type="submit" className="primary-button" disabled={busy || key.length < 32}>{t("agentSaveKey")}</button>
+                <button type="submit" className="primary-button" disabled={!canSaveKey}>{t("agentSaveKey")}</button>
                 <button type="button" className="secondary-button" disabled={busy}
                   onClick={() => void save({ generateApiKey: true })}>{t(settings.apiKeyConfigured ? "agentRotateKey" : "agentGenerateKey")}</button>
                 <button type="button" className="danger-button" disabled={busy || !settings.apiKeyConfigured}
@@ -163,15 +236,6 @@ export function AgentIntegrationSettings({ mirrorMode }: { mirrorMode: boolean }
               </div>
             </form>
             <p className="settings-helper-text">{t("agentKeyHint")}</p>
-            {generatedKey ? (
-              <div className="settings-agent-form">
-                <label><span>{t("agentKeyOnce")}</span><input type="password" readOnly value={generatedKey} /></label>
-                <div className="button-row">
-                  <button type="button" className="secondary-button" onClick={() => void copy(generatedKey)}>{t("agentCopyKey")}</button>
-                  <button type="button" className="secondary-button" onClick={() => setGeneratedKey("")}>{t("agentDismissKey")}</button>
-                </div>
-              </div>
-            ) : null}
           </section>
           <section className="settings-module-group" aria-label={t("agentConfiguration")}>
             <h4 className="settings-module-title">{t("agentConfiguration")}</h4>
