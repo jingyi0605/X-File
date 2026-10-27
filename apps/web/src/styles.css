@@ -161,6 +161,10 @@
   --glass-control-hover: rgba(255, 255, 255, 0.96);
   --glass-control-border: rgba(255, 255, 255, 0.82);
   --glass-control-shadow: 0 3px 13px rgba(0, 0, 0, 0.03), inset 0 1px 0 rgba(255, 255, 255, 0.92);
+  --text-input-surface: var(--modal-control-surface);
+  --text-input-surface-hover: var(--modal-control-surface-hover);
+  --text-input-radius: var(--radius-pill);
+  --text-input-focus-shadow: var(--modal-control-focus-ring);
   --primary-button-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
   --primary-button-shadow-hover: 0 7px 20px rgba(0, 0, 0, 0.16);
   --selection-glow: 0 4px 14px rgba(10, 132, 255, 0.18);
@@ -363,13 +367,12 @@ button:disabled {
 
 input {
   min-width: 0;
-  border: 1px solid var(--modal-control-border);
-  border-radius: var(--radius-control);
-  background: var(--modal-control-surface);
+  border: 1px solid transparent;
+  border-radius: var(--text-input-radius);
+  background: var(--text-input-surface);
   color: var(--text-primary);
   outline: none;
   transition: background var(--transition-fast),
-    border-color var(--transition-fast),
     box-shadow var(--transition-fast);
 }
 
@@ -448,12 +451,12 @@ textarea {
 input:hover:not(:disabled),
 select:hover:not(:disabled),
 textarea:hover:not(:disabled) {
-  background: var(--modal-control-surface-hover);
+  background: var(--text-input-surface-hover);
 }
 
 input:focus {
-  border-color: var(--modal-control-border-focus);
-  box-shadow: var(--modal-control-focus-ring);
+  background: var(--text-input-surface-hover);
+  box-shadow: var(--text-input-focus-shadow);
 }
 
 select:focus {
@@ -4204,34 +4207,9 @@ mark {
   width: 100%;
   min-height: var(--control-height-lg);
   padding: 0 calc(var(--space-4) * 1.2);
-  border: 1px solid var(--modal-control-border, transparent);
-  border-radius: calc(var(--radius-control) * 0.85);
-  background: var(--modal-control-surface, rgba(0, 0, 0, 0.024));
   color: var(--text-primary);
   font-family: var(--font-sans);
   font-size: 14px;
-  outline: none;
-  transition:
-    border-color var(--transition-fast),
-    background var(--transition-fast),
-    box-shadow var(--transition-fast),
-    transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02), inset 0 1px 2px rgba(0, 0, 0, 0.03);
-}
-
-.http-auth-form input:hover {
-  background: var(--modal-control-surface-hover, rgba(0, 0, 0, 0.032));
-  border-color: color-mix(in srgb, var(--border-primary) 80%, transparent);
-}
-
-.http-auth-form input:focus {
-  background: var(--modal-control-surface-hover, rgba(0, 0, 0, 0.028));
-  border-color: var(--modal-control-border-focus, rgba(0, 122, 255, 0.14));
-  box-shadow:
-    var(--modal-control-focus-ring, 0 0 0 3px rgba(0, 122, 255, 0.048)),
-    0 4px 16px rgba(0, 0, 0, 0.04),
-    inset 0 1px 2px rgba(0, 0, 0, 0.02);
-  transform: translateY(-1px);
 }
 
 .http-auth-form .primary-button {
@@ -5173,7 +5151,10 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
 .affairs-tag-management-editor select {
   min-height: 36px;
   padding: 7px 11px;
-  border-radius: 11px;
+}
+
+.affairs-tag-management-editor select {
+  border-radius: var(--radius-control);
   border-color: color-mix(in srgb, var(--panel-border) 92%, transparent);
   background: color-mix(in srgb, var(--glass-tint) 97%, transparent);
   box-shadow: inset 0 1px 0 color-mix(in srgb, #ffffff 36%, transparent);
@@ -5186,13 +5167,8 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
   height: var(--control-height-md);
   max-height: var(--control-height-md);
   padding: 0 var(--space-4);
-  border-radius: var(--radius-control);
   font-size: 13px;
   line-height: 1.2;
-  border-color: color-mix(in srgb, var(--panel-border) 86%, transparent);
-  background: color-mix(in srgb, var(--glass-tint) 94%, transparent);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, #ffffff 32%, transparent),
-    0 0 0 0 transparent;
 }
 
 .affairs-library-settings-modal .affairs-tag-name-input {
@@ -5201,7 +5177,6 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
   height: var(--control-height-md);
   max-height: var(--control-height-md);
   padding: 0 var(--space-4);
-  border-radius: var(--radius-control);
   font-size: 13px;
 }
 
@@ -5271,7 +5246,6 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
     0 0 0 2px color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
-.affairs-tag-management-editor input:focus,
 .affairs-tag-management-editor select:focus {
   border-color: color-mix(in srgb, var(--accent) 32%, var(--panel-border));
 }
@@ -5430,7 +5404,6 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
 .affairs-tag-smart-rule-value-row select {
   min-height: var(--control-height-md);
   padding: 6px 10px;
-  border-radius: var(--radius-control);
 }
 
 .affairs-tag-smart-rule-top-row select,
@@ -6759,33 +6732,15 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
 
 .affairs-document-tag-input-label input {
   width: 100%;
-  min-height: 32px;
+  min-height: var(--control-height-md);
   box-sizing: border-box;
-  border: 1px solid transparent;
-  border-radius: 10px;
-  background: transparent;
-  color: var(--text-primary);
-  padding: 0 12px;
+  padding: 0 var(--space-4);
   font-size: 12px;
-  transition: background var(--transition-fast),
-    border-color var(--transition-fast),
-    box-shadow var(--transition-fast),
-    color var(--transition-fast);
 }
 
-.affairs-document-tag-input-label input::placeholder {
-  color: color-mix(in srgb, var(--text-tertiary) 68%, transparent);
-}
-
-.affairs-document-tag-input-label input:hover {
-  background: color-mix(in srgb, var(--panel-hover) 42%, transparent);
-}
-
-.affairs-document-tag-input-label input:focus {
-  outline: none;
-  border-color: color-mix(in srgb, var(--accent) 18%, transparent);
-  background: color-mix(in srgb, var(--accent) 6%, transparent);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 10%, transparent);
+.affairs-document-tag-input-label input:disabled {
+  cursor: wait;
+  opacity: 0.68;
 }
 
 .affairs-color-tag {
@@ -7245,13 +7200,8 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
 
 .static-html-presentation-layout-field input {
   height: 28px;
-  border-radius: 8px;
-  border: 1px solid var(--modal-control-border);
-  background: var(--modal-control-surface);
-  color: var(--text-primary);
   padding: 0 9px;
   font-size: 12px;
-  box-shadow: var(--modal-control-shadow);
 }
 
 .static-html-presentation-layout-hint {
@@ -9749,7 +9699,10 @@ textarea::placeholder {
   color: var(--text-tertiary);
 }
 
-input:focus,
+input:focus {
+  background: var(--text-input-surface-hover);
+}
+
 select:focus,
 textarea:focus {
   background: var(--bg-surface);
@@ -11278,29 +11231,6 @@ input[type="range"] {
   text-shadow: 0 0 20px rgba(10, 132, 255, 0.3);
 }
 
-[data-theme="dark"] .http-auth-form input {
-  background: rgba(255, 255, 255, 0.05);
-  border-color: rgba(255, 255, 255, 0.08);
-  box-shadow:
-    0 2px 10px rgba(0, 0, 0, 0.15),
-    inset 0 1px 3px rgba(0, 0, 0, 0.2);
-}
-
-[data-theme="dark"] .http-auth-form input:hover {
-  background: rgba(255, 255, 255, 0.07);
-  border-color: rgba(255, 255, 255, 0.12);
-}
-
-[data-theme="dark"] .http-auth-form input:focus {
-  background: rgba(255, 255, 255, 0.06);
-  border-color: var(--modal-control-border-focus, color-mix(in srgb, var(--accent) 42%, rgba(255, 255, 255, 0.12)));
-  box-shadow:
-    var(--modal-control-focus-ring, 0 0 0 3px rgba(10, 132, 255, 0.18)),
-    0 0 30px rgba(10, 132, 255, 0.15),
-    0 4px 20px rgba(0, 0, 0, 0.3),
-    inset 0 1px 3px rgba(0, 0, 0, 0.15);
-}
-
 [data-theme="dark"] .http-auth-form .primary-button {
   box-shadow:
     0 0 40px rgba(255, 255, 255, 0.1),
@@ -11347,15 +11277,6 @@ input[type="range"] {
 [data-theme="eye-green"] .http-auth-eyebrow {
   color: var(--accent);
   text-shadow: 0 0 15px rgba(22, 163, 74, 0.2);
-}
-
-[data-theme="eye-green"] .http-auth-form input:focus {
-  border-color: color-mix(in srgb, var(--accent) 35%, rgba(22, 163, 74, 0.14));
-  box-shadow:
-    0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent),
-    0 0 25px rgba(22, 163, 74, 0.08),
-    0 4px 16px rgba(0, 0, 0, 0.04),
-    inset 0 1px 2px rgba(0, 0, 0, 0.02);
 }
 
 [data-theme="eye-green"] .http-auth-form .primary-button {
