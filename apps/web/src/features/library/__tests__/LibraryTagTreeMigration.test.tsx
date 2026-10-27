@@ -303,6 +303,36 @@ describe("第 8 批：标签筛选树、多选过滤、徽标计数、排序、�
     expect(await screen.findByRole("button", { name: /方案/ })).toBeInTheDocument();
   });
 
+  it("标签筛选目录视图为三级及更深目录保留各自层级缩进", async () => {
+    mockTags([tag("项目", 1), tag("项目/Alpha", 1, { parentPath: "项目", depth: 1 })]);
+    libraryApiMock.listLibraryDocuments.mockResolvedValue(
+      createDocumentList([
+        createDocumentRecord({
+          documentId: "nested-document",
+          path: "一级/二级/三级/四级/文档.md",
+        }),
+      ], { total: 1 }),
+    );
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={() => undefined} platformData={platformData} />);
+
+    await expandTag("项目");
+    await userEvent.click(await screen.findByRole("button", { name: /Alpha/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "列表" }));
+    await userEvent.click(await screen.findByRole("button", { name: "目录" }));
+
+    for (const [name, depth] of [["一级", "1"], ["二级", "2"], ["三级", "3"], ["四级", "4"]]) {
+      const row = await screen.findByRole("button", { name: new RegExp(name) });
+      expect(row.querySelector(".affairs-finder-name-cell"))
+        .toHaveStyle({ "--affairs-finder-depth": depth });
+    }
+
+    const documentRow = await screen.findByRole("button", { name: /文档\.md/ });
+    expect(documentRow.querySelector(".affairs-finder-name-cell"))
+      .toHaveStyle({ "--affairs-finder-depth": "4" });
+  });
+
   it("列表视图下标签筛选后的文档点击只更新选中态，不会重新请求列表", async () => {
     mockTags([tag("项目", 1), tag("项目/Alpha", 1, { parentPath: "项目", depth: 1 })]);
     libraryApiMock.listLibraryDocuments.mockResolvedValue(

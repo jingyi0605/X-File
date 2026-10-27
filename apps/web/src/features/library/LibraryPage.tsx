@@ -4266,7 +4266,12 @@ function LibraryFinderRow({
           onOpenContextMenu(event, { kind: "folder", entry });
         }}
       >
-        <span className="affairs-finder-name-cell">
+        <span
+          className="affairs-finder-name-cell"
+          style={{
+            "--affairs-finder-depth": entry.kind === "tag-directory" ? entry.depth : 0,
+          } as CSSProperties}
+        >
           {entry.kind === "tag-directory" ? (
             <span className="affairs-finder-disclosure" aria-hidden="true">▾</span>
           ) : null}
