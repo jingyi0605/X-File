@@ -2376,11 +2376,7 @@ function LibraryBindingPanel({
               className="library-init-logo-panel"
               aria-label={t("appTitle")}
             >
-              <img
-                className="library-init-logo"
-                src="/x-file-logo.svg"
-                alt={t("appTitle")}
-              />
+              <XFileLogo className="library-init-logo" />
             </aside>
           </div>
         </div>
@@ -9609,8 +9605,15 @@ function renderDocumentShape(filePath: string, mode: "grid" | "row" = "grid") {
 }
 
 function renderXFileBrandIcon() {
+  return <XFileLogo />;
+}
+
+function XFileLogo({ className = "" }: { className?: string }) {
   return (
-    <img src="/x-file-logo.svg" alt="" />
+    <span className={`x-file-logo ${className}`} aria-hidden="true">
+      <img className="x-file-logo-light" src="/x-file-logo-light.png" alt="" />
+      <img className="x-file-logo-dark" src="/x-file-logo-dark.png" alt="" />
+    </span>
   );
 }
 
