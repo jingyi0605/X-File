@@ -1,5 +1,5 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
 
 use hmac::{Hmac, Mac};
@@ -78,6 +78,46 @@ pub(crate) fn get_settings() -> Result<SettingsView, String> {
 
 pub(crate) fn save_settings(input: SettingsInput) -> Result<SettingsSaved, String> {
     save_in(&crate::x_file_data_dir(), input).map_err(|error| error.message)
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "operation", rename_all = "camelCase", deny_unknown_fields)]
+enum WorkerRequest {
+    Get {},
+    Save { input: SettingsInput },
+}
+
+// 管理入口仅供主机 HTTP 服务调用，复用桌面端的锁、摘要和原子写入。
+pub(crate) fn run_worker() -> Result<String, String> {
+    let mut raw = String::new();
+    std::io::stdin()
+        .take(8193)
+        .read_to_string(&mut raw)
+        .map_err(|_| "无法读取 Agent 设置请求".to_string())?;
+    Ok(worker_response(&crate::x_file_data_dir(), &raw).to_string())
+}
+
+fn worker_response(directory: &Path, raw: &str) -> serde_json::Value {
+    let result = (|| -> Result<serde_json::Value, ToolError> {
+        if raw.len() > 8192 {
+            return Err(ToolError::new("INVALID_ARGUMENT", "Agent 设置请求过大"));
+        }
+        // 解析错误不回显输入，避免密钥出现在响应或日志中。
+        let request: WorkerRequest = serde_json::from_str(raw)
+            .map_err(|_| ToolError::new("INVALID_ARGUMENT", "Agent 设置请求格式无效"))?;
+        match request {
+            WorkerRequest::Get {} => {
+                serde_json::to_value(view(directory, read_record(directory)?)?).map_err(Into::into)
+            }
+            WorkerRequest::Save { input } => {
+                serde_json::to_value(save_in(directory, input)?).map_err(Into::into)
+            }
+        }
+    })();
+    match result {
+        Ok(result) => serde_json::json!({ "ok": true, "result": result }),
+        Err(error) => serde_json::json!({ "ok": false, "error": error }),
+    }
 }
 
 fn save_in(directory: &Path, input: SettingsInput) -> Result<SettingsSaved, ToolError> {

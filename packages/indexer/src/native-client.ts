@@ -56,7 +56,7 @@ export interface NativeLibraryResult {
   exportResult: NativeExportResult;
 }
 
-function resolveNativeCli(): string {
+export function resolveNativeCli(): string {
   const configured = process.env.X_FILE_DESKTOP_CLI_PATH;
   if (configured) return configured;
   const desktop = path.join(workspaceRoot, "apps/desktop");
