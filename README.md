@@ -53,11 +53,11 @@ pnpm benchmark:index -- --files 10000 --dirs 100
 
 调试脚本只保留前后端独立入口：
 
-- `pnpm dev:server`：只启动后端调试服务，默认 `http://0.0.0.0:17321`。
-- `pnpm dev:web`：只启动前端调试服务，默认 `http://0.0.0.0:17320`。
+- `pnpm dev:server`：只启动后端调试服务，默认读取仓库内 `.x-file-dev/http-server-state.json`；没有有效配置时仅监听 `127.0.0.1:17321`。
+- `pnpm dev:web`：只启动前端调试服务，固定监听 `http://127.0.0.1:17320`，仅供本机使用。
 - 前端 `/api/*` 会代理到本机后端 `http://127.0.0.1:17321`。
 
-可通过环境变量覆盖：`X_FILE_WEB_HOST`、`X_FILE_WEB_PORT`、`X_FILE_SERVER_HOST`、`X_FILE_SERVER_PORT`。后端调试脚本会显式设置 `X_FILE_ALLOW_PUBLIC_HOST=1`，并把 HTTP 状态写到仓库内 `.x-file-dev/http-server-state.json`，避免污染正式用户配置。
+可通过环境变量覆盖端口和后端地址：`X_FILE_WEB_PORT`、`X_FILE_SERVER_HOST`、`X_FILE_SERVER_PORT`。前端调试服务不支持绑定局域网网卡，避免 Vite 代理把局域网请求转发成本机回环请求并绕过 LAN 认证。独立后端调试脚本会显式设置 `X_FILE_ALLOW_PUBLIC_HOST=1`，并把 HTTP 状态写到仓库内 `.x-file-dev/http-server-state.json`，避免污染正式用户配置；仅当该状态文件已保存有效认证凭据时，才能监听 LAN 地址。桌面开发堆栈则与桌面设置共用 `~/.x-file/http-server-state.json`（或 `X_FILE_DATA_DIR` 指定的数据目录），确保 sidecar 读取同一份认证配置。
 
 `pnpm dev:desktop` 现在直接走 `pnpm --filter @x-file/desktop tauri:dev`，会按 Tauri dev 流程自动拉起前端开发服务并启动桌面调试窗口。正式桌面骨架校验使用 `pnpm --filter @x-file/desktop build`，它会跑 TypeScript 编译和 Tauri Rust `cargo check`。
 

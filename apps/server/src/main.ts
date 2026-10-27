@@ -3,8 +3,7 @@ import { pathToFileURL } from "node:url";
 import { createServer } from "./app.js";
 import { getDefaultHttpServerHost, getDefaultHttpServerPort, HttpServerManager } from "./http-server-manager.js";
 
-function readPort() {
-  const rawPort = process.env.X_FILE_SERVER_PORT;
+function readPort(rawPort = process.env.X_FILE_SERVER_PORT) {
   if (!rawPort) {
     return getDefaultHttpServerPort();
   }
@@ -19,23 +18,44 @@ function readPort() {
 
 async function main() {
   const httpServerManager = new HttpServerManager();
-  httpServerManager.bindServerFactory(() => createServer({
-    httpServerManager,
-    manageHttpServerLifecycle: true,
-    sidecarProfile: resolveStandaloneSidecarProfile()
-  }));
+  try {
+    httpServerManager.bindServerFactory(() => createServer({
+      httpServerManager,
+      manageHttpServerLifecycle: true,
+      sidecarProfile: resolveStandaloneSidecarProfile()
+    }));
 
-  const host = process.env.X_FILE_SERVER_HOST ?? httpServerManager.getState().host ?? getDefaultHttpServerHost();
-  const port = process.env.X_FILE_SERVER_PORT ? readPort() : httpServerManager.getState().port;
-  httpServerManager.save({
-    enabled: httpServerManager.getState().enabled,
+    configureInitialHttpServerState(httpServerManager, process.env);
+
+    if (httpServerManager.getState().enabled) {
+      await httpServerManager.start();
+    }
+  } catch (error) {
+    httpServerManager.markError(error);
+    throw error;
+  }
+}
+
+export function configureInitialHttpServerState(
+  manager: HttpServerManager,
+  environment: NodeJS.ProcessEnv,
+) {
+  const current = manager.getState();
+  const requestedHost = environment.X_FILE_SERVER_HOST?.trim();
+  const host = requestedHost || (
+    !current.authConfigured && current.host !== getDefaultHttpServerHost()
+      ? getDefaultHttpServerHost()
+      : current.host
+  );
+  const port = environment.X_FILE_SERVER_PORT
+    ? readPort(environment.X_FILE_SERVER_PORT)
+    : current.port;
+
+  return manager.save({
+    enabled: current.enabled,
     host,
     port
   });
-
-  if (httpServerManager.getState().enabled) {
-    await httpServerManager.start();
-  }
 }
 
 export function resolveStandaloneSidecarProfile(): "full" | "sidecar-only" {
@@ -48,7 +68,6 @@ export function resolveStandaloneSidecarProfile(): "full" | "sidecar-only" {
 
 if (isCliEntry()) {
   main().catch((error) => {
-    new HttpServerManager().markError(error);
     console.error(error);
     process.exitCode = 1;
   });

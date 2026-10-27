@@ -5,6 +5,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 export X_FILE_NODE_SIDECAR_PROFILE="${X_FILE_NODE_SIDECAR_PROFILE:-full}"
+DESKTOP_DATA_DIR="${X_FILE_DATA_DIR:-${HOME}/.x-file}"
+export X_FILE_SERVER_STATE_PATH="${X_FILE_SERVER_STATE_PATH:-${DESKTOP_DATA_DIR}/http-server-state.json}"
+unset X_FILE_SERVER_HOST X_FILE_SERVER_PORT
 
 children=()
 
