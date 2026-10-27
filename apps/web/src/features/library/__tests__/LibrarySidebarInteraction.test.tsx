@@ -3,6 +3,8 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it } from "vitest";
 
 import {
+  createDocumentList,
+  createDocumentRecord,
   createLibrarySnapshot,
   installLibraryApiMock,
   libraryApiMock,
@@ -17,29 +19,82 @@ beforeEach(() => {
   resetLibraryApiMock();
 });
 
-it("常驻快速查找按 Enter 后以输入的关键词执行真实文档搜索", async () => {
+it("常驻快速查找按 Enter 后在文件列表上方显示搜索结果", async () => {
   const { LibraryPage } = await import("../LibraryPage");
   render(<LibraryPage onOpenSettings={() => undefined} platformData={platformData} />);
   const input = await screen.findByRole("searchbox", { name: "快速查找文件" });
   await userEvent.type(input, "  项目方案  {Enter}");
-  const dialog = await screen.findByRole("dialog", { name: "搜索文档库" });
-  expect(within(dialog).getByRole("searchbox", { name: "关键词" })).toHaveValue("项目方案");
+  const search = await screen.findByRole("region", { name: "搜索文档库" });
+  expect(within(search).getByRole("tab", { name: "当前结果" })).toHaveAttribute("aria-selected", "true");
   await waitFor(() => expect(libraryApiMock.listLibraryDocuments).toHaveBeenCalledWith(
     expect.objectContaining({ keyword: "项目方案", offset: 0 }),
   ));
-  expect(await within(dialog).findByText("没有匹配文档")).toBeInTheDocument();
+  expect(await screen.findByText("没有匹配文档")).toBeInTheDocument();
+  expect(screen.queryByRole("dialog", { name: "搜索文档库" })).not.toBeInTheDocument();
 });
 
-it("快速查找的 Escape 只清空输入，顶部搜索仍可单独打开", async () => {
+it("搜索条使用单选分段控件切换范围和匹配方式", async () => {
+  const { LibraryPage } = await import("../LibraryPage");
+  render(<LibraryPage onOpenSettings={() => undefined} platformData={platformData} />);
+  const input = await screen.findByRole("searchbox", { name: "快速查找文件" });
+  await userEvent.type(input, "方案{Enter}");
+  const search = await screen.findByRole("region", { name: "搜索文档库" });
+
+  await userEvent.click(within(search).getByRole("tab", { name: "所有文件" }));
+  await userEvent.click(within(search).getByRole("tab", { name: "索引内容" }));
+
+  await waitFor(() => expect(libraryApiMock.listLibraryDocuments).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      searchScope: "all",
+      searchMode: "content",
+      offset: 0,
+    }),
+  ));
+});
+
+it("搜索命中文档沿用原生网格文件卡片，不渲染独立搜索结果卡片", async () => {
+  libraryApiMock.listLibraryDocuments.mockResolvedValue(createDocumentList([
+    createDocumentRecord({
+      documentId: "doc-found",
+      path: "docs/地毯技术标.docx",
+      title: "地毯技术标.docx",
+    }),
+  ]));
+  const { LibraryPage } = await import("../LibraryPage");
+  render(<LibraryPage onOpenSettings={() => undefined} platformData={platformData} />);
+  const input = await screen.findByRole("searchbox", { name: "快速查找文件" });
+  await userEvent.type(input, "地毯{Enter}");
+
+  expect(await screen.findByText("地毯技术标.docx")).toBeInTheDocument();
+  expect(document.querySelector(".affairs-doc-item.grid")).not.toBeNull();
+  expect(document.querySelector(".library-search-result-item")).toBeNull();
+});
+
+it("主区域清除搜索会同步清空左侧快速搜索并隐藏筛选栏", async () => {
+  const { LibraryPage } = await import("../LibraryPage");
+  render(<LibraryPage onOpenSettings={() => undefined} platformData={platformData} />);
+  const quickSearch = await screen.findByRole("searchbox", { name: "快速查找文件" });
+  await userEvent.type(quickSearch, "方案{Enter}");
+  const search = await screen.findByRole("region", { name: "搜索文档库" });
+
+  await userEvent.click(within(search).getByRole("button", { name: "清除搜索" }));
+
+  await waitFor(() => {
+    expect(quickSearch).toHaveValue("");
+    expect(screen.queryByRole("region", { name: "搜索文档库" })).not.toBeInTheDocument();
+  });
+});
+
+it("快速查找的 Escape 只清空输入，工具栏搜索直接打开列表内搜索栏", async () => {
   const { LibraryPage } = await import("../LibraryPage");
   render(<LibraryPage onOpenSettings={() => undefined} platformData={platformData} />);
   const input = await screen.findByRole("searchbox", { name: "快速查找文件" });
   await userEvent.type(input, "方案{Escape}");
   expect(input).toHaveValue("");
-  expect(screen.queryByRole("dialog", { name: "搜索文档库" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("region", { name: "搜索文档库" })).not.toBeInTheDocument();
   const toolbar = document.querySelector(".affairs-stage-toolbar-right")!;
   await userEvent.click(within(toolbar as HTMLElement).getByRole("button", { name: "搜索文档库" }));
-  expect(await screen.findByRole("dialog", { name: "搜索文档库" })).toBeInTheDocument();
+  expect(await screen.findByRole("region", { name: "搜索文档库" })).toBeInTheDocument();
 });
 
 it("原生 details 支持十层标签嵌套，并保留顶部清除筛选操作", async () => {

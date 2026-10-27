@@ -105,6 +105,7 @@ import {
   OnlyOfficePreview,
   detectLanguage,
 } from "./LibraryFileCodeViewer";
+import { LibraryTaskCenter } from "./LibraryTaskCenter";
 import { useLibraryState, type LibraryState } from "./useLibraryState";
 import {
   DEFAULT_DETAIL,
@@ -275,17 +276,6 @@ type PendingTagAssignmentTarget =
   | { kind: "document"; documentId: string; path: string; title: string }
   | { kind: "folder"; folderPath: string; title: string };
 
-interface LibraryTagAssignmentTaskState {
-  readonly id: string;
-  readonly kind: "document" | "folder";
-  readonly targetPath: string;
-  readonly status: "running" | "completed" | "failed";
-  readonly message: string | null;
-  readonly totalCount: number;
-  readonly successCount: number;
-  readonly failedCount: number;
-}
-
 interface IndexStatusPopoverRow {
   label: string;
   value: string;
@@ -416,7 +406,6 @@ const LIBRARY_TAG_TREE_NOISE_ROOTS = new Set([
 const LIBRARY_TAG_TREE_VISIBLE_LIMIT = 5;
 const LIBRARY_TAG_TREE_STATE_KEY = "x-file.library.tag-tree";
 /** 索引状态弹窗悬停延时关闭的毫秒数，给指针移入弹窗留出余量。 */
-const INDEX_POPOVER_CLOSE_DELAY_MS = 320;
 const SIMPLE_PINYIN_MAP: Record<string, string> = {
   合: "he",
   同: "tong",
@@ -471,12 +460,12 @@ export function LibraryPage({
     useState<LibraryContextMenuTarget | null>(null);
   const [pendingTagAssignment, setPendingTagAssignment] =
     useState<PendingTagAssignmentTarget | null>(null);
-  const [tagAssignmentTask, setTagAssignmentTask] =
-    useState<LibraryTagAssignmentTaskState | null>(null);
   const [viewerState, setViewerState] = useState<LibraryViewerState | null>(null);
   const [tagManagerOpen, setTagManagerOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchDraft, setSearchDraft] = useState("");
+  const [searchFocusToken, setSearchFocusToken] = useState(0);
+  const [searchClearToken, setSearchClearToken] = useState(0);
   const libraryRef = useRef(library);
   const libraryClipboardRef = useRef<LibraryClipboardState | null>(libraryClipboard);
   const overlayMacOsTitlebar = platformData.runtimePlatform === "desktop"
@@ -634,6 +623,13 @@ export function LibraryPage({
   const handleOpenSearch = useCallback((keyword = ""): void => {
     setSearchDraft(keyword);
     setSearchOpen(true);
+    setSearchFocusToken((current) => current + 1);
+  }, []);
+
+  const handleCancelSearch = useCallback((): void => {
+    setSearchDraft("");
+    setSearchOpen(false);
+    setSearchClearToken((current) => current + 1);
   }, []);
 
   const handleOpenTagManager = useCallback((): void => {
@@ -1086,6 +1082,8 @@ export function LibraryPage({
         <MemoizedLibraryDesktopSidebar
           library={sidebarLibrary}
           onOpenSearch={handleOpenSearch}
+          onCancelSearch={handleCancelSearch}
+          searchClearToken={searchClearToken}
           onOpenSettings={onOpenSettings}
           onOpenTagManager={handleOpenTagManager}
           overlayMacOsTitlebar={overlayMacOsTitlebar}
@@ -1114,8 +1112,11 @@ export function LibraryPage({
             onRequestDelete={handleRequestDelete}
             onRequestTagAssignment={handleRequestTagAssignment}
             onOpenSearch={handleOpenSearch}
+            searchOpen={searchOpen}
+            searchInitialKeyword={searchDraft}
+            searchFocusToken={searchFocusToken}
+          onCancelSearch={handleCancelSearch}
             onOpenLibraryViewer={openLibraryViewer}
-            tagAssignmentTask={tagAssignmentTask}
           />
         </section>
         <WorkbenchPanelResizer
@@ -1147,24 +1148,6 @@ export function LibraryPage({
           onRequestTagAssignment={handleRequestTagAssignment}
         />
       ) : null}
-      {searchOpen ? (
-        <LibrarySearchModal
-          library={library}
-          keyword={searchDraft}
-          onKeywordChange={setSearchDraft}
-          onOpenDocument={(entry) => {
-            library.selectDocument(entry.documentId);
-            openLibraryViewer(entry);
-            setSearchOpen(false);
-          }}
-          onLocateDocument={(entry) => {
-            library.selectFolder(resolveDocumentFolderPath(entry.path));
-            library.selectDocument(entry.documentId);
-            setSearchOpen(false);
-          }}
-          onClose={() => setSearchOpen(false)}
-        />
-      ) : null}
       {pendingCreate ? (
         <LibraryCreateModal
           library={library}
@@ -1193,7 +1176,6 @@ export function LibraryPage({
           library={library}
           target={pendingTagAssignment}
           onClose={() => setPendingTagAssignment(null)}
-          onTaskChange={setTagAssignmentTask}
         />
       ) : null}
       {viewerState ? (
@@ -1285,96 +1267,19 @@ function LibraryDisabledPanel({
   );
 }
 
-function resolveLibraryTagTaskStatusText(
-  status: LibraryTagAssignmentTaskState["status"],
-): string {
-  if (status === "completed") return t("libraryTagTaskCompleted");
-  if (status === "failed") return t("libraryTagTaskFailed");
-  return t("libraryTagTaskRunning");
-}
-
-function resolveLibraryTagTaskProgressPercent(
-  task: LibraryTagAssignmentTaskState,
-): number {
-  if (task.status === "completed") return 100;
-  if (task.status === "failed" && task.totalCount <= 0) return 100;
-  if (task.totalCount <= 0) return task.status === "running" ? 0 : 100;
-  const handledCount = Math.min(
-    task.totalCount,
-    Math.max(0, task.successCount) + Math.max(0, task.failedCount),
-  );
-  return Math.round((handledCount / task.totalCount) * 100);
-}
-
-function resolveLibraryTagTaskInlineProgressLabel(
-  task: LibraryTagAssignmentTaskState | null,
-): string | null {
-  if (!task || task.status !== "running") return null;
-  return t("libraryTagTaskProgressCount", {
-    current: Math.min(
-      task.totalCount,
-      Math.max(0, task.successCount) + Math.max(0, task.failedCount),
-    ),
-    total: task.totalCount,
-  });
-}
-
-function resolveMergedIndexStatusDotState(
-  state: LibraryIndexState | undefined,
-  tagAssignmentTask: LibraryTagAssignmentTaskState | null,
-): string {
-  if (tagAssignmentTask?.status === "failed") return "failed";
-  if (tagAssignmentTask?.status === "running") return "running";
-  return resolveStatusDotState(state);
-}
-
-function resolveTagAssignmentTaskTotalCount(
-  target: PendingTagAssignmentTarget,
-  library: LibraryState,
-): number {
-  if (target.kind === "document") {
-    return 1;
-  }
-  return resolvePositiveInteger(
-    library.entries.find((entry): entry is LibraryDirectoryEntry =>
-      entry.kind !== "document" && entry.path === target.folderPath,
-    )?.documentCount,
-  )
-    ?? resolvePositiveInteger(
-      resolveDocumentCount(library.snapshot?.folders.find((folder) => folder.path === target.folderPath)),
-    )
-    ?? 1;
-}
-
-function resolveTagAssignmentResultCount(
-  target: PendingTagAssignmentTarget,
-  fallbackCount: number,
-): number {
-  if (target.kind === "document") {
-    return 1;
-  }
-  return fallbackCount;
-}
-
-function resolvePositiveInteger(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) && value > 0
-    ? Math.trunc(value)
-    : null;
-}
-
-function resolveDocumentCount(value: unknown): unknown {
-  return typeof value === "object" && value !== null && "documentCount" in value
-    ? value.documentCount
-    : null;
-}
-
 function LibraryDesktopSidebar({
   library,
+  onOpenSearch,
+  onCancelSearch,
+  searchClearToken,
   onOpenSettings,
   onOpenTagManager,
   overlayMacOsTitlebar,
 }: {
   library: SidebarLibraryState;
+  onOpenSearch: (keyword: string) => void;
+  onCancelSearch: () => void;
+  searchClearToken: number;
   onOpenSettings: () => void;
   onOpenTagManager: () => void;
   overlayMacOsTitlebar: boolean;
@@ -1412,6 +1317,10 @@ function LibraryDesktopSidebar({
   );
   const [pendingTagFilterFavorite, setPendingTagFilterFavorite] = useState<PendingTagFilterFavoriteState | null>(null);
   const [tagFilterFavoriteSubmitting, setTagFilterFavoriteSubmitting] = useState(false);
+
+  useEffect(() => {
+    setQuickFindQuery("");
+  }, [searchClearToken]);
 
   useEffect(() => {
     writeLibraryTagTreeState(tagTreeState);
@@ -1536,9 +1445,16 @@ function LibraryDesktopSidebar({
             aria-label={t("libraryQuickFindLabel")}
             placeholder={t("libraryQuickFindPlaceholder")}
             value={quickFindQuery}
-            onChange={(event) => setQuickFindQuery(event.target.value)}
+            onChange={(event) => {
+              const nextValue = event.target.value;
+              setQuickFindQuery(nextValue);
+              if (!nextValue.trim()) onCancelSearch();
+            }}
             onKeyDown={(event) => {
-              if (event.key === "Escape") setQuickFindQuery("");
+              if (event.key === "Escape") {
+                setQuickFindQuery("");
+                onCancelSearch();
+              }
             }}
           />
         </form>
@@ -2645,8 +2561,11 @@ function LibraryStage({
   onRequestDelete,
   onRequestTagAssignment: _onRequestTagAssignment,
   onOpenSearch,
+  searchOpen,
+  searchInitialKeyword,
+  searchFocusToken,
+  onCancelSearch,
   onOpenLibraryViewer,
-  tagAssignmentTask,
 }: {
   library: StageLibraryState;
   platformData: WorkbenchPlatformData;
@@ -2659,11 +2578,39 @@ function LibraryStage({
   onRequestRename: (path: string) => void;
   onRequestDelete: (target: LibraryContextMenuTarget) => void;
   onRequestTagAssignment: (target: LibraryContextMenuTarget) => void;
-  onOpenSearch: () => void;
+  onOpenSearch: (keyword?: string) => void;
+  searchOpen: boolean;
+  searchInitialKeyword: string;
+  searchFocusToken: number;
+  onCancelSearch: () => void;
   onOpenLibraryViewer: (entry: LibraryDocumentEntry) => void;
-  tagAssignmentTask: LibraryTagAssignmentTaskState | null;
 }) {
+  const [searchView, setSearchView] = useState<{
+    entries: LibraryDocumentRecord[] | null;
+    loading: boolean;
+    error: string | null;
+    total: number | null;
+  }>({ entries: null, loading: false, error: null, total: null });
   const directoryStatus = library.documentPage?.directoryStatus ?? null;
+  const searchEntries = searchView.entries?.map((entry) => ({
+    ...entry,
+    kind: "document" as const,
+  }));
+  const isSearchResultView = searchOpen && searchEntries !== undefined;
+  const visibleEntries = isSearchResultView ? searchEntries : library.entries;
+  const visibleLibrary = useMemo<StageLibraryState>(
+    () => isSearchResultView
+      ? {
+          ...library,
+          hasMore: false,
+          documentsLoading: searchView.loading,
+          error: searchView.error,
+          loadMore: async () => undefined,
+          visibleEntryTotal: searchView.total ?? visibleEntries.length,
+        }
+      : library,
+    [isSearchResultView, library, searchView.error, searchView.loading, searchView.total, visibleEntries.length],
+  );
   const blankTarget: LibraryContextMenuTarget = {
     kind: "blank",
     folderPath: library.viewState.selectedFolderPath,
@@ -2685,34 +2632,50 @@ function LibraryStage({
         onOpenSettings={onOpenSettings}
         onRequestCreate={onRequestCreate}
         onOpenSearch={onOpenSearch}
-        tagAssignmentTask={tagAssignmentTask}
       />
       <div
         className="affairs-stage-content"
         aria-label={t("libraryDocumentList")}
         onContextMenu={(event) => onOpenContextMenu(event, blankTarget)}
       >
-        {initialIndexStatus ? (
+        {searchOpen ? (
+          <LibraryInlineSearch
+            library={library}
+            initialKeyword={searchInitialKeyword}
+            focusToken={searchFocusToken}
+            onCancelSearch={onCancelSearch}
+            onResultsChange={(entries, loading, error, total) => {
+              setSearchView({ entries, loading, error, total });
+            }}
+          />
+        ) : null}
+        {!searchOpen && initialIndexStatus ? (
           <LibraryInitialIndexStage status={initialIndexStatus} />
-        ) : shouldShowBlockingSkeleton ? (
+        ) : !searchOpen && shouldShowBlockingSkeleton ? (
           <LibrarySkeleton viewMode={library.viewState.viewMode} />
-        ) : library.entries.length === 0 ? (
+        ) : searchOpen && searchView.loading && searchView.entries === null ? (
+          <LibrarySkeleton viewMode={library.viewState.viewMode} />
+        ) : searchOpen && searchView.error ? (
+          <div className="affairs-stage-empty">{searchView.error}</div>
+        ) : visibleEntries.length === 0 ? (
           <div className="affairs-stage-empty">
-            {library.viewState.browseMode === "tag"
+            {searchOpen
+              ? t("librarySearchNoResultsTitle")
+              : library.viewState.browseMode === "tag"
               ? t("libraryEmptyTag")
               : t("libraryEmptyFolder")}
           </div>
         ) : library.viewState.viewMode === "grid" ? (
           <VirtualLibraryGrid
-            library={library}
-            entries={library.entries}
+            library={visibleLibrary}
+            entries={visibleEntries}
             onOpenContextMenu={onOpenContextMenu}
             onOpenLibraryViewer={onOpenLibraryViewer}
           />
         ) : (
           <VirtualLibraryFinderList
-            library={library}
-            entries={library.entries}
+            library={visibleLibrary}
+            entries={visibleEntries}
             onOpenContextMenu={onOpenContextMenu}
             onOpenLibraryViewer={onOpenLibraryViewer}
           />
@@ -2729,7 +2692,6 @@ function LibraryStageToolbar({
   onOpenSettings,
   onRequestCreate,
   onOpenSearch,
-  tagAssignmentTask,
 }: {
   library: StageLibraryState;
   platformData: WorkbenchPlatformData;
@@ -2740,8 +2702,7 @@ function LibraryStageToolbar({
   } | null;
   onOpenSettings: () => void;
   onRequestCreate: (state: PendingCreateState) => void;
-  onOpenSearch: () => void;
-  tagAssignmentTask: LibraryTagAssignmentTaskState | null;
+  onOpenSearch: (keyword?: string) => void;
 }) {
   const sortOptions: Array<{ value: LibrarySortMode; label: string }> = [
     { value: "recent", label: t("librarySortRecent") },
@@ -2871,15 +2832,15 @@ function LibraryStageToolbar({
             {renderRefreshIcon()}
           </button>
           <LibraryIndexStatusPopover
+            rootDir={library.snapshot?.binding?.rootDir ?? null}
             status={library.snapshot?.status ?? null}
             documentCount={library.snapshot?.documentCount ?? 0}
             directoryStatus={library.documentPage?.directoryStatus ?? null}
-            tagAssignmentTask={tagAssignmentTask}
           />
           <button
             type="button"
             className="affairs-stage-toolbar-icon"
-            onClick={onOpenSearch}
+            onClick={() => onOpenSearch()}
             aria-label={t("librarySearchAction")}
             title={t("librarySearchAction")}
           >
@@ -3050,7 +3011,7 @@ const VIRTUAL_GRID_COLUMN_GAP = 8;
 const VIRTUAL_GRID_ITEM_HEIGHT = 106;
 const VIRTUAL_GRID_ROW_GAP = 14;
 const VIRTUAL_GRID_MIN_ITEMS = 80;
-const VIRTUAL_LIST_ROW_HEIGHT = 40;
+const VIRTUAL_LIST_ROW_HEIGHT = 36;
 const VIRTUAL_OVERSCAN = 2;
 const VIRTUAL_LIST_OVERSCAN = 8;
 const LIBRARY_SELECTION_PRESS_ANIMATION_MS = 140;
@@ -4687,6 +4648,7 @@ function LibraryDetail({
                   onRequestDelete({ kind: "document", entry: selected })
                 }
               >
+                <InterfaceIcon name="delete" />
                 {t("libraryDelete")}
               </button>
             </div>
@@ -5227,215 +5189,157 @@ function ContextSubmenu({
   );
 }
 
-function LibrarySearchModal({
+function LibraryInlineSearch({
   library,
-  keyword,
-  onKeywordChange,
-  onOpenDocument,
-  onLocateDocument,
-  onClose,
+  initialKeyword,
+  focusToken,
+  onCancelSearch,
+  onResultsChange,
 }: {
-  library: LibraryState;
-  keyword: string;
-  onKeywordChange: (value: string) => void;
-  onOpenDocument: (entry: LibraryDocumentEntry) => void;
-  onLocateDocument: (entry: LibraryDocumentEntry) => void;
-  onClose: () => void;
+  library: Pick<StageLibraryState, "viewState" | "selectDocument" | "selectFolder">;
+  initialKeyword: string;
+  focusToken: number;
+  onCancelSearch: () => void;
+  onResultsChange: (
+    entries: LibraryDocumentRecord[] | null,
+    loading: boolean,
+    error: string | null,
+    total: number | null,
+  ) => void;
 }) {
-  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [keyword, setKeyword] = useState(initialKeyword);
   const [activeKeyword, setActiveKeyword] = useState("");
+  const [searchScope, setSearchScope] = useState<
+    "all" | "current_directory" | "current_results"
+  >("current_results");
+  const [searchMode, setSearchMode] = useState<"name" | "content">("name");
   const [resultPage, setResultPage] = useState<LibraryDocumentList | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const searchResults = useMemo(
-    () => (resultPage?.items ?? []).map((entry) => ({
-      ...entry,
-      kind: "document" as const,
-    })),
-    [resultPage],
-  );
-  const hasDraftKeyword = keyword.trim().length > 0;
-  const showsResults = activeKeyword.length > 0;
   const hasMore = (resultPage?.items.length ?? 0) < (resultPage?.total ?? 0);
-  const initialKeyword = useRef(keyword.trim());
 
   useEffect(() => {
-    inputRef.current?.focus();
-    inputRef.current?.select();
-    if (initialKeyword.current) void runSearch(initialKeyword.current);
-  }, []);
+    const nextKeyword = initialKeyword.trim();
+    setKeyword(nextKeyword);
+    setResultPage(null);
+    setActiveKeyword("");
+    onResultsChange(null, false, null, null);
+    if (nextKeyword) {
+      void runSearch(nextKeyword);
+    }
+  }, [focusToken]);
 
-  async function runSearch(nextKeyword: string, reset = true): Promise<void> {
+  async function runSearch(
+    nextKeyword: string,
+    reset = true,
+    nextScope = searchScope,
+    nextMode = searchMode,
+  ): Promise<void> {
     const normalizedKeyword = nextKeyword.trim();
     setActiveKeyword(normalizedKeyword);
     if (!normalizedKeyword) {
       setResultPage(null);
       setError(null);
+      onResultsChange(null, false, null, null);
       return;
     }
 
     setLoading(true);
     setError(null);
+    onResultsChange(resultPage?.items ?? null, true, null, resultPage?.total ?? null);
     try {
       const offset = reset ? 0 : resultPage?.items.length ?? 0;
+      const scopeQuery = nextScope === "all"
+        ? {
+            browseMode: "tag" as const,
+            selectedFolderPath: null,
+            selectedTagPath: null,
+            selectedTagPaths: [],
+            selectedFavoriteId: null,
+          }
+        : nextScope === "current_directory"
+          ? {
+              browseMode: "folder" as const,
+              selectedFolderPath: library.viewState.selectedFolderPath,
+              selectedTagPath: null,
+              selectedTagPaths: [],
+              selectedFavoriteId: null,
+            }
+          : {
+              browseMode: library.viewState.browseMode,
+              selectedFolderPath: library.viewState.selectedFolderPath,
+              selectedTagPath: library.viewState.selectedTagPath,
+              selectedTagPaths: library.viewState.selectedTagPaths,
+              selectedFavoriteId: library.viewState.selectedFavoriteId,
+            };
       const nextPage = await listLibraryDocuments({
-        browseMode: library.viewState.browseMode,
-        selectedFolderPath: library.viewState.selectedFolderPath,
-        selectedTagPath: library.viewState.selectedTagPath,
-        selectedTagPaths: library.viewState.selectedTagPaths,
-        selectedFavoriteId: library.viewState.selectedFavoriteId,
+        ...scopeQuery,
         keyword: normalizedKeyword,
+        searchScope: nextScope,
+        searchMode: nextMode,
         offset,
         limit: 60,
       });
-      setResultPage((current) => {
-        if (reset || !current) {
-          return nextPage;
-        }
-        return {
-          ...nextPage,
-          items: [...current.items, ...nextPage.items],
-          offset: current.offset,
-        };
-      });
+      const updated = reset || !resultPage ? nextPage : {
+        ...nextPage,
+        items: [...resultPage.items, ...nextPage.items],
+        offset: resultPage.offset,
+      };
+      setResultPage(updated);
+      onResultsChange(updated.items, false, null, updated.total);
     } catch (err) {
-      setError(toApiErrorMessage(err));
+      const message = toApiErrorMessage(err);
+      setError(message);
+      onResultsChange(null, false, message, null);
     } finally {
       setLoading(false);
     }
   }
 
-  function clearSearch(): void {
-    onKeywordChange("");
-    setActiveKeyword("");
-    setResultPage(null);
-    setError(null);
-  }
-
-  function handleSubmit(event?: FormEvent): void {
-    event?.preventDefault();
-    void runSearch(keyword, true);
-  }
-
   return (
-    <DesktopModal
-      title={t("librarySearchModalTitle")}
-      description={t("librarySearchModalDescription")}
-      size="regular"
-      layout="list"
-      className="library-search-modal"
-      bodyClassName="library-search-modal-body"
-      onClose={onClose}
-      footer={
-        <ModalActions align="between">
-          <span className="library-search-result-count">
-            {showsResults
-              ? t("librarySearchResultCount", {
-                  count: resultPage?.total ?? searchResults.length,
-                })
+    <section className="library-inline-search" aria-label={t("librarySearchModalTitle")}>
+      <div className="library-inline-search-filter-row">
+        <LibrarySearchSegmentedControl
+          label={t("librarySearchScopeLabel")}
+          value={searchScope}
+          options={[
+            { value: "all", label: t("librarySearchScopeAll") },
+            { value: "current_directory", label: t("librarySearchScopeDirectory") },
+            { value: "current_results", label: t("librarySearchScopeResults") },
+          ]}
+          onChange={(value) => {
+            const nextScope = value as typeof searchScope;
+            setSearchScope(nextScope);
+            if (keyword.trim()) void runSearch(keyword, true, nextScope, searchMode);
+          }}
+        />
+        <LibrarySearchSegmentedControl
+          label={t("librarySearchMatchLabel")}
+          value={searchMode}
+          options={[
+            { value: "name", label: t("librarySearchMatchName") },
+            { value: "content", label: t("librarySearchMatchContent") },
+          ]}
+          onChange={(value) => {
+            const nextMode = value as typeof searchMode;
+            setSearchMode(nextMode);
+            if (keyword.trim()) void runSearch(keyword, true, searchScope, nextMode);
+          }}
+        />
+        <div className="library-inline-search-meta">
+          <span>
+            {activeKeyword
+              ? t("librarySearchResultCount", { count: resultPage?.total ?? 0 })
               : t("librarySearchReadyHint")}
           </span>
-          <div className="button-row">
-            <button type="button" className="secondary-button" onClick={onClose}>
-              {t("actionClose")}
+          {activeKeyword ? (
+            <button type="button" className="secondary-button" onClick={onCancelSearch}>
+              {t("librarySearchClear")}
             </button>
-            {activeKeyword ? (
-              <button type="button" className="secondary-button" onClick={clearSearch}>
-                {t("librarySearchClear")}
-              </button>
-            ) : null}
-            <button
-              type="button"
-              className="primary-button"
-              disabled={!hasDraftKeyword}
-              onClick={() => handleSubmit()}
-            >
-              {t("librarySearchSubmit")}
-            </button>
-          </div>
-        </ModalActions>
-      }
-    >
-      <form className="library-search-form" onSubmit={handleSubmit}>
-        <ModalField label={t("librarySearchKeywordLabel")} htmlFor="library-search-keyword">
-          <div className="library-search-input-wrap">
-            {renderSearchIcon()}
-            <input
-              ref={inputRef}
-              id="library-search-keyword"
-              type="search"
-              value={keyword}
-              placeholder={t("libraryKeywordPlaceholder")}
-              onChange={(event) => onKeywordChange(event.target.value)}
-            />
-          </div>
-        </ModalField>
-      </form>
-      <div className="library-search-results" role="list">
-        {error ? <div className="inline-alert compact">{error}</div> : null}
-        {loading && showsResults ? (
-          <ModalEmptyState
-            compact
-            title={t("librarySearchLoading")}
-            description={t("librarySearchLoadingDescription")}
-          />
-        ) : null}
-        {!showsResults ? (
-          <ModalEmptyState
-            compact
-            title={t("librarySearchEmptyTitle")}
-            description={t("librarySearchEmptyDescription")}
-          />
-        ) : null}
-        {showsResults && !loading && searchResults.length === 0 ? (
-          <ModalEmptyState
-            compact
-            title={t("librarySearchNoResultsTitle")}
-            description={t("librarySearchNoResultsDescription", {
-              keyword: activeKeyword,
-            })}
-          />
-        ) : null}
-        {showsResults && searchResults.length > 0 ? (
-          <div className="library-search-result-list">
-            {searchResults.map((entry) => (
-              <div
-                key={entry.documentId}
-                className="library-search-result-item"
-                role="listitem"
-              >
-                <button
-                  type="button"
-                  className="library-search-result-main"
-                  onClick={() => onOpenDocument(entry)}
-                >
-                  <span className="library-search-result-title">
-                    {renderHighlightedText(resolveLibraryDocumentDisplayName(entry), activeKeyword)}
-                  </span>
-                  <span className="library-search-result-path">
-                    {renderHighlightedText(entry.path, activeKeyword)}
-                  </span>
-                  {entry.summary ? (
-                    <span className="library-search-result-summary">
-                      {renderHighlightedText(entry.summary, activeKeyword)}
-                    </span>
-                  ) : null}
-                </button>
-                <div className="library-search-result-side">
-                  <ModalTag>{resolveDocumentVisual(entry.path).extension.toUpperCase()}</ModalTag>
-                  <button
-                    type="button"
-                    className="secondary-button library-search-locate-button"
-                    onClick={() => onLocateDocument(entry)}
-                  >
-                    {t("libraryContextLocate")}
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : null}
-        {hasMore && showsResults ? (
+          ) : null}
+        </div>
+      </div>
+      {hasMore && activeKeyword ? (
           <button
             type="button"
             className="secondary-button library-search-load-more"
@@ -5445,8 +5349,40 @@ function LibrarySearchModal({
             {t("libraryLoadMore")}
           </button>
         ) : null}
+    </section>
+  );
+}
+
+function LibrarySearchSegmentedControl({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: Array<{ value: string; label: string }>;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="library-inline-search-filter" role="group" aria-label={label}>
+      <span className="library-inline-search-filter-label">{label}</span>
+      <div className="library-inline-search-segmented" role="tablist" aria-label={label}>
+        {options.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            role="tab"
+            aria-selected={value === option.value}
+            data-segment-value={option.value}
+            className={value === option.value ? "active" : ""}
+            onClick={() => onChange(option.value)}
+          >
+            {option.label}
+          </button>
+        ))}
       </div>
-    </DesktopModal>
+    </div>
   );
 }
 
@@ -5688,12 +5624,10 @@ function LibraryTagAssignmentModal({
   library,
   target,
   onClose,
-  onTaskChange,
 }: {
   library: LibraryState;
   target: PendingTagAssignmentTarget;
   onClose: () => void;
-  onTaskChange: (task: LibraryTagAssignmentTaskState) => void;
 }) {
   const [details, setDetails] = useState<
     LibraryDocumentTagDetails | LibraryFolderTagDetails | null
@@ -5734,52 +5668,18 @@ function LibraryTagAssignmentModal({
     createTagPaths: string[] = [],
   ): Promise<void> {
     setError(null);
-    const task: LibraryTagAssignmentTaskState = {
-      id: `tag-assignment-${Date.now()}`,
-      kind: target.kind,
-      targetPath: target.kind === "document" ? target.path : target.folderPath,
-      status: "running",
-      message: null,
-      totalCount: resolveTagAssignmentTaskTotalCount(target, library),
-      successCount: 0,
-      failedCount: 0,
-    };
-    onTaskChange(task);
-    try {
-      const nextDetails = target.kind === "document"
-        ? await saveDocumentTags(target.documentId, {
-          tagIds: nextTagIds,
-          createTagPaths,
-        })
-        : await saveFolderTags({
-          folderPath: target.folderPath,
-          tagIds: nextTagIds,
-          createTagPaths,
-        });
-      setDetails(nextDetails);
-      const completedCount = resolveTagAssignmentResultCount(
-        target,
-        task.totalCount,
-      );
-      onTaskChange({
-        ...task,
-        status: "completed",
-        totalCount: completedCount,
-        successCount: completedCount,
-        failedCount: 0,
+    const nextDetails = target.kind === "document"
+      ? await saveDocumentTags(target.documentId, {
+        tagIds: nextTagIds,
+        createTagPaths,
+      })
+      : await saveFolderTags({
+        folderPath: target.folderPath,
+        tagIds: nextTagIds,
+        createTagPaths,
       });
-      await Promise.all([library.reload(), library.reloadDocuments(true)]);
-    } catch (err) {
-      const message = toApiErrorMessage(err);
-      onTaskChange({
-        ...task,
-        status: "failed",
-        message,
-        successCount: 0,
-        failedCount: task.totalCount,
-      });
-      throw err;
-    }
+    setDetails(nextDetails);
+    await Promise.all([library.reload(), library.reloadDocuments(true)]);
   }
 
   const assignedTagIds = details ? resolveAssignedTagIds(details) : [];
@@ -8242,80 +8142,28 @@ function LibraryTagRecommendationSummary({
 }
 
 function LibraryIndexStatusPopover({
+  rootDir,
   status,
   documentCount,
   directoryStatus,
-  tagAssignmentTask,
 }: {
+  rootDir: string | null;
   status: LibraryIndexStatus | null;
   documentCount: number;
   directoryStatus: LibraryDirectoryStatus | null;
-  tagAssignmentTask: LibraryTagAssignmentTaskState | null;
 }) {
-  const [open, setOpen] = useState(false);
   const [technicalExpanded, setTechnicalExpanded] = useState(false);
-  // 悬停延时关闭：鼠标移出触发区域后留出余量，方便把指针移到弹窗内查看详情。
-  const closeTimerRef = useRef<number | null>(null);
-  const cancelCloseTimer = useCallback(() => {
-    if (closeTimerRef.current !== null) {
-      window.clearTimeout(closeTimerRef.current);
-      closeTimerRef.current = null;
-    }
-  }, []);
-  const scheduleClose = useCallback(() => {
-    cancelCloseTimer();
-    closeTimerRef.current = window.setTimeout(() => setOpen(false), INDEX_POPOVER_CLOSE_DELAY_MS);
-  }, [cancelCloseTimer]);
-  useEffect(() => () => cancelCloseTimer(), [cancelCloseTimer]);
   const popoverModel = useMemo(
     () => buildIndexStatusPopoverModel(status, documentCount, directoryStatus),
     [status, documentCount, directoryStatus],
   );
-  const stateLabel = resolveIndexStatusLabel(status?.state);
-  const progressLabel =
-    resolveIndexStatusInlineProgressLabel(status)
-    ?? resolveLibraryTagTaskInlineProgressLabel(tagAssignmentTask);
-  const dotState = resolveMergedIndexStatusDotState(status?.state, tagAssignmentTask);
-  const tagTaskProgressPercent = tagAssignmentTask
-    ? resolveLibraryTagTaskProgressPercent(tagAssignmentTask)
-    : 0;
-
+  const indexProgress = status?.progress
+    ? { processedCount: status.progress.scannedCount, totalCount: status.progress.totalCount ?? null }
+    : status?.state === "fresh" || status?.state === "cooldown"
+      ? { processedCount: documentCount, totalCount: documentCount }
+      : { processedCount: 0, totalCount: null };
   return (
-    <span
-      className="library-index-status-anchor"
-      onMouseEnter={() => {
-        cancelCloseTimer();
-        setOpen(true);
-      }}
-      onMouseLeave={scheduleClose}
-    >
-      <button
-        type="button"
-        className="affairs-stage-status-trigger"
-        title={stateLabel}
-        aria-label={`${t("libraryStatusTitle")}：${stateLabel}`}
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        onFocus={() => setOpen(true)}
-        onBlur={scheduleClose}
-      >
-        <span className={`affairs-stage-status-dot state-${dotState}`} />
-        {progressLabel ? (
-          <span className="affairs-stage-status-text">{progressLabel}</span>
-        ) : null}
-      </button>
-      {open ? (
-        <div
-          role="dialog"
-          aria-label={t("libraryIndexStatusDetailsTitle")}
-          className="library-index-status-popover"
-          onMouseEnter={cancelCloseTimer}
-          onMouseLeave={scheduleClose}
-        >
-          <div className="library-index-status-popover-card">
-            <div className="library-index-status-popover-header">
-              <strong>{t("libraryIndexStatusDetailsTitle")}</strong>
-            </div>
+    <LibraryTaskCenter rootDir={rootDir} fallbackState={resolveStatusDotState(status?.state)} fallbackLabel={resolveIndexStatusLabel(status?.state)} indexStatus={status} indexProgress={indexProgress}>
             {popoverModel.summaryMetrics.length > 0 ? (
               <div className="library-index-status-summary">
                 {popoverModel.summaryMetrics.map((metric) => (
@@ -8357,58 +8205,6 @@ function LibraryIndexStatusPopover({
                 ))}
               </div>
             </div>
-            {tagAssignmentTask ? (
-              <div className="library-index-status-primary library-index-status-tag-task">
-                <div className="library-index-status-section-title">{t("libraryTagTaskPopoverTitle")}</div>
-                <div className="library-index-status-popover-grid">
-                  <div className="library-index-status-popover-row">
-                    <span className="library-index-status-popover-label">
-                      {tagAssignmentTask.kind === "folder"
-                        ? t("libraryTagTaskFolderLabel")
-                        : t("libraryTagTaskDocumentLabel")}
-                    </span>
-                    <span className="library-index-status-popover-value" data-multiline="true">
-                      {tagAssignmentTask.targetPath}
-                    </span>
-                  </div>
-                  <div className="library-index-status-popover-row">
-                    <span className="library-index-status-popover-label">{t("libraryTagTaskStatusLabel")}</span>
-                    <span className="library-index-status-popover-value">
-                      {resolveLibraryTagTaskStatusText(tagAssignmentTask.status)}
-                    </span>
-                  </div>
-                  <div className="library-index-status-popover-row">
-                    <span className="library-index-status-popover-label">{t("libraryTagTaskTotalLabel")}</span>
-                    <span className="library-index-status-popover-value">{tagAssignmentTask.totalCount}</span>
-                  </div>
-                  <div className="library-index-status-popover-row">
-                    <span className="library-index-status-popover-label">{t("libraryTagTaskSuccessLabel")}</span>
-                    <span className="library-index-status-popover-value">{tagAssignmentTask.successCount}</span>
-                  </div>
-                  <div className="library-index-status-popover-row">
-                    <span className="library-index-status-popover-label">{t("libraryTagTaskFailedLabel")}</span>
-                    <span className="library-index-status-popover-value">{tagAssignmentTask.failedCount}</span>
-                  </div>
-                </div>
-                <div className="library-tag-task-progress-track" aria-hidden="true">
-                  <span
-                    className="library-tag-task-progress-fill"
-                    style={{ width: `${tagTaskProgressPercent}%` }}
-                  />
-                </div>
-                {tagAssignmentTask.message ? (
-                  <p
-                    className={
-                      tagAssignmentTask.status === "failed"
-                        ? "library-tag-task-popover-error"
-                        : "library-tag-task-popover-detail"
-                    }
-                  >
-                    {tagAssignmentTask.message}
-                  </p>
-                ) : null}
-              </div>
-            ) : null}
             {popoverModel.technicalSections.length > 0 ? (
               <div className="library-index-status-technical">
                 <button
@@ -8440,10 +8236,7 @@ function LibraryIndexStatusPopover({
                 ) : null}
               </div>
             ) : null}
-          </div>
-        </div>
-      ) : null}
-    </span>
+    </LibraryTaskCenter>
   );
 }
 
@@ -9848,76 +9641,6 @@ function resolveDocumentFolderPath(filePath: string): string | null {
     return null;
   }
   return segments.slice(0, -1).join("/");
-}
-
-function renderHighlightedText(value: string, keyword: string): ReactNode {
-  const keywords = splitLibrarySearchKeywords(keyword);
-  if (keywords.length === 0) {
-    return value;
-  }
-
-  const lowerValue = value.toLowerCase();
-  const parts: ReactNode[] = [];
-  let cursor = 0;
-
-  while (cursor < value.length) {
-    const nextMatch = findNextLibrarySearchHighlight(lowerValue, keywords, cursor);
-    if (!nextMatch) {
-      parts.push(value.slice(cursor));
-      break;
-    }
-    if (nextMatch.index > cursor) {
-      parts.push(value.slice(cursor, nextMatch.index));
-    }
-    parts.push(
-      <mark key={`${nextMatch.index}:${nextMatch.keyword}`} className="library-search-highlight">
-        {value.slice(nextMatch.index, nextMatch.index + nextMatch.keyword.length)}
-      </mark>,
-    );
-    cursor = nextMatch.index + nextMatch.keyword.length;
-  }
-
-  return parts.length ? parts : value;
-}
-
-function splitLibrarySearchKeywords(value: string): string[] {
-  const seen = new Set<string>();
-  return value
-    .trim()
-    .split(/\s+/)
-    .map((item) => item.trim().toLowerCase())
-    .filter((item) => item.length > 0)
-    .filter((item) => {
-      if (seen.has(item)) {
-        return false;
-      }
-      seen.add(item);
-      return true;
-    });
-}
-
-function findNextLibrarySearchHighlight(
-  lowerValue: string,
-  keywords: string[],
-  cursor: number,
-): { index: number; keyword: string } | null {
-  let matchedIndex = -1;
-  let matchedKeyword = "";
-  for (const keyword of keywords) {
-    const index = lowerValue.indexOf(keyword, cursor);
-    if (index < 0) {
-      continue;
-    }
-    if (
-      matchedIndex < 0 ||
-      index < matchedIndex ||
-      (index === matchedIndex && keyword.length > matchedKeyword.length)
-    ) {
-      matchedIndex = index;
-      matchedKeyword = keyword;
-    }
-  }
-  return matchedIndex < 0 ? null : { index: matchedIndex, keyword: matchedKeyword };
 }
 
 function renderSystemTagIcon(isTimeRange: boolean) {
