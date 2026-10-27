@@ -390,9 +390,10 @@ type DetailLibraryState = Pick<
   | "selectFolder"
   | "snapshot"
   | "viewState"
->;
+> & { tagRevision: number };
 
-type LibraryReloadBridge = Pick<LibraryState, "reload" | "reloadDocuments">;
+type LibraryReloadBridge = Pick<LibraryState, "reload" | "reloadDocuments">
+  & { tagRevision: number };
 type LibrarySnapshotBridge = Pick<LibraryState, "snapshot">;
 const LIBRARY_TAG_TREE_DEFAULT_ROOTS = new Set(["时间", "类型", "time", "type"]);
 const LIBRARY_TAG_TREE_NOISE_ROOTS = new Set([
@@ -461,6 +462,8 @@ export function LibraryPage({
     useState<LibraryContextMenuTarget | null>(null);
   const [pendingTagAssignment, setPendingTagAssignment] =
     useState<PendingTagAssignmentTarget | null>(null);
+  // 标签在任一入口变更后递增，右侧对象详情据此重新拉取最新标签状态
+  const [tagRevision, setTagRevision] = useState(0);
   const [viewerState, setViewerState] = useState<LibraryViewerState | null>(null);
   const [tagManagerOpen, setTagManagerOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -1019,6 +1022,7 @@ export function LibraryPage({
     selectedFolderEntries: library.selectedFolderEntries,
     selectFolder: callLibrarySelectFolder,
     snapshot: library.snapshot,
+    tagRevision,
     viewState: library.viewState,
   }), [
     callLibraryCancelPreview,
@@ -1036,6 +1040,7 @@ export function LibraryPage({
     library.selectedDocuments,
     library.selectedFolderEntries,
     library.snapshot,
+    tagRevision,
     library.viewState,
   ]);
 
@@ -1177,6 +1182,7 @@ export function LibraryPage({
           library={library}
           target={pendingTagAssignment}
           onClose={() => setPendingTagAssignment(null)}
+          onTagsChanged={() => setTagRevision((current) => current + 1)}
         />
       ) : null}
       {viewerState ? (
@@ -1255,7 +1261,7 @@ function LibraryDisabledPanel({
           </section>
         </section>
         <LibraryDetail
-          library={library}
+          library={{ ...library, tagRevision: 0 }}
           overlayMacOsTitlebar={platformData.runtimePlatform === "desktop"
             && platformData.osFamily === "macos"
             && platformData.overlayTitlebar}
@@ -5627,10 +5633,12 @@ function LibraryTagAssignmentModal({
   library,
   target,
   onClose,
+  onTagsChanged,
 }: {
   library: LibraryState;
   target: PendingTagAssignmentTarget;
   onClose: () => void;
+  onTagsChanged: () => void;
 }) {
   const [details, setDetails] = useState<
     LibraryDocumentTagDetails | LibraryFolderTagDetails | null
@@ -5692,6 +5700,8 @@ function LibraryTagAssignmentModal({
   ): Promise<void> {
     try {
       await saveTags(nextTagIds, createTagPaths);
+      // 先通知详情区刷新，再关闭弹窗，保证关闭后立刻看到最新标签
+      onTagsChanged();
       onClose();
     } catch (err) {
       setError(toApiErrorMessage(err));
@@ -6009,9 +6019,10 @@ function LibraryInlineDocumentTagEditor({
     }
   }, [document.documentId]);
 
+  // 弹窗等其它入口改了标签后，详情区跟着重新拉取最新标签状态
   useEffect(() => {
     void refreshDetails();
-  }, [refreshDetails]);
+  }, [refreshDetails, library.tagRevision]);
 
   const saveTags = useCallback(async (nextTagIds: string[], createTagPaths: string[] = []) => {
     const nextDetails = await saveDocumentTags(document.documentId, {
@@ -6090,9 +6101,10 @@ function LibraryInlineFolderTagEditor({
     }
   }, [folder.path]);
 
+  // 弹窗等其它入口改了标签后，详情区跟着重新拉取最新标签状态
   useEffect(() => {
     void refreshDetails();
-  }, [refreshDetails]);
+  }, [refreshDetails, library.tagRevision]);
 
   const saveTags = useCallback(async (nextTagIds: string[], createTagPaths: string[] = []) => {
     const nextDetails = await saveFolderTags({
