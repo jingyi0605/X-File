@@ -48,6 +48,10 @@ describe("LibraryPage 高风险交互", () => {
 
     resolveSnapshot?.(createLibrarySnapshot());
     expect(await screen.findByRole("tab", { name: "对象详情" })).toBeInTheDocument();
+    expect(screen.getByText("选择一个文档后，这里会显示预览、标签、路径和下载入口。"))
+      .toHaveClass("affairs-detail-empty");
+    expect(document.querySelector(".affairs-detail-scroll-empty"))
+      .toContainElement(document.querySelector(".affairs-detail-empty"));
   });
 
   it("文档详情保留对象详情与预览，不再显示文件助手或会话入口", async () => {
