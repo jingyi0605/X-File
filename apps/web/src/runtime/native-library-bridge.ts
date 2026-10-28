@@ -20,12 +20,9 @@ import type {
   SaveLibraryFolderTagsInput,
   SaveLibraryTagDefinitionInput,
   SaveLibraryTagsInput,
-  OnlyOfficeSettings,
-  OnlyOfficeStatus,
   SaveHttpServerStateInput,
   SaveLibraryBindingInput,
   SaveLibraryConfigInput,
-  UpdateOnlyOfficeSettingsInput,
 } from "@x-file/shared";
 
 export async function getNativeAgentIntegrationSettings(): Promise<AgentIntegrationSettings | null> {
@@ -237,14 +234,25 @@ export async function getNativeLibraryPreview(
   });
 }
 
-export async function getNativeOnlyOfficePreview(
-  path: string,
-  displayMode?: "default" | "reading",
-  editable = true,
-): Promise<LibraryPreview | null> {
-  return invokeOptional<LibraryPreview>("native_build_onlyoffice_preview", {
-    request: { path, displayMode, editable },
-  });
+export async function getNativePreviewResourceBytes(path: string): Promise<Uint8Array | null> {
+  const result = await invokeOptional<string>("native_read_preview_resource", { path });
+  if (result === null) return null;
+  const encoded = result;
+  const binary = atob(encoded);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+export async function readNativePreviewResource(path: string): Promise<Uint8Array | null> {
+  try {
+    return await getNativePreviewResourceBytes(path);
+  } catch (error) {
+    if (isNativeCommandUnavailable(error)) return null;
+    throw error;
+  }
 }
 
 export async function startNativeLibraryWatcher(rootDir: string): Promise<NativeLibraryWatcherStatus | null> {
@@ -297,20 +305,6 @@ export async function syncNativeSidebarLayout(
   return true;
 }
 
-
-export async function getNativeOnlyOfficeSettings(): Promise<OnlyOfficeSettings | null> {
-  return invokeOptional<OnlyOfficeSettings>("native_get_onlyoffice_settings");
-}
-
-export async function saveNativeOnlyOfficeSettings(
-  input: UpdateOnlyOfficeSettingsInput,
-): Promise<OnlyOfficeSettings | null> {
-  return invokeOptional<OnlyOfficeSettings>("native_save_onlyoffice_settings", { input });
-}
-
-export async function getNativeOnlyOfficeStatus(): Promise<OnlyOfficeStatus | null> {
-  return invokeOptional<OnlyOfficeStatus>("native_get_onlyoffice_status");
-}
 
 export async function getNativeHttpServerState(): Promise<HttpServerState | null> {
   return invokeOptional<HttpServerState>("native_get_http_server_state");

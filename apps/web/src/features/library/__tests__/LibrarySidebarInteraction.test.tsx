@@ -92,9 +92,7 @@ it("快速查找的 Escape 只清空输入，工具栏搜索直接打开列表�
   await userEvent.type(input, "方案{Escape}");
   expect(input).toHaveValue("");
   expect(screen.queryByRole("region", { name: "搜索文档库" })).not.toBeInTheDocument();
-  const toolbar = document.querySelector(".affairs-stage-toolbar-right")!;
-  await userEvent.click(within(toolbar as HTMLElement).getByRole("button", { name: "搜索文档库" }));
-  expect(await screen.findByRole("region", { name: "搜索文档库" })).toBeInTheDocument();
+  expect(document.querySelector(".affairs-stage-toolbar-right button[aria-label='搜索文档库']")).toBeNull();
 });
 
 it("原生 details 支持十层标签嵌套，并保留顶部清除筛选操作", async () => {

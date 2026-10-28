@@ -26,9 +26,18 @@ test("移除内置助手后，两种服务模式均不注册助手及专用插�
           assert.equal(response.statusCode, 404, `${sidecarProfile} ${request.method} ${request.url}`);
         }
 
-        for (const url of ["/api/health", "/api/integration/status", "/api/office/onlyoffice/status"]) {
+        for (const url of ["/api/health", "/api/integration/status"]) {
           const response = await server.inject({ method: "GET", url });
           assert.equal(response.statusCode, 200, `${sidecarProfile} ${url}`);
+        }
+        for (const request of [
+          { method: "GET", url: "/api/office/onlyoffice/settings" },
+          { method: "PUT", url: "/api/office/onlyoffice/settings" },
+          { method: "GET", url: "/api/office/onlyoffice/status" },
+          { method: "POST", url: "/api/office/onlyoffice/callback/token" },
+        ] as const) {
+          const response = await server.inject(request);
+          assert.equal(response.statusCode, 404, `${sidecarProfile} ${request.method} ${request.url}`);
         }
       } finally {
         await server.close();

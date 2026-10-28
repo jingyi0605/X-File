@@ -302,50 +302,6 @@ export interface LibraryPreviewCapabilities {
   canPaginate: boolean;
 }
 
-export interface LibraryOnlyOfficePreview {
-  apiScriptUrl: string;
-  editorMode: "edit" | "view";
-  documentUrl: string;
-  callbackUrl: string;
-  editorConfig: Record<string, unknown>;
-}
-
-export type OnlyOfficeStatusState = "disabled" | "misconfigured" | "ready" | "warning" | "error";
-
-export interface OnlyOfficeSettings {
-  enabled: boolean;
-  serverUrl: string | null;
-  publicBaseUrl: string | null;
-  callbackBaseUrl: string | null;
-  userDisplayName: string | null;
-  userAvatarUrl: string | null;
-  jwtSecretConfigured: boolean;
-  updatedAt: string | null;
-}
-
-export interface UpdateOnlyOfficeSettingsInput {
-  enabled?: boolean;
-  serverUrl?: string | null;
-  publicBaseUrl?: string | null;
-  callbackBaseUrl?: string | null;
-  userDisplayName?: string | null;
-  userAvatarUrl?: string | null;
-  jwtSecret?: string | null;
-  clearJwtSecret?: boolean;
-}
-
-export interface OnlyOfficeStatus {
-  state: OnlyOfficeStatusState;
-  summary: string;
-  checkedAt: string;
-  checks: Array<{
-    key: string;
-    label: string;
-    status: "pass" | "warn" | "fail" | "skip";
-    detail: string;
-  }>;
-}
-
 export interface LibraryPreview {
   libraryId: LibraryId;
   path: string;
@@ -358,7 +314,6 @@ export interface LibraryPreview {
   updatedAt: string | null;
   previewPath: string | null;
   previewUrl: string | null;
-  onlyOffice: LibraryOnlyOfficePreview | null;
   capabilities: LibraryPreviewCapabilities;
 }
 
@@ -500,10 +455,7 @@ export type LibraryErrorCode =
   | "INVALID_FILE_OPERATION"
   | "INVALID_INPUT"
   | "NOT_A_DIRECTORY"
-  | "NOT_A_FILE"
-  | "ONLYOFFICE_CALLBACK_TOKEN_INVALID"
-  | "ONLYOFFICE_DISABLED"
-  | "ONLYOFFICE_MISCONFIGURED";
+  | "NOT_A_FILE";
 
 export type LibraryTagRuleRelation = "and" | "or" | "not";
 

@@ -64,24 +64,12 @@ describe("SettingsPage 文档库索引配置迁移行为", () => {
     expect(screen.queryByText("选择界面显示语言。")).not.toBeInTheDocument();
   });
 
-  it("ONLYOFFICE 加载失败只在所属模块提示，其他设置仍可用且可以重试", async () => {
-    libraryApiMock.getOnlyOfficeSettings.mockRejectedValueOnce(new Error("文档服务暂不可用"));
+  it("集成设置只保留外部 Agent，不再请求或展示 OnlyOffice", async () => {
     const { SettingsPage } = await import("../SettingsPage");
     render(<SettingsPage />);
 
-    await waitFor(() => expect(libraryApiMock.getHttpServerState).toHaveBeenCalled());
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("tab", { name: "网络服务" }));
-    expect(screen.getByRole("button", { name: "保存服务设置" })).toBeEnabled();
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-
-    await userEvent.click(screen.getByRole("tab", { name: "集成服务" }));
-    expect(screen.getByRole("alert")).toHaveTextContent("文档服务暂不可用");
-    await userEvent.click(screen.getByRole("button", { name: "OnlyOffice" }));
-    expect(screen.getByRole("button", { name: "配置集成" })).toBeDisabled();
-    await userEvent.click(screen.getByRole("button", { name: "刷新 OnlyOffice 状态" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "配置集成" })).toBeEnabled());
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("tab", { name: "集成服务" }));
+    expect(screen.queryByText(/OnlyOffice|ONLYOFFICE/)).not.toBeInTheDocument();
   });
 
   it("默认支持后缀保持原样保存时，仍提交空白名单让索引器走默认范围", async () => {
@@ -370,12 +358,12 @@ describe("SettingsPage 文档库索引配置迁移行为", () => {
     }));
   });
 
-  it("集成页保留 ONLYOFFICE，不再提供内置助手插件管理", async () => {
+  it("集成页不再提供 OnlyOffice 或内置助手插件管理", async () => {
     const { SettingsPage } = await import("../SettingsPage");
     render(<SettingsPage />);
 
     await userEvent.click(await screen.findByRole("tab", { name: /集成服务/ }));
-    expect(await screen.findByRole("heading", { name: "OnlyOffice" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "OnlyOffice" })).not.toBeInTheDocument();
     expect(screen.queryByText("内置插件数量")).not.toBeInTheDocument();
     expect(screen.queryByRole("switch", { name: /Codex|Claude/ })).not.toBeInTheDocument();
   });

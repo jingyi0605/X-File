@@ -38,30 +38,11 @@ export class LibraryPreviewLinkService {
     });
     const previewKind = detectPreviewKind(resolved.relativePath);
 
-    if (previewKind !== "html" && previewKind !== "image" && previewKind !== "pdf") {
+    if (previewKind !== "html" && previewKind !== "image" && previewKind !== "pdf" && previewKind !== "office") {
       throw new LibraryError(
         400,
         "FILE_PREVIEW_NOT_SUPPORTED",
-        "当前只支持为 HTML、图片和 PDF 生成受控预览链接",
-        "path"
-      );
-    }
-
-    return this.createSignedLink(resolved.binding.libraryId, resolved.relativePath);
-  }
-
-  createOnlyOfficeLink(requestedPath: string): LibraryPreviewLinkResult {
-    const resolved = this.libraryService.resolveLibraryPath(requestedPath, {
-      mustExist: true,
-      kind: "file"
-    });
-    const previewKind = detectPreviewKind(resolved.relativePath);
-
-    if (previewKind !== "office") {
-      throw new LibraryError(
-        400,
-        "FILE_PREVIEW_NOT_SUPPORTED",
-        "当前只支持为 Office 文件生成 ONLYOFFICE 受控链接",
+        "当前文件类型不支持生成受控预览链接",
         "path"
       );
     }

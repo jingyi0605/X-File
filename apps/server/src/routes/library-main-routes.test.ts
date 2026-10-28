@@ -12,6 +12,7 @@ test("文档库主路由、标签路由和 server state 都已注册", async () 
   process.env.HOME = tempHome;
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "x-file-routes-library-"));
   fs.writeFileSync(path.join(rootDir, "a.doc"), "office", "utf8");
+  fs.writeFileSync(path.join(rootDir, "brief.docx"), "office-payload", "utf8");
   const app = createServer({
     httpServerRuntimeState: { running: false },
     sidecarProfile: "full"
@@ -29,6 +30,20 @@ test("文档库主路由、标签路由和 server state 都已注册", async () 
     const config = await app.inject({ method: "GET", url: "/api/library/config" });
     assert.equal(config.statusCode, 200);
     assert.equal(config.json().allowedExtensions.includes(".doc"), true);
+
+    const officePreview = await app.inject({ method: "GET", url: "/api/library/preview?path=brief.docx" });
+    assert.equal(officePreview.statusCode, 200);
+    assert.equal(officePreview.json().kind, "office");
+    assert.equal(Object.hasOwn(officePreview.json(), "onlyOffice"), false);
+    assert.match(officePreview.json().previewUrl, /\/preview\/library-files\//);
+    const officeResourceUrl = new URL(officePreview.json().previewUrl);
+    const officeResourcePath = officeResourceUrl.pathname.replace(
+      "/preview/library-files/",
+      "/api/library/preview-file/",
+    );
+    const officeResource = await app.inject({ method: "GET", url: `${officeResourcePath}${officeResourceUrl.search}` });
+    assert.equal(officeResource.statusCode, 200, officeResource.body);
+    assert.equal(officeResource.body, "office-payload");
 
     const tags = await app.inject({ method: "GET", url: "/api/library/tags" });
     assert.equal(tags.statusCode, 200);

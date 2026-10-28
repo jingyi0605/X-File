@@ -284,26 +284,6 @@ fn dispatch(name: &str, mut args: Value) -> Result<Value, ToolError> {
             native(get_native_library_tag_recompute_task())
         }
         "xfile_tags_recompute_status" => native(get_native_library_tag_recompute_task()),
-        "xfile_onlyoffice_settings_get" => native(read_local_onlyoffice_settings_view()),
-        "xfile_onlyoffice_settings_set" => {
-            let current = native(read_local_onlyoffice_settings_view())?;
-            merge_fields(
-                &mut args,
-                &current,
-                &[
-                    "enabled",
-                    "serverUrl",
-                    "publicBaseUrl",
-                    "callbackBaseUrl",
-                    "userDisplayName",
-                    "userAvatarUrl",
-                ],
-            );
-            native(save_local_onlyoffice_settings(serde_json::from_value(
-                args,
-            )?))
-        }
-        "xfile_onlyoffice_status" => native(read_local_onlyoffice_status_view()),
         "xfile_host_directories" => value(native(browse_local_host_directories(
             args["path"].as_str().map(String::from),
         ))?),

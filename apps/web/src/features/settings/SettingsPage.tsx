@@ -6,9 +6,6 @@ import type {
   LibraryIndexStatus,
   LibraryBinding,
   LibraryConfig,
-  OnlyOfficeSettings,
-  OnlyOfficeStatus,
-  OnlyOfficeStatusState,
 } from "@x-file/shared";
 
 import {
@@ -17,12 +14,9 @@ import {
   getLibraryBinding,
   getLibraryConfig,
   getLibrarySnapshot,
-  getOnlyOfficeSettings,
-  getOnlyOfficeStatus,
   saveHttpServerState,
   saveLibraryBinding,
   saveLibraryConfig,
-  saveOnlyOfficeSettings,
 } from "../../api/library";
 import { toApiErrorMessage } from "../../api/http";
 import { t } from "../../i18n";
@@ -63,17 +57,6 @@ interface ConfigFormState {
   manualExtension: string;
 }
 
-interface OnlyOfficeFormState {
-  enabled: boolean;
-  serverUrl: string;
-  publicBaseUrl: string;
-  callbackBaseUrl: string;
-  userDisplayName: string;
-  userAvatarUrl: string;
-  jwtSecret: string;
-  clearJwtSecret: boolean;
-}
-
 interface ServerFormState {
   enabled: boolean;
   persistent: boolean;
@@ -83,30 +66,11 @@ interface ServerFormState {
   authPassword: string;
 }
 
-interface OnlyOfficeModalState {
-  open: boolean;
-  refreshing: boolean;
-}
-
 interface ResetApplicationModalState {
   open: boolean;
   step: 1 | 2 | 3;
   confirmationText: string;
   submitting: boolean;
-}
-
-interface PublicBaseUrlOptions {
-  currentValue: string | null;
-  existingValue: string;
-  serverState: HttpServerState | null;
-}
-
-interface OnlyOfficeStatusCard {
-  key: string;
-  label: string;
-  value: string;
-  detail: string;
-  tone: "default" | "success" | "warning" | "danger";
 }
 
 type SettingsTabId = "appearance" | "library" | "integration" | "network" | "updates";
@@ -162,8 +126,6 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
   const [binding, setBinding] = useState<LibraryBinding | null>(null);
   const [libraryConfig, setLibraryConfig] = useState<LibraryConfig | null>(null);
   const [libraryIndexStatus, setLibraryIndexStatus] = useState<LibraryIndexStatus | null>(null);
-  const [onlyOffice, setOnlyOffice] = useState<OnlyOfficeSettings | null>(null);
-  const [onlyOfficeStatus, setOnlyOfficeStatus] = useState<OnlyOfficeStatus | null>(null);
   const [serverState, setServerState] = useState<HttpServerState | null>(null);
   const [runtimeForm, setRuntimeForm] = useState<RuntimeFormState>(() => {
     const config = getRuntimeConfigSnapshot().config;
@@ -183,16 +145,6 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
     folderOpenBehavior: "double_click",
     manualExtension: "",
   });
-  const [onlyOfficeForm, setOnlyOfficeForm] = useState<OnlyOfficeFormState>({
-    enabled: false,
-    serverUrl: "",
-    publicBaseUrl: "",
-    callbackBaseUrl: "",
-    userDisplayName: "",
-    userAvatarUrl: "",
-    jwtSecret: "",
-    clearJwtSecret: false
-  });
   const [serverForm, setServerForm] = useState<ServerFormState>({
     enabled: false,
     persistent: false,
@@ -202,10 +154,6 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
     authPassword: ""
   });
   const [copiedServerUrl, setCopiedServerUrl] = useState<string | null>(null);
-  const [onlyOfficeModal, setOnlyOfficeModal] = useState<OnlyOfficeModalState>({
-    open: false,
-    refreshing: false
-  });
   const [resetApplicationModal, setResetApplicationModal] = useState<ResetApplicationModalState>({
     open: false,
     step: 1,
@@ -216,7 +164,6 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [configUnavailable, setConfigUnavailable] = useState<string | null>(null);
-  const [onlyOfficeUnavailable, setOnlyOfficeUnavailable] = useState<string | null>(null);
   const [serverUnavailable, setServerUnavailable] = useState<string | null>(null);
   const [directoryBrowserOpen, setDirectoryBrowserOpen] = useState(false);
   const [directoryBrowserLoading, setDirectoryBrowserLoading] = useState(false);
@@ -234,7 +181,6 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
     setLoading(true);
     setError(null);
     setConfigUnavailable(null);
-    setOnlyOfficeUnavailable(null);
     setServerUnavailable(null);
 
     try {
@@ -264,14 +210,6 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
       setLibraryIndexStatus(snapshot.status);
     } catch (err) {
       setError((current) => current ?? toApiErrorMessage(err));
-    }
-
-    try {
-      const settings = await getOnlyOfficeSettings();
-      applyOnlyOffice(settings);
-      setOnlyOfficeStatus(await getOnlyOfficeStatus());
-    } catch (err) {
-      setOnlyOfficeUnavailable(toApiErrorMessage(err));
     }
 
     try {
@@ -353,43 +291,6 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
     }
   }
 
-  async function submitOnlyOffice(event: FormEvent): Promise<void> {
-    event.preventDefault();
-    try {
-      setError(null);
-      const saved = await saveOnlyOfficeSettings({
-        enabled: onlyOfficeForm.enabled,
-        serverUrl: normalizeOptionalUrl(onlyOfficeForm.serverUrl),
-        publicBaseUrl: normalizeOptionalUrl(onlyOfficeForm.publicBaseUrl),
-        callbackBaseUrl: normalizeOptionalUrl(onlyOfficeForm.callbackBaseUrl),
-        userDisplayName: normalizeOptionalText(onlyOfficeForm.userDisplayName),
-        userAvatarUrl: normalizeOptionalUrl(onlyOfficeForm.userAvatarUrl),
-        jwtSecret: onlyOfficeForm.jwtSecret.trim() || null,
-        clearJwtSecret: onlyOfficeForm.clearJwtSecret
-      });
-      applyOnlyOffice(saved);
-      setOnlyOfficeStatus(await getOnlyOfficeStatus());
-      setMessage(t("settingsSaveSuccess"));
-    } catch (err) {
-      setError(toApiErrorMessage(err));
-    }
-  }
-
-  async function refreshOnlyOfficeStatus(): Promise<void> {
-    try {
-      setOnlyOfficeModal((current) => ({ ...current, refreshing: true }));
-      setOnlyOfficeUnavailable(null);
-      if (!onlyOffice) {
-        applyOnlyOffice(await getOnlyOfficeSettings());
-      }
-      setOnlyOfficeStatus(await getOnlyOfficeStatus());
-    } catch (err) {
-      setOnlyOfficeUnavailable(toApiErrorMessage(err));
-    } finally {
-      setOnlyOfficeModal((current) => ({ ...current, refreshing: false }));
-    }
-  }
-
   async function submitServer(event: FormEvent): Promise<void> {
     event.preventDefault();
     try {
@@ -430,24 +331,6 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
     });
   }
 
-  function applyOnlyOffice(settings: OnlyOfficeSettings): void {
-    setOnlyOffice(settings);
-    setOnlyOfficeForm({
-      enabled: settings.enabled,
-      serverUrl: settings.serverUrl ?? "",
-      publicBaseUrl: resolveSuggestedPublicBaseUrl({
-        currentValue: settings.publicBaseUrl,
-        existingValue: onlyOfficeForm.publicBaseUrl,
-        serverState
-      }),
-      callbackBaseUrl: settings.callbackBaseUrl ?? "",
-      userDisplayName: settings.userDisplayName ?? "",
-      userAvatarUrl: settings.userAvatarUrl ?? "",
-      jwtSecret: "",
-      clearJwtSecret: false
-    });
-  }
-
   function applyServerState(state: HttpServerState): void {
     setServerState(state);
     const host = !state.authConfigured && state.host !== "127.0.0.1"
@@ -461,14 +344,6 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
       authUsername: state.authUsername ?? "",
       authPassword: ""
     });
-    setOnlyOfficeForm((current) => ({
-      ...current,
-      publicBaseUrl: resolveSuggestedPublicBaseUrl({
-        currentValue: current.publicBaseUrl,
-        existingValue: current.publicBaseUrl,
-        serverState: state
-      })
-    }));
   }
 
   async function loadHostDirectory(targetPath?: string | null): Promise<void> {
@@ -792,61 +667,6 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
       <section className="settings-integration-section">
         <div className="settings-integration-cards" role="list" aria-label={t("settingsIntegrationHubTitle")}>
           <AgentIntegrationSettings />
-          <SettingsModule
-            title={t("settingsOnlyOfficeTitle")}
-            description={t("settingsOnlyOfficeDescription")}
-            status={onlyOfficeForm.enabled ? t("settingsIntegrationEnabled") : t("settingsIntegrationDisabled")}
-            feedback={onlyOfficeUnavailable ? <div className="inline-note" role="alert">{onlyOfficeUnavailable}</div> : null}
-            listItem
-            defaultExpanded={false}
-          >
-            {isMirrorMode ? (
-              <div className="settings-remote-owner-note" data-tone="danger">
-                <strong>{t("settingsRemoteOwnerTitle")}</strong>
-                <span>{t("settingsMirrorOnlyOfficeRemoteNotice")}</span>
-              </div>
-            ) : null}
-            <div className="settings-current">
-              <span>{t("settingsOnlyOfficeInstance")}</span>
-              <strong>{onlyOfficeForm.serverUrl || t("commonNotSet")}</strong>
-            </div>
-            <div className="settings-onlyoffice-metrics settings-onlyoffice-metrics-compact" role="list" aria-label={t("settingsOnlyOfficeStatusPanelTitle")}>
-              {buildOnlyOfficeStatusCards(onlyOfficeStatus).slice(0, 4).map((card) => (
-                <div
-                  key={card.key}
-                  className="settings-onlyoffice-metric-card"
-                  data-tone={card.tone}
-                  role="listitem"
-                  tabIndex={0}
-                >
-                  <span className="settings-onlyoffice-metric-label">{card.label}</span>
-                  <strong className="settings-onlyoffice-metric-value">{card.value}</strong>
-                  <div className="settings-onlyoffice-metric-tooltip" role="note">
-                    {card.detail}
-                  </div>
-                </div>
-              ))}
-            </div>
-            <div className="button-row">
-              <button
-                type="button"
-                className="secondary-button"
-                disabled={!onlyOffice}
-                onClick={() => setOnlyOfficeModal({ open: true, refreshing: false })}
-              >
-                {t("settingsOnlyOfficeConfigureAction")}
-              </button>
-              <button
-                type="button"
-                className="secondary-button"
-                disabled={onlyOfficeModal.refreshing}
-                onClick={() => void refreshOnlyOfficeStatus()}
-              >
-                {onlyOfficeModal.refreshing ? t("healthChecking") : t("settingsOnlyOfficeRefreshStatus")}
-              </button>
-            </div>
-          </SettingsModule>
-
         </div>
       </section>
     ),
@@ -1010,19 +830,6 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
     return (
       <>
         {content}
-        <OnlyOfficeSettingsModal
-          open={onlyOfficeModal.open}
-          error={onlyOfficeUnavailable}
-          isMirrorMode={isMirrorMode}
-          refreshing={onlyOfficeModal.refreshing}
-          onlyOffice={onlyOffice}
-          onlyOfficeForm={onlyOfficeForm}
-          onlyOfficeStatus={onlyOfficeStatus}
-          onClose={() => setOnlyOfficeModal({ open: false, refreshing: false })}
-          onRefresh={() => void refreshOnlyOfficeStatus()}
-          onSubmit={submitOnlyOffice}
-          onChange={(updater) => setOnlyOfficeForm((current) => updater(current))}
-        />
         <DirectoryBrowserModal
           open={directoryBrowserOpen}
           loading={directoryBrowserLoading}
@@ -1071,19 +878,6 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
       >
         {content}
       </DesktopModal>
-      <OnlyOfficeSettingsModal
-        open={onlyOfficeModal.open}
-        error={onlyOfficeUnavailable}
-        isMirrorMode={isMirrorMode}
-        refreshing={onlyOfficeModal.refreshing}
-        onlyOffice={onlyOffice}
-        onlyOfficeForm={onlyOfficeForm}
-        onlyOfficeStatus={onlyOfficeStatus}
-        onClose={() => setOnlyOfficeModal({ open: false, refreshing: false })}
-        onRefresh={() => void refreshOnlyOfficeStatus()}
-        onSubmit={submitOnlyOffice}
-        onChange={(updater) => setOnlyOfficeForm((current) => updater(current))}
-      />
       <DirectoryBrowserModal
         open={directoryBrowserOpen}
         loading={directoryBrowserLoading}
@@ -1111,172 +905,6 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
         onSubmit={() => void submitResetApplication()}
       />
     </>
-  );
-}
-
-function OnlyOfficeSettingsModal({
-  open,
-  error,
-  isMirrorMode,
-  refreshing,
-  onlyOffice,
-  onlyOfficeForm,
-  onlyOfficeStatus,
-  onClose,
-  onRefresh,
-  onSubmit,
-  onChange,
-}: {
-  open: boolean;
-  error: string | null;
-  isMirrorMode: boolean;
-  refreshing: boolean;
-  onlyOffice: OnlyOfficeSettings | null;
-  onlyOfficeForm: OnlyOfficeFormState;
-  onlyOfficeStatus: OnlyOfficeStatus | null;
-  onClose: () => void;
-  onRefresh: () => void;
-  onSubmit: (event: FormEvent) => Promise<void>;
-  onChange: (updater: (current: OnlyOfficeFormState) => OnlyOfficeFormState) => void;
-}) {
-  return (
-    <DesktopModal
-      open={open}
-      title={t("settingsOnlyOfficeTitle")}
-      description={t("settingsOnlyOfficeModalDescription")}
-      size="wide"
-      layout="form"
-      className="settings-onlyoffice-modal"
-      bodyClassName="settings-onlyoffice-modal-body"
-      onClose={onClose}
-    >
-      <form className="settings-onlyoffice-panel" onSubmit={(event) => void onSubmit(event)}>
-        {error ? <div className="inline-alert" role="alert">{error}</div> : null}
-        <div className="settings-onlyoffice-status-summary">
-          <div className="settings-onlyoffice-status-copy">
-            <p className="settings-onlyoffice-status-description">{onlyOfficeStatus?.summary ?? t("settingsOnlyOfficeStatusUnknown")}</p>
-            {isMirrorMode ? (
-              <div className="settings-remote-owner-note" data-tone="danger">
-                <strong>{t("settingsRemoteOwnerTitle")}</strong>
-                <span>{t("settingsMirrorOnlyOfficeRemoteNotice")}</span>
-              </div>
-            ) : null}
-          </div>
-        </div>
-
-        <div className="settings-onlyoffice-metrics" role="list" aria-label={t("settingsOnlyOfficeStatusPanelTitle")}>
-          {buildOnlyOfficeStatusCards(onlyOfficeStatus).map((card) => (
-            <div
-              key={card.key}
-              className="settings-onlyoffice-metric-card"
-              data-tone={card.tone}
-              role="listitem"
-              tabIndex={0}
-            >
-              <span className="settings-onlyoffice-metric-label">{card.label}</span>
-              <strong className="settings-onlyoffice-metric-value">{card.value}</strong>
-              <div className="settings-onlyoffice-metric-tooltip" role="note">
-                {card.detail}
-              </div>
-            </div>
-          ))}
-        </div>
-
-        <section className="settings-onlyoffice-form-section">
-          <label className="switch-row settings-onlyoffice-switch-row">
-            <div className="settings-onlyoffice-switch-copy">
-              <span>{t("settingsOnlyOfficeEnabled")}</span>
-              <small>{onlyOfficeForm.enabled ? t("settingsOnlyOfficeEnabledDescriptionOn") : t("settingsOnlyOfficeEnabledDescriptionOff")}</small>
-            </div>
-            <MacSwitch
-              checked={onlyOfficeForm.enabled}
-              label={t("settingsOnlyOfficeEnabled")}
-              onChange={(checked) => onChange((current) => ({ ...current, enabled: checked }))}
-            />
-          </label>
-
-          <TextInput
-            label={t("settingsOnlyOfficeServerUrl")}
-            description={t("settingsOnlyOfficeServerUrlDescription")}
-            value={onlyOfficeForm.serverUrl}
-            placeholder={t("settingsOnlyOfficeServerUrlPlaceholder")}
-            onChange={(value) => onChange((current) => ({ ...current, serverUrl: value }))}
-          />
-          <TextInput
-            label={t("settingsOnlyOfficePublicBaseUrl")}
-            description={t("settingsOnlyOfficePublicBaseUrlDescription")}
-            value={onlyOfficeForm.publicBaseUrl}
-            placeholder={t("settingsOnlyOfficePublicBaseUrlPlaceholder")}
-            onChange={(value) => onChange((current) => ({ ...current, publicBaseUrl: value }))}
-          />
-          <TextInput
-            label={t("settingsOnlyOfficeCallbackBaseUrl")}
-            value={onlyOfficeForm.callbackBaseUrl}
-            placeholder={t("settingsOnlyOfficeCallbackBaseUrlPlaceholder")}
-            onChange={(value) => onChange((current) => ({ ...current, callbackBaseUrl: value }))}
-          />
-        </section>
-
-        <section className="settings-onlyoffice-form-section">
-          <div className="settings-section-title">
-            <strong>{t("settingsOnlyOfficeIdentitySection")}</strong>
-          </div>
-
-          <TextInput
-            label={t("settingsOnlyOfficeUserName")}
-            value={onlyOfficeForm.userDisplayName}
-            placeholder={t("settingsOnlyOfficeUserNamePlaceholder")}
-            onChange={(value) => onChange((current) => ({ ...current, userDisplayName: value }))}
-          />
-          <TextInput
-            label={t("settingsOnlyOfficeAvatar")}
-            value={onlyOfficeForm.userAvatarUrl}
-            placeholder={t("settingsOnlyOfficeAvatarPlaceholder")}
-            onChange={(value) => onChange((current) => ({ ...current, userAvatarUrl: value }))}
-          />
-        </section>
-
-        <section className="settings-onlyoffice-form-section">
-          <div className="settings-section-title">
-            <strong>{t("settingsOnlyOfficeSecuritySection")}</strong>
-            <span className="settings-module-status">{onlyOffice?.jwtSecretConfigured ? t("settingsOnlyOfficeJwtConfigured") : t("settingsOnlyOfficeJwtNotConfigured")}</span>
-          </div>
-
-          <TextInput
-            label={t("settingsOnlyOfficeJwtSecret")}
-            description={t("settingsOnlyOfficeJwtSecretDescription")}
-            value={onlyOfficeForm.jwtSecret}
-            placeholder={onlyOffice?.jwtSecretConfigured
-              ? t("settingsOnlyOfficeJwtKeepPlaceholder")
-              : t("settingsOnlyOfficeJwtPlaceholder")}
-            onChange={(value) => onChange((current) => ({ ...current, jwtSecret: value, clearJwtSecret: false }))}
-          />
-          <label className="switch-row settings-onlyoffice-switch-row">
-            <div className="settings-onlyoffice-switch-copy">
-              <span>{t("settingsOnlyOfficeClearJwt")}</span>
-              <small>{t("settingsOnlyOfficeClearJwtDescription")}</small>
-            </div>
-            <MacSwitch
-              checked={onlyOfficeForm.clearJwtSecret}
-              label={t("settingsOnlyOfficeClearJwt")}
-              onChange={(checked) => onChange((current) => ({ ...current, clearJwtSecret: checked }))}
-            />
-          </label>
-        </section>
-
-        <ModalActions align="between" className="settings-onlyoffice-modal-actions">
-          <button type="button" className="secondary-button" onClick={onClose}>
-            {t("actionCancel")}
-          </button>
-          <div className="settings-onlyoffice-modal-actions-group">
-            <button type="button" className="secondary-button" onClick={onRefresh}>
-              {refreshing ? t("healthChecking") : t("settingsOnlyOfficeRefreshStatus")}
-            </button>
-            <button type="submit" className="primary-button">{t("settingsOnlyOfficeSave")}</button>
-          </div>
-        </ModalActions>
-      </form>
-    </DesktopModal>
   );
 }
 
@@ -1434,76 +1062,6 @@ function ResetApplicationModal({
         ) : null}
       </div>
     </DesktopModal>
-  );
-}
-
-function resolveSuggestedPublicBaseUrl(input: PublicBaseUrlOptions): string {
-  const normalizedCurrent = input.currentValue?.trim() ?? "";
-  if (normalizedCurrent && !looksLikeDevWebAddress(normalizedCurrent)) {
-    return normalizedCurrent;
-  }
-
-  const runtimeBaseUrl = buildRuntimePublicBaseUrl(input.serverState);
-  if (runtimeBaseUrl) {
-    return runtimeBaseUrl;
-  }
-
-  return input.existingValue;
-}
-
-function buildRuntimePublicBaseUrl(serverState: HttpServerState | null): string {
-  if (!serverState) {
-    return "";
-  }
-
-  if (typeof window !== "undefined" && /^https?:$/i.test(window.location.protocol)) {
-    return window.location.origin;
-  }
-
-  const accessUrl = serverState.accessUrls?.[0];
-  if (accessUrl) {
-    return accessUrl.replace(/\/$/, "");
-  }
-
-  const port = serverState.actualPort ?? serverState.port;
-  const host = serverState.actualHost && serverState.actualHost !== "0.0.0.0"
-    ? serverState.actualHost
-    : "127.0.0.1";
-  return `http://${host}:${port}`;
-}
-
-function looksLikeDevWebAddress(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return (
-      url.protocol === "http:"
-      && (url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "10.255.0.83")
-      && url.port === "17320"
-    );
-  } catch {
-    return false;
-  }
-}
-
-function TextInput({
-  label,
-  description,
-  value,
-  placeholder,
-  onChange
-}: {
-  label: string;
-  description?: string;
-  value: string;
-  placeholder?: string;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <label className="settings-onlyoffice-field">
-      <span>{label}</span>
-      {description ? <small>{description}</small> : null}
-      <input value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} />
-    </label>
   );
 }
 
@@ -1842,103 +1400,6 @@ function ServerAccessUrls({
       ) : null}
     </>
   );
-}
-
-function normalizeOptionalUrl(value: string): string | null {
-  return normalizeOptionalText(value);
-}
-
-function resolveOnlyOfficeStatusLabel(state: OnlyOfficeStatusState | undefined): string {
-  switch (state) {
-    case "ready":
-      return t("settingsOnlyOfficeStatusReady");
-    case "warning":
-      return t("settingsOnlyOfficeStatusWarning");
-    case "error":
-      return t("settingsOnlyOfficeStatusError");
-    case "misconfigured":
-      return t("settingsOnlyOfficeStatusMisconfigured");
-    case "disabled":
-      return t("settingsOnlyOfficeStatusDisabled");
-    default:
-      return t("settingsOnlyOfficeStatusUnknown");
-  }
-}
-
-function resolveOnlyOfficeStatusTone(
-  state: OnlyOfficeStatusState | undefined
-): "default" | "success" | "warning" | "danger" {
-  switch (state) {
-    case "ready":
-      return "success";
-    case "warning":
-    case "misconfigured":
-      return "warning";
-    case "error":
-      return "danger";
-    case "disabled":
-    default:
-      return "default";
-  }
-}
-
-function resolveOnlyOfficeCheckStatusLabel(status: "pass" | "warn" | "fail" | "skip"): string {
-  switch (status) {
-    case "pass":
-      return t("settingsOnlyOfficeCheckPass");
-    case "warn":
-      return t("settingsOnlyOfficeCheckWarn");
-    case "fail":
-      return t("settingsOnlyOfficeCheckFail");
-    case "skip":
-    default:
-      return t("settingsOnlyOfficeCheckSkip");
-  }
-}
-
-function resolveOnlyOfficeCheckTone(
-  status: "pass" | "warn" | "fail" | "skip"
-): "default" | "success" | "warning" | "danger" {
-  switch (status) {
-    case "pass":
-      return "success";
-    case "warn":
-      return "warning";
-    case "fail":
-      return "danger";
-    case "skip":
-    default:
-      return "default";
-  }
-}
-
-function buildOnlyOfficeStatusCards(status: OnlyOfficeStatus | null): OnlyOfficeStatusCard[] {
-  const cards: OnlyOfficeStatusCard[] = [
-    {
-      key: "summary",
-      label: t("settingsOnlyOfficeStatusLabel"),
-      value: resolveOnlyOfficeStatusLabel(status?.state),
-      detail: status?.summary ?? t("settingsOnlyOfficeStatusUnknown"),
-      tone: resolveOnlyOfficeStatusTone(status?.state)
-    }
-  ];
-
-  for (const check of status?.checks ?? []) {
-    cards.push({
-      key: check.key,
-      label: check.label,
-      value: resolveOnlyOfficeCheckStatusLabel(check.status),
-      detail: check.detail,
-      tone: resolveOnlyOfficeCheckTone(check.status)
-    });
-  }
-
-  return cards;
-}
-
-function normalizeOptionalText(value: string): string | null {
-  const normalized = value.trim();
-  return normalized ? normalized : null;
 }
 
 function normalizeExtensionToken(value: string): string {

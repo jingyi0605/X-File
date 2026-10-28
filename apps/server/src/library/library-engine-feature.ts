@@ -3,18 +3,14 @@ import type { LibraryIndexProgress, LibraryTask } from "@x-file/shared";
 
 import { HttpServerManager, type HttpServerRuntimeState } from "../http-server-manager.js";
 import { PersistentBackendManager } from "../lifecycle/persistent-backend-manager.js";
-import { OnlyOfficeController } from "../office/onlyoffice-controller.js";
-import { OnlyOfficeService } from "../office/onlyoffice-service.js";
 import { registerHostDirectoryRoutes } from "../routes/host-directory-routes.js";
 import { registerIntegrationRoutes } from "../routes/integration-routes.js";
 import { registerLibraryRoutes } from "../routes/library-routes.js";
-import { registerOfficeRoutes } from "../routes/office-routes.js";
 import { registerServerStateRoutes } from "../routes/server-state-routes.js";
 import { registerTagRoutes } from "../routes/tag-routes.js";
 import { IndexRuntimeStore } from "../storage/index-runtime-store.js";
 import { LibraryBindingStore } from "../storage/library-binding-store.js";
 import { LibraryConfigStore } from "../storage/library-config-store.js";
-import { OnlyOfficeSettingsStore } from "../storage/onlyoffice-settings-store.js";
 import { TagStore } from "../storage/tag-store.js";
 import { TaskManager } from "../tasks/task-manager.js";
 import { HostDirectoryBrowserService } from "./host-directory-browser-service.js";
@@ -56,10 +52,6 @@ export function createLibraryEngineFeature(
     undefined,
     libraryIndexService,
   );
-  const libraryConfigService = new LibraryConfigService(
-    libraryBindingStore,
-    new LibraryConfigStore(),
-  );
   const tagService = new TagService(
     libraryBindingStore,
     new TagStore(),
@@ -71,19 +63,6 @@ export function createLibraryEngineFeature(
     options.httpServerManager ??
     new HttpServerManager(undefined, options.httpServerRuntimeState);
   const persistentBackendManager = new PersistentBackendManager();
-  const signingSecret =
-    process.env.X_FILE_SIGNING_SECRET?.trim() || DEFAULT_SIGNING_SECRET;
-  const previewLinkService = new LibraryPreviewLinkService(
-    libraryService,
-    signingSecret,
-  );
-  const onlyOfficeService = new OnlyOfficeService(
-    new OnlyOfficeSettingsStore(),
-    previewLinkService,
-    libraryService,
-    signingSecret,
-  );
-
   return {
     libraryBindingStore,
     libraryService,
@@ -112,12 +91,6 @@ export function registerLibraryCoreRoutes(
     feature.libraryService,
     process.env.X_FILE_SIGNING_SECRET?.trim() || DEFAULT_SIGNING_SECRET,
   );
-  const onlyOfficeService = new OnlyOfficeService(
-    new OnlyOfficeSettingsStore(),
-    previewLinkService,
-    feature.libraryService,
-    process.env.X_FILE_SIGNING_SECRET?.trim() || DEFAULT_SIGNING_SECRET,
-  );
   const tagService = new TagService(
     feature.libraryBindingStore,
     new TagStore(),
@@ -130,7 +103,6 @@ export function registerLibraryCoreRoutes(
     new LibraryController(
       feature.libraryService,
       previewLinkService,
-      onlyOfficeService,
       libraryConfigService,
     ),
   );
@@ -169,23 +141,9 @@ export function registerLibraryNodeServiceRoutes(
   options: RegisterLibraryEngineFeatureOptions = {},
 ): void {
   // 这里保留的是 Node sidecar 仍必须承担的服务面：
-  // ONLYOFFICE 回调、integration/status、server state。
+  // integration/status、server state。
   // 它们可以消费 library 的只读视图或通过 notifyFileChanged 上报文件变更，
   // 但不应重新持有 index/export 执行面的宿主职责。
-  const previewLinkService = new LibraryPreviewLinkService(
-    feature.libraryService,
-    process.env.X_FILE_SIGNING_SECRET?.trim() || DEFAULT_SIGNING_SECRET,
-  );
-  const onlyOfficeService = new OnlyOfficeService(
-    new OnlyOfficeSettingsStore(),
-    previewLinkService,
-    feature.libraryService,
-    process.env.X_FILE_SIGNING_SECRET?.trim() || DEFAULT_SIGNING_SECRET,
-  );
-  void registerOfficeRoutes(
-    server,
-    new OnlyOfficeController(onlyOfficeService),
-  );
   void registerServerStateRoutes(
     server,
     feature.httpServerManager,
@@ -285,8 +243,6 @@ function registerSidecarOnlyIntegrationRoutes(
     api: {
       health: "/api/health",
       serverState: "/api/server/state",
-      onlyOfficeStatus: "/api/office/onlyoffice/status",
-      onlyOfficeCallback: "/api/office/onlyoffice/callback/:token",
     },
   }));
 }

@@ -16,13 +16,11 @@ import type {
 import type { LibraryConfigService } from "./library-config-service.js";
 import { toLibraryErrorResponse } from "./library-errors.js";
 import type { LibraryPreviewLinkService } from "./preview-link-service.js";
-import type { OnlyOfficeService } from "../office/onlyoffice-service.js";
 
 export class LibraryController {
   constructor(
     private readonly libraryService: LibraryService,
     private readonly previewLinkService: LibraryPreviewLinkService,
-    private readonly onlyOfficeService: OnlyOfficeService,
     private readonly libraryConfigService?: LibraryConfigService
   ) {}
 
@@ -73,22 +71,10 @@ export class LibraryController {
     const filePath = request.query.path ?? "";
     const preview = this.libraryService.previewFile(parsePreviewQuery(request.query));
 
-    if (preview.supported && (preview.kind === "html" || preview.kind === "image" || preview.kind === "pdf")) {
+    if (preview.supported && (preview.kind === "html" || preview.kind === "image" || preview.kind === "pdf" || preview.kind === "office")) {
       const previewLink = this.previewLinkService.createLink(filePath);
       preview.previewPath = previewLink.previewPath;
       preview.previewUrl = buildAbsolutePreviewUrl(request, previewLink.previewPath);
-    }
-
-    if (preview.supported && preview.kind === "office") {
-      const previewLink = this.previewLinkService.createOnlyOfficeLink(filePath);
-      preview.onlyOffice = this.onlyOfficeService.buildLibraryPreview({
-        filePath,
-        version: preview.version,
-        editable: true,
-        displayMode: normalizeOnlyOfficeDisplayMode(request.query.displayMode),
-        previewPath: previewLink.apiPreviewPath
-      });
-      preview.previewUrl = preview.onlyOffice.documentUrl;
     }
 
     reply.send(preview);
@@ -219,10 +205,6 @@ function parsePreviewQuery(query: LibraryPreviewQuery): PreviewLibraryFileInput 
     path: query.path?.trim() ?? null,
     displayMode: query.displayMode?.trim() ?? null
   };
-}
-
-function normalizeOnlyOfficeDisplayMode(value: string | undefined): "default" | "reading" {
-  return value === "reading" ? "reading" : "default";
 }
 
 function buildAbsolutePreviewUrl(request: FastifyRequest, previewPath: string): string {

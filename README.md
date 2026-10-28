@@ -115,9 +115,9 @@ PUT /api/server/state
 
 ## 外部 Agent 接入方向
 
-X-File 不再提供内置 AI 助手或文件助手，也不再内置 Codex、Claude Code 的对话、会话、权限审批和供应商插件。已有文档管理、预览、索引、标签及 ONLYOFFICE 功能继续保留；本次移除不会主动清理用户磁盘上的历史助手数据。
+X-File 不再提供内置 AI 助手或文件助手，也不再内置 Codex、Claude Code 的对话、会话、权限审批和供应商插件。文档管理、预览、索引、标签等资料库能力继续保留；本次移除不会主动清理用户磁盘上的历史助手数据。
 
-已提供 31 项原生工具，通过 CLI 和 MCP stdio 共用工具目录、JSON Schema、结果格式与业务实现。覆盖资料库配置、检索、文件、标签、收藏、索引和 ONLYOFFICE；配套 `skills/x-file/SKILL.md` 帮助外部 Agent 发现和调用能力。无需启动图形窗口或 Node 后端。
+已提供 28 项原生工具，通过 CLI 和 MCP stdio 共用工具目录、JSON Schema、结果格式与业务实现。覆盖资料库配置、检索、文件、标签、收藏和索引；配套 `skills/x-file/SKILL.md` 帮助外部 Agent 发现和调用能力。无需启动图形窗口或 Node 后端。
 
 ```bash
 apps/desktop/src-tauri/target/debug/x-file-desktop cli list

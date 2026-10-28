@@ -11,9 +11,14 @@
     "test": "NODE_ENV=test vitest run"
   },
   "dependencies": {
+    "@aiden0z/pptx-renderer": "1.4.0",
+    "@e965/xlsx": "0.20.3",
     "@tauri-apps/api": "^2.2.0",
     "@vitejs/plugin-react": "^4.3.4",
     "@x-file/shared": "workspace:*",
+    "docx-preview": "0.4.1",
+    "fflate": "0.8.3",
+    "pdfjs-dist": "5.4.394",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-markdown": "^10.1.0",

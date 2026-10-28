@@ -19,14 +19,11 @@ import type {
   LibraryTagDetailWithRules,
   LibraryTagNode,
   LibraryTagRule,
-  OnlyOfficeSettings,
-  OnlyOfficeStatus,
   RequestLibraryRefreshInput,
   SaveHttpServerStateInput,
   SaveLibraryBindingInput,
   SaveLibraryConfigInput,
   UpdateLibraryFavoritesInput,
-  UpdateOnlyOfficeSettingsInput,
 } from "@x-file/shared";
 
 import { apiRequest, postJson, putJson } from "./http";
@@ -45,8 +42,6 @@ import {
   getNativeLibraryTagDetail,
   getNativeLibraryTagRecomputeTask,
   getNativeLibraryTagRecomputeTaskOptional,
-  getNativeOnlyOfficeSettings,
-  getNativeOnlyOfficeStatus,
   listNativeLibraryTagDetails,
   listNativeLibraryDocuments,
   listNativeLibraryFiles,
@@ -57,7 +52,6 @@ import {
   saveNativeLibraryConfig,
   saveNativeDocumentTags,
   saveNativeFolderTags,
-  saveNativeOnlyOfficeSettings,
   updateNativeLibraryTag,
 } from "../runtime/native-library-bridge";
 
@@ -385,41 +379,6 @@ export function getLibraryTagRecomputeTask(): Promise<LibraryTagRecomputeTask | 
   return apiRequest<LibraryTagRecomputeTask | null>(
     "/api/library/tags/recompute-task",
   );
-}
-
-export async function getOnlyOfficeSettings(): Promise<OnlyOfficeSettings> {
-  if (shouldUseNativeLibraryBridge()) {
-    const native = await getNativeOnlyOfficeSettings();
-    if (native) {
-      return native;
-    }
-    throw new Error("主包本地模式已移除内建 ONLYOFFICE sidecar，且缺少 native_get_onlyoffice_settings。");
-  }
-  return apiRequest<OnlyOfficeSettings>("/api/office/onlyoffice/settings");
-}
-
-export async function saveOnlyOfficeSettings(
-  input: UpdateOnlyOfficeSettingsInput,
-): Promise<OnlyOfficeSettings> {
-  if (shouldUseNativeLibraryBridge()) {
-    const native = await saveNativeOnlyOfficeSettings(input);
-    if (native) {
-      return native;
-    }
-    throw new Error("主包本地模式已移除内建 ONLYOFFICE sidecar，且缺少 native_save_onlyoffice_settings。");
-  }
-  return putJson<OnlyOfficeSettings>("/api/office/onlyoffice/settings", input);
-}
-
-export async function getOnlyOfficeStatus(): Promise<OnlyOfficeStatus> {
-  if (shouldUseNativeLibraryBridge()) {
-    const native = await getNativeOnlyOfficeStatus();
-    if (native) {
-      return native;
-    }
-    throw new Error("主包本地模式已移除内建 ONLYOFFICE sidecar，且缺少 native_get_onlyoffice_status。");
-  }
-  return apiRequest<OnlyOfficeStatus>("/api/office/onlyoffice/status");
 }
 
 export async function getHttpServerState(): Promise<HttpServerState> {

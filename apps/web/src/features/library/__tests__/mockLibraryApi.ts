@@ -9,8 +9,6 @@ import type {
   LibraryFolderTagDetails,
   LibraryIndexStatus,
   LibrarySnapshot,
-  OnlyOfficeSettings,
-  OnlyOfficeStatus,
   LibraryTagDetailWithRules,
   LibraryTagNode,
 } from "@x-file/shared";
@@ -28,8 +26,6 @@ export const libraryApiMock = {
   getLibraryPreview: vi.fn(),
   getLibrarySnapshot: vi.fn(),
   getLibraryTagRecomputeTask: vi.fn(),
-  getOnlyOfficeSettings: vi.fn(),
-  getOnlyOfficeStatus: vi.fn(),
   listLibraryDocuments: vi.fn(),
   listLibraryFiles: vi.fn(),
   listLibraryTagDetails: vi.fn(),
@@ -44,7 +40,6 @@ export const libraryApiMock = {
   saveFolderTags: vi.fn(),
   saveLibraryBinding: vi.fn(),
   saveLibraryConfig: vi.fn(),
-  saveOnlyOfficeSettings: vi.fn(),
   updateLibraryFavorites: vi.fn(),
   updateLibraryTag: vi.fn(),
 };
@@ -73,8 +68,6 @@ export function resetLibraryApiMock(): void {
     authConfigured: false,
     authUsername: null,
   });
-  libraryApiMock.getOnlyOfficeSettings.mockResolvedValue(createOnlyOfficeSettings());
-  libraryApiMock.getOnlyOfficeStatus.mockResolvedValue(createOnlyOfficeStatus());
   libraryApiMock.listLibraryTags.mockResolvedValue([]);
   libraryApiMock.listLibraryTasks.mockResolvedValue([]);
   libraryApiMock.listenLibraryTaskUpdates.mockResolvedValue(() => {});
@@ -181,34 +174,6 @@ export function createLibrarySnapshot(
     folders: [],
     documentCount: 0,
     lastError: null,
-    ...overrides,
-  };
-}
-
-export function createOnlyOfficeSettings(
-  overrides: Partial<OnlyOfficeSettings> = {},
-): OnlyOfficeSettings {
-  return {
-    enabled: false,
-    serverUrl: null,
-    publicBaseUrl: null,
-    callbackBaseUrl: null,
-    userDisplayName: null,
-    userAvatarUrl: null,
-    jwtSecretConfigured: false,
-    updatedAt: "2026-06-09T00:00:00.000Z",
-    ...overrides,
-  };
-}
-
-export function createOnlyOfficeStatus(
-  overrides: Partial<OnlyOfficeStatus> = {},
-): OnlyOfficeStatus {
-  return {
-    state: "disabled",
-    summary: "OnlyOffice 未启用。",
-    checkedAt: "2026-06-09T00:00:00.000Z",
-    checks: [],
     ...overrides,
   };
 }

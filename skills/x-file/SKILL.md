@@ -70,7 +70,7 @@ MCP stdio 启动命令为 `<可执行文件> mcp`。需要只读能力时加入 
 
 `xfile_document_tags_set` 和 `xfile_folder_tags_set` 设置的是完整手工标签集合。先查询当前关系，合并用户要求后再保存，避免覆盖无关标签；也可以用 `createTagPaths` 同时创建并分配新标签。标签保存会同步更新原生导出；批量状态通过标签重算工具检查。
 
-`xfile_favorites_set` 同样替换完整收藏集合，先读后合并。索引配置、ONLYOFFICE 设置只在任务要求修改这些配置时使用；读取设置不返回 JWT 密钥。
+`xfile_favorites_set` 同样替换完整收藏集合，先读后合并。
 
 ## 处理错误
 

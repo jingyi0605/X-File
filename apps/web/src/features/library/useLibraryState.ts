@@ -30,7 +30,6 @@ import { toApiErrorMessage } from "../../api/http";
 import {
   fetchNativeLibrarySnapshot,
   getNativeLibraryPreview,
-  getNativeOnlyOfficePreview,
   listNativeLibraryDocuments,
   listNativeLibraryFiles,
   listenNativeLibraryUpdates,
@@ -701,19 +700,16 @@ export function useLibraryState(): LibraryState {
       const nativePreview = shouldUseNativeLibraryBridge()
         ? await getNativeLibraryPreview(path, "reading").catch(() => null)
         : null;
-      const resolvedNativePreview = nativePreview?.kind === "office" && !nativePreview.onlyOffice
-        ? await getNativeOnlyOfficePreview(path, "reading", true).catch(() => nativePreview)
-        : nativePreview;
       updateDebugChannel(
         "preview",
-        resolvedNativePreview ? "native" : "http",
-        resolvedNativePreview
-          ? `preview 命中 Rust，kind=${resolvedNativePreview.kind}${resolvedNativePreview.onlyOffice ? " onlyoffice=native" : ""}`
+        nativePreview ? "native" : "http",
+        nativePreview
+          ? `preview 命中 Rust，kind=${nativePreview.kind}`
           : shouldUseNativeLibraryBridge()
             ? `native preview 不可用，已回退 HTTP /api/library/preview (${path})`
             : "当前运行模式不走 native preview",
       );
-      const nextPreview = resolvedNativePreview ?? await getLibraryPreview(path, "reading");
+      const nextPreview = nativePreview ?? await getLibraryPreview(path, "reading");
       if (previewRequestTokenRef.current !== requestToken) {
         return;
       }

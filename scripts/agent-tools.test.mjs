@@ -72,7 +72,7 @@ function bind(f) {
 test("CLI 工具发现、输入格式、只读模式与内嵌 SKILL", t => {
   const f = fixture(t);
   const list = JSON.parse(cli(f, ["list"]).stdout);
-  assert.equal(list.tools.length, 31);
+  assert.equal(list.tools.length, 28);
   assert.equal(new Set(list.tools.map(tool => tool.name)).size, list.tools.length);
   const schema = JSON.parse(cli(f, ["schema", "xfile_file_operation"]).stdout);
   assert.equal(schema.inputSchema.additionalProperties, false);
@@ -178,14 +178,6 @@ test("真实 CLI 完成资料库、文件、标签、收藏与索引流程", t =
   invoke(f, "xfile_index_refresh", { targetPaths: ["docs"] });
   assert.equal(invoke(f, "xfile_index_status").state, "cooldown");
   assert.equal(invoke(f, "xfile_snapshot").documentCount, 1);
-  const settings = invoke(f, "xfile_onlyoffice_settings_get");
-  assert.equal(settings.enabled, false);
-  const office = invoke(f, "xfile_onlyoffice_settings_set", {
-    enabled: false, serverUrl: "http://127.0.0.1:19099", jwtSecret: "test-secret",
-  });
-  assert.equal(JSON.stringify(office).includes("test-secret"), false);
-  assert.equal(invoke(f, "xfile_onlyoffice_settings_set", { userDisplayName: "Agent" }).serverUrl, "http://127.0.0.1:19099");
-  assert.equal(invoke(f, "xfile_onlyoffice_status").state, "disabled");
 });
 
 test("文件路径、符号链接、二进制读取和失败清理", t => {
@@ -358,7 +350,7 @@ test("真实 MCP stdio 握手、发现、读写、资源、错误恢复与正常
   assert.ok(info.capabilities.tools);
   assert.ok(info.capabilities.resources);
   const list = await client.request("tools/list");
-  assert.equal(list.result.tools.length, 31);
+  assert.equal(list.result.tools.length, 28);
   const call = async (name, args = {}) => {
     const response = await client.request("tools/call", { name, arguments: args });
     assert.ok(response.result, JSON.stringify(response));
@@ -440,7 +432,7 @@ test("开关、缺失或错误密钥及已连接 MCP 的换钥和撤销", async 
   assert.equal(denied.stdout, "");
   assert.match(denied.stderr, /AGENT_DISABLED/);
   assert.ok(!denied.stderr.includes(f.key));
-  assert.equal(JSON.parse(cli(f, ["list"]).stdout).tools.length, 31);
+  assert.equal(JSON.parse(cli(f, ["list"]).stdout).tools.length, 28);
   assert.equal(cli(f, ["skill"]).stdout, skill);
   fs.unlinkSync(path.join(f.data, "agent-integration.json"));
   invoke(f, "xfile_status", {}, "AGENT_DISABLED");

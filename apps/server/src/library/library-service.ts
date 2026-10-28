@@ -191,7 +191,7 @@ export class LibraryService {
       offset: normalizeNonNegativeInteger(input.offset, 0),
       limit: normalizeLimit(input.limit, 50),
       favorites: binding ? this.readFavorites(binding) : [],
-      tagDirectoryBindings
+      tagDirectoryBindings,
     });
     // 对齐父仓库 affairs-library-service.ts:948-958：导出分片链路只携带 mtime，
     // 「大小(sizeBytes)」与「创建时间(createdAt=birthtime)」在此对当前页文档实时补全；
@@ -272,7 +272,6 @@ export class LibraryService {
 
     if (
       isResourcePreviewKind(previewKind)
-      && previewKind !== "office"
       && fileSize > MAX_RESOURCE_PREVIEW_FILE_BYTES
     ) {
       return buildPreviewResult({
@@ -590,7 +589,7 @@ export class LibraryService {
     }
 
     // 这是 Node sidecar 服务面唯一允许触达数据面的入口。
-    // 像 ONLYOFFICE 这类回写链只能上报“文件已变化”，不能直接驱动 index/export 执行实现。
+    // 外部写回链只能上报“文件已变化”，不能直接驱动 index/export 执行实现。
     return this.indexService.requestRefresh(binding, {
       reason,
       targetPath
@@ -754,13 +753,12 @@ function normalizeLimit(value: number | undefined, fallback: number): number {
 }
 
 function buildPreviewResult(
-  input: Omit<LibraryPreview, "previewPath" | "previewUrl" | "onlyOffice" | "capabilities">
+  input: Omit<LibraryPreview, "previewPath" | "previewUrl" | "capabilities">
 ): LibraryPreview {
   return {
     ...input,
     previewPath: null,
     previewUrl: null,
-    onlyOffice: null,
     capabilities: buildPreviewCapabilities(input.kind, {
       supported: input.supported,
       content: input.content,

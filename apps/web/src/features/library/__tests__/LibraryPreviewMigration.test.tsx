@@ -6,6 +6,8 @@ import type { LibraryPreview } from "@x-file/shared";
 import {
   createDocumentList,
   createDocumentRecord,
+  createLibraryBinding,
+  createLibrarySnapshot,
   createFileList,
   createFileNode,
   installLibraryApiMock,
@@ -124,7 +126,9 @@ describe("第 1 批：文档预览、编辑写回、Office 阅读视图与目录
     expect(screen.getByRole("button", { name: "收起全文" })).toBeInTheDocument();
   });
 
-  it("右侧对象详情栏底部的 Office 预览走阅读视图，不影响双击正式预览", async () => {
+  it("Office 右侧详情预览直接读取原文件资源", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("", { status: 404 }));
+    vi.stubGlobal("fetch", fetchMock);
     libraryApiMock.listLibraryDocuments.mockResolvedValue(
       createDocumentList([createDocumentRecord({ documentId: "doc-office", path: "docs/合同.docx" })]),
     );
@@ -133,47 +137,41 @@ describe("第 1 批：文档预览、编辑写回、Office 阅读视图与目录
       kind: "office",
       content: null,
       version: "office-v1",
-      onlyOffice: {
-        apiScriptUrl: "https://office.example/api.js",
-        editorMode: "view",
-        documentUrl: "https://office.example/reading",
-        callbackUrl: "https://office.example/callback",
-        editorConfig: {},
-      },
+      previewUrl: "/api/library/preview-file/token/docs/%E5%90%88%E5%90%8C.docx",
     }));
 
     const { LibraryPage } = await import("../LibraryPage");
     render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
 
     await userEvent.click(await screen.findByRole("button", { name: /合同\.docx/ }));
-    await waitFor(() => {
-      expect(libraryApiMock.getLibraryPreview).toHaveBeenCalledWith("docs/合同.docx", "reading");
-    });
-
-    libraryApiMock.getLibraryPreview.mockClear();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(document.querySelector(".office-preview-shell")).toBeInTheDocument();
     fireEvent.doubleClick(screen.getByRole("button", { name: /合同\.docx/ }));
     await screen.findByRole("dialog", { name: "合同.docx" });
-    await waitFor(() => {
-      expect(libraryApiMock.getLibraryPreview).toHaveBeenCalledWith("docs/合同.docx");
-    });
+    expect(libraryApiMock.getLibraryPreview).toHaveBeenCalledWith("docs/合同.docx");
   });
 
   it("双击 Office 文档后使用铺满屏幕的查看器布局，并且不复用右侧栏的小预览壳层", async () => {
+    localStorage.setItem("x-file.runtime.config", JSON.stringify({
+      mode: "local",
+      remoteApiBaseUrl: "http://127.0.0.1:17321",
+      localRootDir: "",
+    }));
+    const fetchMock = vi.fn().mockResolvedValue(new Response("", { status: 404 }));
+    vi.stubGlobal("fetch", fetchMock);
     libraryApiMock.listLibraryDocuments.mockResolvedValue(
       createDocumentList([createDocumentRecord({ documentId: "doc-office-full", path: "docs/报价单.docx" })]),
     );
+    libraryApiMock.getLibrarySnapshot.mockResolvedValue({
+      ...createLibrarySnapshot(),
+      binding: createLibraryBinding({ rootDir: "/Users/test/Documents" }),
+    });
     libraryApiMock.getLibraryPreview.mockResolvedValue(createPreview({
       path: "docs/报价单.docx",
       kind: "office",
       content: null,
       version: "office-v2",
-      onlyOffice: {
-        apiScriptUrl: "https://office.example/api.js",
-        editorMode: "view",
-        documentUrl: "https://office.example/reading",
-        callbackUrl: "https://office.example/callback",
-        editorConfig: {},
-      },
+      previewUrl: null,
     }));
 
     const { LibraryPage } = await import("../LibraryPage");
@@ -186,9 +184,9 @@ describe("第 1 批：文档预览、编辑写回、Office 阅读视图与目录
     expect(modalCard).not.toBeNull();
     expect(modalCard?.getAttribute("data-size")).toBe("full");
     expect(modalCard?.className.includes("is-office-viewer")).toBe(true);
-    expect(dialog.querySelector(".library-file-viewer-office-shell")).toBeNull();
-    expect(dialog.querySelector(".file-viewer-office-shell")).not.toBeNull();
-    expect(dialog.querySelector(".library-file-viewer-fallback")).toBeNull();
+    expect(dialog.querySelector(".office-preview-shell")).not.toBeNull();
+    expect(dialog.querySelector(".office-preview-shell")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "使用本地应用打开" })).not.toBeInTheDocument();
   });
 
   it("双击 PPT 文档后默认使用铺满屏幕的查看器布局", async () => {
@@ -200,13 +198,7 @@ describe("第 1 批：文档预览、编辑写回、Office 阅读视图与目录
       kind: "office",
       content: null,
       version: "ppt-office-v1",
-      onlyOffice: {
-        apiScriptUrl: "https://office.example/api.js",
-        editorMode: "view",
-        documentUrl: "https://office.example/presentation",
-        callbackUrl: "https://office.example/callback",
-        editorConfig: {},
-      },
+      previewUrl: null,
     }));
 
     const { LibraryPage } = await import("../LibraryPage");
@@ -289,7 +281,6 @@ function createPreview(overrides: Partial<LibraryPreview> = {}): LibraryPreview 
     updatedAt: "2026-06-10T00:00:00.000Z",
     previewPath: null,
     previewUrl: null,
-    onlyOffice: null,
     capabilities: {
       canEdit: true,
       canRefresh: true,

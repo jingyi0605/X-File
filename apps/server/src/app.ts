@@ -10,7 +10,7 @@ import { registerAgentSettingsRoutes } from "./routes/agent-settings-routes.js";
 import { registerHttpAuthRoutes } from "./routes/http-auth-routes.js";
 
 const APP_VERSION = "0.1.0";
-const ROUTER_MAX_PARAM_LENGTH = 4096;
+const LIBRARY_PREVIEW_TOKEN_MAX_LENGTH = 4096;
 
 export interface CreateServerOptions {
   httpServerRuntimeState?: HttpServerRuntimeState;
@@ -26,10 +26,8 @@ export function createServer(options: CreateServerOptions = {}) {
     new HttpServerManager(undefined, options.httpServerRuntimeState);
   const server = Fastify({
     logger: true,
-    // ONLYOFFICE 预览 token 会把相对路径一起签进 URL，默认参数长度不够时
-    // Fastify 会直接把真实路由当成 404，导致 Office 文件根本拿不到字节流。
     routerOptions: {
-      maxParamLength: ROUTER_MAX_PARAM_LENGTH
+      maxParamLength: LIBRARY_PREVIEW_TOKEN_MAX_LENGTH,
     },
     // 移除每个请求的 "incoming request" / "request completed" 日志，
     // 只保留 error/warn 及路由内手动日志

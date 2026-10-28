@@ -1,48 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-  getHttpServerState,
-  getOnlyOfficeSettings,
-  getOnlyOfficeStatus,
-  saveHttpServerState,
-  saveOnlyOfficeSettings,
-} from "./library";
+import { getHttpServerState, saveHttpServerState } from "./library";
 import { initializeRuntimeConfig } from "../runtime/runtime-config-store";
 
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
 
-const officeInput = { enabled: true, serverUrl: "https://office.example.com" };
 const serverInput = { enabled: true, persistent: false, port: 17321 };
 const operations = [
-  {
-    name: "读取 ONLYOFFICE 设置",
-    command: "native_get_onlyoffice_settings",
-    path: "/api/office/onlyoffice/settings",
-    method: "GET",
-    input: undefined,
-    nativeArgs: undefined,
-    run: () => getOnlyOfficeSettings(),
-  },
-  {
-    name: "保存 ONLYOFFICE 设置",
-    command: "native_save_onlyoffice_settings",
-    path: "/api/office/onlyoffice/settings",
-    method: "PUT",
-    input: officeInput,
-    nativeArgs: { input: officeInput },
-    run: () => saveOnlyOfficeSettings(officeInput),
-  },
-  {
-    name: "读取 ONLYOFFICE 状态",
-    command: "native_get_onlyoffice_status",
-    path: "/api/office/onlyoffice/status",
-    method: "GET",
-    input: undefined,
-    nativeArgs: undefined,
-    run: () => getOnlyOfficeStatus(),
-  },
   {
     name: "读取 HTTP 服务设置",
     command: "native_get_http_server_state",
@@ -83,7 +49,6 @@ describe("设置 API 运行环境路由", () => {
 
   it.each(operations)("HTTP 本地模式：$name 使用同源 API", async (operation) => {
     await expect(operation.run()).resolves.toEqual(result);
-
     expect(invokeMock).not.toHaveBeenCalled();
     expect(fetchMock).toHaveBeenCalledExactlyOnceWith(
       operation.path,
@@ -96,11 +61,7 @@ describe("设置 API 运行环境路由", () => {
   it.each(operations)("桌面本地模式：$name 使用原生命令", async (operation) => {
     Object.assign(window, { __TAURI_INTERNALS__: {} });
     await expect(operation.run()).resolves.toEqual(result);
-
-    expect(invokeMock).toHaveBeenCalledExactlyOnceWith(
-      operation.command,
-      operation.nativeArgs,
-    );
+    expect(invokeMock).toHaveBeenCalledExactlyOnceWith(operation.command, operation.nativeArgs);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -111,20 +72,11 @@ describe("设置 API 运行环境路由", () => {
       remoteApiBaseUrl: "https://primary.example.com",
     }));
     initializeRuntimeConfig();
-
     await expect(operation.run()).resolves.toEqual(result);
     expect(invokeMock).not.toHaveBeenCalled();
     expect(fetchMock).toHaveBeenCalledExactlyOnceWith(
       `https://primary.example.com${operation.path}`,
       expect.any(Object),
     );
-  });
-
-  it.each(operations)("桌面命令缺失：$name 不回退到已移除的 sidecar", async (operation) => {
-    Object.assign(window, { __TAURI_INTERNALS__: {} });
-    invokeMock.mockRejectedValue(new Error(`Command ${operation.command} not found`));
-
-    await expect(operation.run()).rejects.toThrow(operation.command);
-    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

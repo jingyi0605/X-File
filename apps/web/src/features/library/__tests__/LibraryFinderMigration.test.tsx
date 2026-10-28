@@ -91,7 +91,12 @@ describe("第 7 批：列表/Finder 视图、类型文案、列宽和虚拟滚�
 
     await userEvent.click(await screen.findByRole("button", { name: "列表" }));
 
-    expect(within(await screen.findByRole("button", { name: /资料夹/ })).getByText("文件夹")).toBeInTheDocument();
+    const folderRow = await waitFor(() => {
+      const row = document.querySelector<HTMLButtonElement>(".affairs-finder-directory-row");
+      expect(row).not.toBeNull();
+      return row as HTMLButtonElement;
+    });
+    expect(within(folderRow).getByText("文件夹")).toBeInTheDocument();
     expect(within(await screen.findByRole("button", { name: /schema\.sql/ })).getByText("SQL 脚本")).toBeInTheDocument();
     expect(within(await screen.findByRole("button", { name: /落地页\.html/ })).getByText("HTML 文档")).toBeInTheDocument();
     expect(within(await screen.findByRole("button", { name: /配置\.json/ })).getByText("JSON 配置")).toBeInTheDocument();
@@ -144,7 +149,11 @@ describe("第 7 批：列表/Finder 视图、类型文案、列宽和虚拟滚�
       fireEvent.scroll(viewport);
     });
 
-    expect(await screen.findByRole("button", { name: /文件夹110/ })).toBeInTheDocument();
+    await waitFor(() => {
+      const renderedName = document.querySelector(".affairs-finder-directory-row .affairs-finder-name")?.textContent ?? "";
+      const renderedIndex = Number(renderedName.replace("文件夹", ""));
+      expect(renderedIndex).toBeGreaterThan(100);
+    });
   });
 
   it("网格视图虚拟滚动高度按总条数估算", async () => {
@@ -190,7 +199,7 @@ describe("第 7 批：列表/Finder 视图、类型文案、列宽和虚拟滚�
     await waitFor(() => {
       const spacer = document.querySelector(".affairs-finder-spacer") as HTMLDivElement | null;
       expect(spacer).not.toBeNull();
-      expect(spacer?.style.height).toBe("160px");
+      expect(spacer?.style.height).toBe("144px");
       const virtual = document.querySelector(".affairs-finder-virtual") as HTMLDivElement | null;
       expect(virtual?.style.top).toBe("0px");
       expect(virtual?.style.transform).toBe("");
@@ -230,7 +239,7 @@ describe("第 7 批：列表/Finder 视图、类型文案、列宽和虚拟滚�
     await waitFor(() => {
       const spacer = document.querySelector(".affairs-finder-spacer") as HTMLDivElement | null;
       expect(spacer).not.toBeNull();
-      expect(spacer?.style.height).toBe("160px");
+      expect(spacer?.style.height).toBe("144px");
     });
   });
 

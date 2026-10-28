@@ -6,10 +6,7 @@ mod updater;
 
 pub use agent_tools::cli::run_agent_cli_from_args;
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use hmac::{Hmac, Mac};
-use jwt::SignWithKey;
-use mime_guess::from_path;
+use base64::Engine as _;
 use native_core::scheduler::{lock_root, RootScheduler};
 use native_core::task_center;
 use native_core::state_store::priority_hints_path;
@@ -33,7 +30,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
-use std::net::{Ipv4Addr, TcpListener};
+use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -42,7 +39,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::menu::{Menu, MenuBuilder, MenuEvent, MenuItemBuilder, SubmenuBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow, Window, WindowEvent};
-use tiny_http::{Header, Method, Response, Server, StatusCode};
 
 #[cfg(target_os = "macos")]
 use {
@@ -66,11 +62,6 @@ const MENU_STOP_BACKEND: &str = "stop_backend";
 const MENU_QUIT: &str = "quit";
 const LIBRARY_CONTEXT_MENU_ID_PREFIX: &str = "xfile_library_context:";
 const LIBRARY_CONTEXT_MENU_ACTION_EVENT: &str = "x-file-library-context-menu-action";
-const DEFAULT_SIGNING_SECRET: &str = "x-file-local-preview-development-secret";
-const LIBRARY_PREVIEW_TOKEN_TTL_MS: i64 = 2 * 60 * 60 * 1000;
-const CALLBACK_TOKEN_TTL_MS: i64 = 24 * 60 * 60 * 1000;
-const ONLYOFFICE_BRIDGE_BIND: &str = "127.0.0.1:17322";
-const CALLBACK_DOWNLOAD_TIMEOUT_MS: u64 = 20_000;
 
 #[cfg(target_os = "macos")]
 const MACOS_NATIVE_LEFT_SIDEBAR_WIDTH: f64 = 272.0;
@@ -495,7 +486,6 @@ struct DesktopState {
     backend: BackendProcessManager,
     native_context_menu_selection: Option<String>,
     native_library: NativeLibraryState,
-    onlyoffice_bridge: OnlyOfficeBridgeState,
 }
 
 impl DesktopState {
@@ -511,7 +501,6 @@ impl DesktopState {
             backend: BackendProcessManager::from_env(),
             native_context_menu_selection: None,
             native_library: NativeLibraryState::new(),
-            onlyoffice_bridge: OnlyOfficeBridgeState::new(),
         }
     }
 }
@@ -537,56 +526,6 @@ struct MainWindowGeometry {
     height: u32,
 }
 
-#[derive(Debug, Clone)]
-struct OnlyOfficeBridgeState {
-    bridge_base_url: Option<String>,
-    last_error: Option<String>,
-    started: bool,
-}
-
-impl OnlyOfficeBridgeState {
-    fn new() -> Self {
-        Self {
-            bridge_base_url: None,
-            last_error: None,
-            started: false,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct OnlyOfficeSettingRecord {
-    enabled: bool,
-    server_url: Option<String>,
-    public_base_url: Option<String>,
-    callback_base_url: Option<String>,
-    user_display_name: Option<String>,
-    user_avatar_url: Option<String>,
-    jwt_secret: Option<String>,
-    created_at: Option<String>,
-    updated_at: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-struct LocalOnlyOfficeResolvedSetting {
-    enabled: bool,
-    server_url: Option<String>,
-    public_base_url: Option<String>,
-    effective_callback_base_url: Option<String>,
-    user_display_name: Option<String>,
-    user_avatar_url: Option<String>,
-    jwt_secret: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct OnlyOfficeCallbackTokenPayload {
-    library_id: String,
-    file_path: String,
-    expires_at: i64,
-}
-
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct ResourceBoundaryManifest {
@@ -597,13 +536,6 @@ struct ResourceBoundaryManifest {
 #[serde(rename_all = "camelCase")]
 struct ResourceBoundaryResource {
     required_in_main_bundle: Option<bool>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LocalPreviewTokenPayload {
-    library_id: String,
-    expires_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -674,19 +606,6 @@ struct NativeLibraryWorkerCliPayload {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct NativeOnlyOfficeSettingsInput {
-    enabled: Option<bool>,
-    server_url: Option<String>,
-    public_base_url: Option<String>,
-    callback_base_url: Option<String>,
-    user_display_name: Option<String>,
-    user_avatar_url: Option<String>,
-    jwt_secret: Option<String>,
-    clear_jwt_secret: Option<bool>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct NativeSaveHttpServerStateRequest {
     enabled: Option<bool>,
     host: Option<String>,
@@ -752,14 +671,6 @@ struct NativePreviewRequest {
     display_mode: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct NativeOnlyOfficePreviewRequest {
-    path: String,
-    display_mode: Option<String>,
-    editable: Option<bool>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LocalLibraryPreviewCapabilities {
@@ -784,7 +695,6 @@ struct LocalLibraryPreview {
     updated_at: Option<String>,
     preview_path: Option<String>,
     preview_url: Option<String>,
-    only_office: Option<Value>,
     capabilities: LocalLibraryPreviewCapabilities,
 }
 
@@ -832,8 +742,6 @@ struct LocalLibraryDocumentList {
     directory_status: Option<LocalLibraryDirectoryStatus>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LocalLibraryTagDirectory {
@@ -2177,17 +2085,31 @@ async fn native_get_library_preview(request: NativePreviewRequest) -> Result<Val
 }
 
 #[tauri::command]
-fn native_build_onlyoffice_preview(
-    state: tauri::State<'_, Mutex<DesktopState>>,
-    request: NativeOnlyOfficePreviewRequest,
-) -> Result<Value, String> {
-    println!(
-        "[x-file native] onlyoffice.preview.request transport=native path={} displayMode={}",
-        request.path,
-        request.display_mode.as_deref().unwrap_or("default")
-    );
-    serde_json::to_value(build_native_onlyoffice_preview(&state, request)?)
-        .map_err(|error| format!("序列化 native onlyoffice preview 失败：{error}"))
+fn native_read_preview_resource(path: String) -> Result<String, String> {
+    let binding = read_local_library_binding()?.ok_or_else(|| "当前未绑定文档库".to_string())?;
+    let relative_path = normalize_document_path(&path);
+    let root = fs::canonicalize(&binding.root_dir)
+        .map_err(|error| format!("解析文档库根目录失败：{error}"))?;
+    let absolute_path = fs::canonicalize(root.join(&relative_path))
+        .map_err(|error| format!("解析预览文件路径失败：{error}"))?;
+    if !absolute_path.starts_with(&root) || !absolute_path.is_file() {
+        return Err("预览文件不在当前文档库内".to_string());
+    }
+    let extension = absolute_path
+        .extension()
+        .map(|value| value.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    if !matches!(extension.as_str(), "docx" | "xlsx" | "pptx" | "pdf") {
+        return Err("只允许读取 PDF、DOCX、XLSX 或 PPTX 文件".to_string());
+    }
+    let metadata = fs::metadata(&absolute_path)
+        .map_err(|error| format!("读取预览文件失败：{error}"))?;
+    if metadata.len() > 20 * 1024 * 1024 {
+        return Err("预览文件超过 20 MiB 限制".to_string());
+    }
+    let bytes = fs::read(&absolute_path)
+        .map_err(|error| format!("读取预览文件失败：{error}"))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
 #[tauri::command]
@@ -2213,11 +2135,6 @@ fn native_fetch_library_health(
 }
 
 #[tauri::command]
-fn native_get_onlyoffice_settings() -> Result<Value, String> {
-    read_local_onlyoffice_settings_view()
-}
-
-#[tauri::command]
 fn native_get_agent_integration_settings() -> Result<agent_tools::settings::SettingsView, String> {
     agent_tools::settings::get_settings()
 }
@@ -2227,16 +2144,6 @@ fn native_save_agent_integration_settings(
     input: agent_tools::settings::SettingsInput,
 ) -> Result<agent_tools::settings::SettingsSaved, String> {
     agent_tools::settings::save_settings(input)
-}
-
-#[tauri::command]
-fn native_save_onlyoffice_settings(input: NativeOnlyOfficeSettingsInput) -> Result<Value, String> {
-    save_local_onlyoffice_settings(input)
-}
-
-#[tauri::command]
-fn native_get_onlyoffice_status() -> Result<Value, String> {
-    read_local_onlyoffice_status_view()
 }
 
 #[tauri::command]
@@ -3889,7 +3796,7 @@ fn read_local_library_preview(
     let updated_at = metadata.modified().ok().map(system_time_to_rfc3339);
     let kind = detect_local_preview_kind(&extension);
 
-    if matches!(kind.as_str(), "image" | "pdf") && size > 20 * 1024 * 1024 {
+    if matches!(kind.as_str(), "image" | "pdf" | "office") && size > 20 * 1024 * 1024 {
         return Ok(unsupported_preview(
             &binding.library_id,
             &relative_path,
@@ -3918,14 +3825,13 @@ fn read_local_library_preview(
             path: relative_path,
             supported: true,
             kind,
-            reason: Some("当前桌面本地模式下，Office 文件改走原生替代路径：可直接用系统应用打开或在 Finder 中定位。".to_string()),
+            reason: Some("Office 文件由本地轻量预览器读取；也可以使用系统应用打开原文件。".to_string()),
             content: None,
             version: None,
             size,
             updated_at,
             preview_path: None,
             preview_url: None,
-            only_office: None,
             capabilities: build_local_preview_capabilities(false, true, true, false, false),
         });
     }
@@ -3953,7 +3859,6 @@ fn read_local_library_preview(
             updated_at,
             preview_path: None,
             preview_url,
-            only_office: None,
             capabilities: build_local_preview_capabilities(false, true, true, true, is_pdf),
         });
     }
@@ -3973,7 +3878,6 @@ fn read_local_library_preview(
             updated_at,
             preview_path: None,
             preview_url: None,
-            only_office: None,
             capabilities: build_local_preview_capabilities(false, false, false, false, false),
         });
     }
@@ -4006,7 +3910,6 @@ fn read_local_library_preview(
         updated_at,
         preview_path: None,
         preview_url,
-        only_office: None,
         capabilities: build_local_preview_capabilities(
             matches!(kind.as_str(), "text" | "markdown" | "html") && size <= 256 * 1024,
             true,
@@ -4622,7 +4525,7 @@ fn build_local_library_tag_directories(
             .collect::<Vec<_>>();
         for segment in segments.iter().take(segments.len().saturating_sub(1)) {
             directory = if directory == "." {
-                segment.to_owned()
+                (*segment).to_owned()
             } else {
                 format!("{directory}/{segment}")
             };
@@ -4744,815 +4647,8 @@ fn unsupported_preview(
         updated_at,
         preview_path: None,
         preview_url: None,
-        only_office: None,
         capabilities: build_local_preview_capabilities(false, false, false, false, false),
     }
-}
-
-fn read_local_onlyoffice_setting_record() -> Result<Option<OnlyOfficeSettingRecord>, String> {
-    let file_path = x_file_data_dir().join("onlyoffice-settings.json");
-    read_optional_json_file::<OnlyOfficeSettingRecord>(&file_path)
-}
-
-fn read_local_onlyoffice_settings_view() -> Result<Value, String> {
-    let record = read_local_onlyoffice_setting_record()?;
-    Ok(json!({
-        "enabled": record.as_ref().map(|item| item.enabled).unwrap_or(false),
-        "serverUrl": record.as_ref().and_then(|item| item.server_url.clone()),
-        "publicBaseUrl": record.as_ref().and_then(|item| item.public_base_url.clone()),
-        "callbackBaseUrl": record.as_ref().and_then(|item| item.callback_base_url.clone()),
-        "userDisplayName": record.as_ref().and_then(|item| item.user_display_name.clone()),
-        "userAvatarUrl": record.as_ref().and_then(|item| item.user_avatar_url.clone()),
-        "jwtSecretConfigured": record.as_ref().and_then(|item| item.jwt_secret.as_ref()).map(|value| !value.trim().is_empty()).unwrap_or(false),
-        "updatedAt": record.and_then(|item| item.updated_at),
-    }))
-}
-
-fn save_local_onlyoffice_settings(input: NativeOnlyOfficeSettingsInput) -> Result<Value, String> {
-    let current = read_local_onlyoffice_setting_record()?.unwrap_or(OnlyOfficeSettingRecord {
-        enabled: false,
-        server_url: None,
-        public_base_url: None,
-        callback_base_url: None,
-        user_display_name: None,
-        user_avatar_url: None,
-        jwt_secret: None,
-        created_at: None,
-        updated_at: None,
-    });
-    let next_enabled = input.enabled.unwrap_or(current.enabled);
-    let next_server_url = normalize_optional_absolute_url(input.server_url.as_deref())?;
-    let next_public_base_url = normalize_optional_absolute_url(input.public_base_url.as_deref())?;
-    let next_callback_base_url =
-        normalize_optional_absolute_url(input.callback_base_url.as_deref())?;
-    let next_user_display_name = normalize_optional_text(input.user_display_name.as_deref());
-    let next_user_avatar_url = normalize_optional_absolute_url(input.user_avatar_url.as_deref())?;
-    let mut next_jwt_secret = current.jwt_secret.clone();
-    if input.clear_jwt_secret.unwrap_or(false) {
-        next_jwt_secret = None;
-    }
-    if let Some(jwt_secret) = input.jwt_secret.as_deref() {
-        next_jwt_secret = normalize_optional_text(Some(jwt_secret));
-    }
-    if next_enabled && next_server_url.is_none() {
-        return Err("启用 ONLYOFFICE 前必须填写服务地址".to_string());
-    }
-    if next_enabled && next_public_base_url.is_none() {
-        return Err("启用 ONLYOFFICE 前必须填写 X-File 对外地址".to_string());
-    }
-    let now = iso_now();
-    let record = OnlyOfficeSettingRecord {
-        enabled: next_enabled,
-        server_url: next_server_url,
-        public_base_url: next_public_base_url,
-        callback_base_url: next_callback_base_url,
-        user_display_name: next_user_display_name,
-        user_avatar_url: next_user_avatar_url,
-        jwt_secret: next_jwt_secret,
-        created_at: current.created_at.or_else(|| Some(now.clone())),
-        updated_at: Some(now),
-    };
-    write_json_file(&x_file_data_dir().join("onlyoffice-settings.json"), &record)?;
-    read_local_onlyoffice_settings_view()
-}
-
-fn read_local_onlyoffice_status_view() -> Result<Value, String> {
-    let checked_at = iso_now();
-    let Some(record) = read_local_onlyoffice_setting_record()? else {
-        return Ok(json!({
-            "state": "disabled",
-            "summary": "当前未启用 ONLYOFFICE 集成。",
-            "checkedAt": checked_at,
-            "checks": [{
-                "key": "enabled",
-                "label": "启用状态",
-                "status": "skip",
-                "detail": "开关未打开，X-File 会继续保持当前默认预览行为。"
-            }]
-        }));
-    };
-    if !record.enabled {
-        return Ok(json!({
-            "state": "disabled",
-            "summary": "当前未启用 ONLYOFFICE 集成。",
-            "checkedAt": checked_at,
-            "checks": [{
-                "key": "enabled",
-                "label": "启用状态",
-                "status": "skip",
-                "detail": "开关未打开，X-File 会继续保持当前默认预览行为。"
-            }]
-        }));
-    }
-    let mut checks = vec![];
-    let server_url = record
-        .server_url
-        .clone()
-        .filter(|value| !value.trim().is_empty());
-    let public_base_url = record
-        .public_base_url
-        .clone()
-        .filter(|value| !value.trim().is_empty());
-    let callback_base_url = record.callback_base_url.clone().or(public_base_url.clone());
-    checks.push(json!({
-        "key": "serverUrl",
-        "label": "ONLYOFFICE 服务地址",
-        "status": if server_url.is_some() { "pass" } else { "fail" },
-        "detail": server_url.clone().unwrap_or_else(|| "缺少 ONLYOFFICE 服务地址。".to_string())
-    }));
-    checks.push(json!({
-        "key": "publicBaseUrl",
-        "label": "X-File 对外地址",
-        "status": if public_base_url.is_some() { "pass" } else { "fail" },
-        "detail": public_base_url.clone().unwrap_or_else(|| "缺少 X-File 对外地址，ONLYOFFICE 将无法拉取文件。".to_string())
-    }));
-    if server_url.is_none() || public_base_url.is_none() {
-        return Ok(json!({
-            "state": "misconfigured",
-            "summary": "配置还没填完整，先把服务地址和 X-File 对外地址补齐。",
-            "checkedAt": checked_at,
-            "checks": checks,
-        }));
-    }
-    let server_url = server_url.unwrap();
-    let public_base_url = public_base_url.unwrap();
-    let health_check_url = format!("{}healthcheck", ensure_trailing_slash(&server_url));
-    let api_script_url = format!(
-        "{}web-apps/apps/api/documents/api.js",
-        ensure_trailing_slash(&server_url)
-    );
-    let health_probe = probe_text_endpoint(&health_check_url);
-    let script_probe = probe_text_endpoint(&api_script_url);
-    checks.push(json!({
-        "key": "healthcheck",
-        "label": "ONLYOFFICE healthcheck",
-        "status": if health_probe.0 { "pass" } else { "fail" },
-        "detail": health_probe.1,
-    }));
-    checks.push(json!({
-        "key": "apiScript",
-        "label": "ONLYOFFICE api.js",
-        "status": if script_probe.0 { "pass" } else { "fail" },
-        "detail": script_probe.1,
-    }));
-    let Some(callback_base_url) = callback_base_url else {
-        return Ok(json!({
-            "state": "misconfigured",
-            "summary": "回调地址还没配好，ONLYOFFICE 不能正常保存。",
-            "checkedAt": checked_at,
-            "checks": checks,
-        }));
-    };
-    let loopback_risk = detect_loopback_mismatch(&server_url, &callback_base_url);
-    checks.push(json!({
-        "key": "callbackReachability",
-        "label": "回调地址可达性",
-        "status": if loopback_risk.is_some() { "warn" } else { "pass" },
-        "detail": loopback_risk.unwrap_or_else(|| format!("当前回调基地址为 {}", callback_base_url)),
-    }));
-    if !health_probe.0 || !script_probe.0 {
-        return Ok(json!({
-            "state": "error",
-            "summary": "ONLYOFFICE 服务现在不可用，先确认服务是否真的启动。",
-            "checkedAt": checked_at,
-            "checks": checks,
-        }));
-    }
-    if is_loopback_url(&public_base_url) {
-        return Ok(json!({
-            "state": "warning",
-            "summary": "ONLYOFFICE 服务可访问，但当前回调地址看起来只适合同机环境。",
-            "checkedAt": checked_at,
-            "checks": checks,
-        }));
-    }
-    Ok(json!({
-        "state": "ready",
-        "summary": "ONLYOFFICE 服务和回调地址都已通过基础检查，可以启用 Office 预览。",
-        "checkedAt": checked_at,
-        "checks": checks,
-    }))
-}
-
-fn read_local_onlyoffice_setting() -> Result<Option<LocalOnlyOfficeResolvedSetting>, String> {
-    let Some(record) = read_local_onlyoffice_setting_record()? else {
-        return Ok(None);
-    };
-    Ok(Some(LocalOnlyOfficeResolvedSetting {
-        enabled: record.enabled,
-        server_url: record.server_url,
-        public_base_url: record.public_base_url.clone(),
-        effective_callback_base_url: record.callback_base_url.or(record.public_base_url),
-        user_display_name: record.user_display_name,
-        user_avatar_url: record.user_avatar_url,
-        jwt_secret: record.jwt_secret,
-    }))
-}
-
-fn normalize_onlyoffice_display_mode(value: Option<&str>) -> &'static str {
-    match value.unwrap_or_default().trim() {
-        "reading" => "reading",
-        _ => "default",
-    }
-}
-
-fn build_library_api_preview_path(token: &str, relative_path: &str) -> String {
-    let encoded_path = relative_path
-        .replace('\\', "/")
-        .split('/')
-        .map(urlencoding::encode)
-        .collect::<Vec<_>>()
-        .join("/");
-    format!(
-        "/api/library/preview-file/{}/{}",
-        urlencoding::encode(token),
-        encoded_path
-    )
-}
-
-fn create_signed_preview_token(library_id: &str) -> Result<String, String> {
-    let payload = LocalPreviewTokenPayload {
-        library_id: library_id.to_string(),
-        expires_at: chrono::Utc::now().timestamp_millis() + LIBRARY_PREVIEW_TOKEN_TTL_MS,
-    };
-    let encoded_payload = URL_SAFE_NO_PAD.encode(
-        serde_json::to_vec(&payload)
-            .map_err(|error| format!("序列化 preview token 失败：{error}"))?,
-    );
-    let signature = sign_hmac(&encoded_payload, &read_signing_secret());
-    Ok(format!("{encoded_payload}.{signature}"))
-}
-
-fn create_onlyoffice_callback_token(
-    payload: &OnlyOfficeCallbackTokenPayload,
-) -> Result<String, String> {
-    let encoded_payload = URL_SAFE_NO_PAD.encode(
-        serde_json::to_vec(payload)
-            .map_err(|error| format!("序列化 callback token 失败：{error}"))?,
-    );
-    let signature = sign_hmac(&encoded_payload, &read_signing_secret());
-    Ok(format!("{encoded_payload}.{signature}"))
-}
-
-fn verify_signed_preview_token(token: &str) -> Result<LocalPreviewTokenPayload, String> {
-    let (encoded_payload, signature) = token
-        .split_once('.')
-        .ok_or_else(|| "预览链接无效，请重新打开文件预览".to_string())?;
-    let expected_signature = sign_hmac(encoded_payload, &read_signing_secret());
-    if signature != expected_signature {
-        return Err("预览链接无效，请重新打开文件预览".to_string());
-    }
-    let payload_bytes = URL_SAFE_NO_PAD
-        .decode(encoded_payload.as_bytes())
-        .map_err(|_| "预览链接无效，请重新打开文件预览".to_string())?;
-    let payload = serde_json::from_slice::<LocalPreviewTokenPayload>(&payload_bytes)
-        .map_err(|_| "预览链接无效，请重新打开文件预览".to_string())?;
-    if payload.library_id.trim().is_empty()
-        || payload.expires_at <= chrono::Utc::now().timestamp_millis()
-    {
-        return Err("预览链接已经过期，请重新打开文件预览".to_string());
-    }
-    Ok(payload)
-}
-
-fn verify_onlyoffice_callback_token(token: &str) -> Result<OnlyOfficeCallbackTokenPayload, String> {
-    let (encoded_payload, signature) = token
-        .split_once('.')
-        .ok_or_else(|| "ONLYOFFICE 回调 token 无效或已过期。".to_string())?;
-    let expected_signature = sign_hmac(encoded_payload, &read_signing_secret());
-    if signature != expected_signature {
-        return Err("ONLYOFFICE 回调 token 无效或已过期。".to_string());
-    }
-    let payload_bytes = URL_SAFE_NO_PAD
-        .decode(encoded_payload.as_bytes())
-        .map_err(|_| "ONLYOFFICE 回调 token 无效或已过期。".to_string())?;
-    let payload = serde_json::from_slice::<OnlyOfficeCallbackTokenPayload>(&payload_bytes)
-        .map_err(|_| "ONLYOFFICE 回调 token 无效或已过期。".to_string())?;
-    if payload.library_id.trim().is_empty()
-        || payload.file_path.trim().is_empty()
-        || payload.expires_at <= chrono::Utc::now().timestamp_millis()
-    {
-        return Err("ONLYOFFICE 回调 token 无效或已过期。".to_string());
-    }
-    Ok(payload)
-}
-
-fn sign_hmac(payload: &str, secret: &str) -> String {
-    let mut mac = Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC 初始化失败");
-    mac.update(payload.as_bytes());
-    URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
-}
-
-fn read_signing_secret() -> String {
-    env::var("X_FILE_SIGNING_SECRET")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| DEFAULT_SIGNING_SECRET.to_string())
-}
-
-fn build_onlyoffice_preview_payload(
-    setting: &LocalOnlyOfficeResolvedSetting,
-    library_id: &str,
-    file_path: &str,
-    version: Option<&str>,
-    document_url: String,
-    display_mode: &str,
-    editable: bool,
-) -> Result<Value, String> {
-    let callback_token = create_onlyoffice_callback_token(&OnlyOfficeCallbackTokenPayload {
-        library_id: library_id.to_string(),
-        file_path: file_path.to_string(),
-        expires_at: chrono::Utc::now().timestamp_millis() + CALLBACK_TOKEN_TTL_MS,
-    })?;
-    let callback_base = setting
-        .effective_callback_base_url
-        .as_ref()
-        .or(setting.public_base_url.as_ref())
-        .ok_or_else(|| "ONLYOFFICE callbackBaseUrl/publicBaseUrl 未配置".to_string())?;
-    let callback_url = format!(
-        "{}/api/office/onlyoffice/callback/{}",
-        callback_base.trim_end_matches('/'),
-        urlencoding::encode(&callback_token)
-    );
-    let extension = PathBuf::from(file_path)
-        .extension()
-        .map(|value| value.to_string_lossy().to_lowercase())
-        .unwrap_or_else(|| "docx".to_string());
-    let document_type = match extension.as_str() {
-        "xlsx" => "cell",
-        "pptx" => "slide",
-        _ => "word",
-    };
-    let title = file_name_from_path(file_path);
-    let key_source = format!("x-file:{file_path}:{}", version.unwrap_or("unknown"));
-    let key = sha256_hex(key_source.as_bytes())
-        .chars()
-        .take(48)
-        .collect::<String>();
-    let reading_mode = display_mode == "reading";
-    let base_config = json!({
-        "documentType": document_type,
-        "type": if reading_mode { "embedded" } else { "desktop" },
-        "width": "100%",
-        "height": "100%",
-        "document": {
-            "fileType": extension,
-            "key": key,
-            "title": title,
-            "url": document_url,
-            "permissions": {
-                "edit": if reading_mode { false } else { editable },
-                "review": if reading_mode { false } else { editable },
-                "comment": if reading_mode { false } else { editable },
-                "download": true,
-                "print": true,
-                "copy": true
-            }
-        },
-        "editorConfig": {
-            "callbackUrl": callback_url,
-            "mode": if reading_mode || !editable { "view" } else { "edit" },
-            "lang": "zh-CN",
-            "user": {
-                "id": "local",
-                "name": setting.user_display_name.clone().unwrap_or_else(|| "X-File".to_string()),
-                "image": setting.user_avatar_url
-            },
-            "coEditing": if reading_mode {
-                json!({
-                    "mode": "strict",
-                    "change": false
-                })
-            } else {
-                Value::Null
-            },
-            "customization": {
-                "autosave": true,
-                "forcesave": true,
-                "compactToolbar": false,
-                "features": {
-                    "spellcheck": false
-                },
-                "anonymous": {
-                    "request": false
-                }
-            }
-        }
-    });
-    let editor_config = if let Some(secret) = setting
-        .jwt_secret
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-    {
-        let key: Hmac<sha2::Sha256> = Hmac::new_from_slice(secret.as_bytes())
-            .map_err(|error| format!("初始化 ONLYOFFICE JWT key 失败：{error}"))?;
-        let token = base_config
-            .clone()
-            .sign_with_key(&key)
-            .map_err(|error| format!("签发 ONLYOFFICE JWT 失败：{error}"))?;
-        let mut signed_config = base_config;
-        if let Some(object) = signed_config.as_object_mut() {
-            object.insert("token".to_string(), Value::String(token));
-        }
-        json!({
-            "apiScriptUrl": format!("{}/web-apps/apps/api/documents/api.js", setting.server_url.as_deref().unwrap_or_default().trim_end_matches('/')),
-            "editorMode": if reading_mode || !editable { "view" } else { "edit" },
-            "documentUrl": document_url,
-            "callbackUrl": callback_url,
-            "editorConfig": signed_config,
-        })
-    } else {
-        json!({
-            "apiScriptUrl": format!("{}/web-apps/apps/api/documents/api.js", setting.server_url.as_deref().unwrap_or_default().trim_end_matches('/')),
-            "editorMode": if reading_mode || !editable { "view" } else { "edit" },
-            "documentUrl": document_url,
-            "callbackUrl": callback_url,
-            "editorConfig": base_config,
-        })
-    };
-    Ok(editor_config)
-}
-
-fn ensure_local_onlyoffice_bridge(
-    state: &tauri::State<'_, Mutex<DesktopState>>,
-    _root_dir: &str,
-) -> Result<String, String> {
-    {
-        let desktop_state = lock_desktop_state(state);
-        let bridge = &desktop_state.onlyoffice_bridge;
-        if bridge.started {
-            if let Some(base_url) = bridge.bridge_base_url.clone() {
-                return Ok(base_url);
-            }
-        }
-    }
-
-    let listener = TcpListener::bind(ONLYOFFICE_BRIDGE_BIND)
-        .map_err(|error| format!("启动 ONLYOFFICE 本地 bridge 失败：{error}"))?;
-    let server = Server::from_listener(listener, None)
-        .map_err(|error| format!("创建 ONLYOFFICE bridge server 失败：{error}"))?;
-    let shared_server = Arc::new(server);
-    let worker_server = Arc::clone(&shared_server);
-    thread::spawn(move || {
-        for request in worker_server.incoming_requests() {
-            handle_onlyoffice_bridge_request(request);
-        }
-    });
-
-    let bridge_base_url = format!("http://{ONLYOFFICE_BRIDGE_BIND}");
-    let mut desktop_state = lock_desktop_state(state);
-    desktop_state.onlyoffice_bridge.bridge_base_url = Some(bridge_base_url.clone());
-    desktop_state.onlyoffice_bridge.last_error = None;
-    desktop_state.onlyoffice_bridge.started = true;
-    Ok(bridge_base_url)
-}
-
-fn build_native_onlyoffice_preview(
-    state: &tauri::State<'_, Mutex<DesktopState>>,
-    request: NativeOnlyOfficePreviewRequest,
-) -> Result<LocalLibraryPreview, String> {
-    let binding = read_local_library_binding()?.ok_or_else(|| "当前未绑定文档库".to_string())?;
-    let setting = read_local_onlyoffice_setting()?.ok_or_else(|| {
-        "当前还没有启用 ONLYOFFICE 集成，请先在设置里完成 ONLYOFFICE 配置。".to_string()
-    })?;
-    if !setting.enabled {
-        return Err("当前还没有启用 ONLYOFFICE 集成。".to_string());
-    }
-    if setting
-        .server_url
-        .as_deref()
-        .unwrap_or("")
-        .trim()
-        .is_empty()
-    {
-        return Err("ONLYOFFICE 服务地址未配置。".to_string());
-    }
-
-    let relative_path = normalize_document_path(&request.path);
-    let absolute_path = PathBuf::from(&binding.root_dir).join(&relative_path);
-    let metadata =
-        fs::metadata(&absolute_path).map_err(|error| format!("读取 Office 文件失败：{error}"))?;
-    if !metadata.is_file() {
-        return Err("Office 预览目标不是文件".to_string());
-    }
-
-    let extension = absolute_path
-        .extension()
-        .map(|value| value.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-    if !matches!(extension.as_str(), "docx" | "xlsx" | "pptx") {
-        return Err("当前只支持 openxml Office 文件走 native onlyoffice bridge".to_string());
-    }
-
-    let updated_at = metadata.modified().ok().map(system_time_to_rfc3339);
-    let version = updated_at
-        .as_ref()
-        .map(|value| format!("{}:{}", value, metadata.len()));
-    let bridge_base_url = ensure_local_onlyoffice_bridge(state, &binding.root_dir)?;
-    let preview_path = build_library_api_preview_path(
-        &create_signed_preview_token(&binding.library_id)?,
-        &relative_path,
-    );
-    let document_url = format!("{bridge_base_url}{preview_path}");
-    let display_mode = normalize_onlyoffice_display_mode(request.display_mode.as_deref());
-    let only_office = build_onlyoffice_preview_payload(
-        &setting,
-        &binding.library_id,
-        &relative_path,
-        version.as_deref(),
-        document_url,
-        display_mode,
-        request.editable.unwrap_or(true),
-    )?;
-
-    println!(
-        "[x-file native] onlyoffice.preview.resolve transport=native path={} callbackUrl={}",
-        relative_path,
-        only_office
-            .get("callbackUrl")
-            .and_then(Value::as_str)
-            .unwrap_or("<unknown>")
-    );
-
-    Ok(LocalLibraryPreview {
-        library_id: binding.library_id,
-        path: relative_path,
-        supported: true,
-        kind: "office".to_string(),
-        reason: None,
-        content: None,
-        version,
-        size: metadata.len(),
-        updated_at,
-        preview_path: None,
-        preview_url: only_office
-            .get("documentUrl")
-            .and_then(Value::as_str)
-            .map(ToString::to_string),
-        only_office: Some(only_office),
-        capabilities: build_local_preview_capabilities(false, true, true, false, false),
-    })
-}
-
-fn handle_onlyoffice_bridge_request(mut request: tiny_http::Request) {
-    let method = request.method().clone();
-    let url = request.url().to_string();
-    let response = match route_onlyoffice_bridge_request(&mut request, &method, &url) {
-        Ok(response) => response,
-        Err((status, message)) => text_response(status, &message),
-    };
-    let _ = request.respond(response);
-}
-
-fn route_onlyoffice_bridge_request(
-    request: &mut tiny_http::Request,
-    method: &Method,
-    url: &str,
-) -> Result<Response<std::io::Cursor<Vec<u8>>>, (StatusCode, String)> {
-    if *method == Method::Get && url.starts_with("/api/library/preview-file/") {
-        return handle_onlyoffice_preview_file_request(url);
-    }
-    if *method == Method::Post && url.starts_with("/api/office/onlyoffice/callback/") {
-        return handle_onlyoffice_callback_request(request, url);
-    }
-    Err((
-        StatusCode(404),
-        format!("ONLYOFFICE bridge route not found: {url}"),
-    ))
-}
-
-fn handle_onlyoffice_preview_file_request(
-    url: &str,
-) -> Result<Response<std::io::Cursor<Vec<u8>>>, (StatusCode, String)> {
-    let path = url.split('?').next().unwrap_or(url);
-    let suffix = path
-        .strip_prefix("/api/library/preview-file/")
-        .ok_or_else(|| (StatusCode(404), "预览链接不存在".to_string()))?;
-    let (encoded_token, encoded_relative_path) = suffix.split_once('/').ok_or_else(|| {
-        (
-            StatusCode(401),
-            "预览链接无效，请重新打开文件预览".to_string(),
-        )
-    })?;
-    let token = urlencoding::decode(encoded_token)
-        .map_err(|_| {
-            (
-                StatusCode(401),
-                "预览链接无效，请重新打开文件预览".to_string(),
-            )
-        })?
-        .into_owned();
-    let payload =
-        verify_signed_preview_token(&token).map_err(|message| (StatusCode(401), message))?;
-    let relative_path = decode_relative_path(encoded_relative_path)?;
-    let binding = read_local_library_binding()
-        .map_err(|message| (StatusCode(500), message))?
-        .ok_or_else(|| (StatusCode(400), "当前未绑定文档库".to_string()))?;
-    if binding.library_id != payload.library_id {
-        return Err((
-            StatusCode(401),
-            "预览链接无效，请重新打开文件预览".to_string(),
-        ));
-    }
-    let absolute_path = resolve_library_file_path(&binding.root_dir, &relative_path)
-        .map_err(|message| (StatusCode(400), message))?;
-    let buffer = fs::read(&absolute_path)
-        .map_err(|error| (StatusCode(404), format!("读取预览文件失败：{error}")))?;
-    let mime_type = from_path(&absolute_path)
-        .first_or_octet_stream()
-        .essence_str()
-        .to_string();
-    println!(
-        "[x-file native] onlyoffice.preview-file transport=native path={}",
-        relative_path
-    );
-    Ok(binary_response(StatusCode(200), buffer, Some(&mime_type)))
-}
-
-fn handle_onlyoffice_callback_request(
-    request: &mut tiny_http::Request,
-    url: &str,
-) -> Result<Response<std::io::Cursor<Vec<u8>>>, (StatusCode, String)> {
-    let path = url.split('?').next().unwrap_or(url);
-    let encoded_token = path
-        .strip_prefix("/api/office/onlyoffice/callback/")
-        .ok_or_else(|| {
-            (
-                StatusCode(404),
-                "ONLYOFFICE callback route not found".to_string(),
-            )
-        })?;
-    let token = urlencoding::decode(encoded_token)
-        .map_err(|_| {
-            (
-                StatusCode(401),
-                "ONLYOFFICE 回调 token 无效或已过期。".to_string(),
-            )
-        })?
-        .into_owned();
-    let payload =
-        verify_onlyoffice_callback_token(&token).map_err(|message| (StatusCode(401), message))?;
-    let mut body = String::new();
-    request
-        .as_reader()
-        .read_to_string(&mut body)
-        .map_err(|error| {
-            (
-                StatusCode(400),
-                format!("读取 ONLYOFFICE 回调失败：{error}"),
-            )
-        })?;
-    let callback_body: Value = if body.trim().is_empty() {
-        json!({})
-    } else {
-        serde_json::from_str(&body).map_err(|error| {
-            (
-                StatusCode(400),
-                format!("解析 ONLYOFFICE 回调失败：{error}"),
-            )
-        })?
-    };
-    let status = callback_body
-        .get("status")
-        .and_then(Value::as_i64)
-        .unwrap_or_default();
-    if status != 2 && status != 6 {
-        println!(
-            "[x-file native] onlyoffice.callback transport=native path={} status={} persisted=false",
-            payload.file_path, status
-        );
-        return Ok(json_response(StatusCode(200), json!({ "error": 0 })));
-    }
-    let download_url = callback_body
-        .get("url")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            (
-                StatusCode(400),
-                "ONLYOFFICE callback 缺少下载地址".to_string(),
-            )
-        })?;
-    let binding = read_local_library_binding()
-        .map_err(|message| (StatusCode(500), message))?
-        .ok_or_else(|| (StatusCode(400), "当前未绑定文档库".to_string()))?;
-    if binding.library_id != payload.library_id {
-        return Err((
-            StatusCode(401),
-            "ONLYOFFICE 回调 token 无效或已过期。".to_string(),
-        ));
-    }
-    let target_path = resolve_library_file_path(&binding.root_dir, &payload.file_path)
-        .map_err(|message| (StatusCode(400), message))?;
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_millis(
-            CALLBACK_DOWNLOAD_TIMEOUT_MS,
-        ))
-        .build()
-        .map_err(|error| {
-            (
-                StatusCode(500),
-                format!("初始化 ONLYOFFICE callback client 失败：{error}"),
-            )
-        })?;
-    let response = client.get(download_url).send().map_err(|error| {
-        (
-            StatusCode(502),
-            format!("下载 ONLYOFFICE 回写文件失败：{error}"),
-        )
-    })?;
-    if !response.status().is_success() {
-        return Err((
-            StatusCode(502),
-            format!("下载 ONLYOFFICE 回写文件失败：{}", response.status()),
-        ));
-    }
-    let file_buffer = response.bytes().map_err(|error| {
-        (
-            StatusCode(502),
-            format!("读取 ONLYOFFICE 回写文件失败：{error}"),
-        )
-    })?;
-    fs::write(&target_path, &file_buffer).map_err(|error| {
-        (
-            StatusCode(500),
-            format!("写回 ONLYOFFICE 文件失败：{error}"),
-        )
-    })?;
-    let refresh_result = schedule_native_library_refresh(
-        NativeLibraryRefreshRequest {
-            target_paths: Vec::new(),
-            reason: Some("onlyoffice_callback".to_string()),
-            target_path: Some(payload.file_path.clone()),
-            mode: None,
-        },
-        None,
-    );
-    if let Err(error) = &refresh_result {
-        eprintln!("onlyoffice callback refresh failed: {error}");
-    }
-    println!(
-        "[x-file native] onlyoffice.callback transport=native path={} status={} persisted=true",
-        payload.file_path, status
-    );
-    Ok(json_response(StatusCode(200), json!({ "error": 0 })))
-}
-
-fn decode_relative_path(value: &str) -> Result<String, (StatusCode, String)> {
-    let mut segments = Vec::new();
-    for segment in value.split('/') {
-        let decoded = urlencoding::decode(segment)
-            .map_err(|_| (StatusCode(400), "预览文件路径无效".to_string()))?;
-        segments.push(decoded.into_owned());
-    }
-    Ok(normalize_document_path(&segments.join("/")))
-}
-
-fn resolve_library_file_path(root_dir: &str, relative_path: &str) -> Result<PathBuf, String> {
-    let root =
-        fs::canonicalize(root_dir).map_err(|error| format!("解析文档库根目录失败：{error}"))?;
-    let joined = root.join(normalize_document_path(relative_path));
-    let resolved =
-        fs::canonicalize(&joined).map_err(|error| format!("解析文档库文件失败：{error}"))?;
-    if !resolved.starts_with(&root) {
-        return Err("目标文件不在当前文档库根目录下".to_string());
-    }
-    if !resolved.is_file() {
-        return Err("目标文件不存在".to_string());
-    }
-    Ok(resolved)
-}
-
-fn text_response(status: StatusCode, message: &str) -> Response<std::io::Cursor<Vec<u8>>> {
-    binary_response(
-        status,
-        message.as_bytes().to_vec(),
-        Some("text/plain; charset=utf-8"),
-    )
-}
-
-fn json_response(status: StatusCode, payload: Value) -> Response<std::io::Cursor<Vec<u8>>> {
-    let body = serde_json::to_vec(&payload).unwrap_or_else(|_| br#"{"error":1}"#.to_vec());
-    binary_response(status, body, Some("application/json; charset=utf-8"))
-}
-
-fn binary_response(
-    status: StatusCode,
-    body: Vec<u8>,
-    content_type: Option<&str>,
-) -> Response<std::io::Cursor<Vec<u8>>> {
-    let mut response = Response::from_data(body).with_status_code(status);
-    if let Some(content_type) = content_type {
-        if let Ok(header) = Header::from_bytes(&b"Content-Type"[..], content_type.as_bytes()) {
-            response = response.with_header(header);
-        }
-    }
-    if let Ok(header) = Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]) {
-        response = response.with_header(header);
-    }
-    response
 }
 
 fn sha256_hex(buffer: &[u8]) -> String {
@@ -6392,67 +5488,6 @@ fn normalize_optional_text(value: Option<&str>) -> Option<String> {
         .map(ToString::to_string)
 }
 
-fn normalize_optional_absolute_url(value: Option<&str>) -> Result<Option<String>, String> {
-    let Some(value) = normalize_optional_text(value) else {
-        return Ok(None);
-    };
-    let parsed = reqwest::Url::parse(&value).map_err(|error| format!("URL 无效：{error}"))?;
-    Ok(Some(parsed.to_string().trim_end_matches('/').to_string()))
-}
-
-fn ensure_trailing_slash(value: &str) -> String {
-    if value.ends_with('/') {
-        value.to_string()
-    } else {
-        format!("{value}/")
-    }
-}
-
-fn probe_text_endpoint(url: &str) -> (bool, String) {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_millis(5000))
-        .build();
-    let Ok(client) = client else {
-        return (false, "初始化 ONLYOFFICE 探测客户端失败".to_string());
-    };
-    match client.get(url).send() {
-        Ok(response) => {
-            let status = response.status();
-            if status.is_success() {
-                (true, url.to_string())
-            } else {
-                (false, format!("{} 返回 {}", url, status))
-            }
-        }
-        Err(error) => (false, format!("{} 不可达：{}", url, error)),
-    }
-}
-
-fn detect_loopback_mismatch(server_url: &str, callback_base_url: &str) -> Option<String> {
-    let server = reqwest::Url::parse(server_url).ok()?;
-    let callback = reqwest::Url::parse(callback_base_url).ok()?;
-    if is_loopback_url(server_url) && is_loopback_url(callback_base_url) {
-        return Some("当前 ONLYOFFICE 与回调地址都指向 loopback，仅适合同机环境。".to_string());
-    }
-    if is_loopback_url(server_url) != is_loopback_url(callback_base_url) {
-        return Some(format!(
-            "ONLYOFFICE 地址 {} 与回调地址 {} 的可达域不一致，请确认是否同属可互访网络。",
-            server, callback,
-        ));
-    }
-    None
-}
-
-fn is_loopback_url(value: &str) -> bool {
-    reqwest::Url::parse(value)
-        .ok()
-        .and_then(|url| {
-            url.host_str()
-                .map(|host| host == "127.0.0.1" || host == "localhost" || host == "::1")
-        })
-        .unwrap_or(false)
-}
-
 fn write_json_file<T>(path: &PathBuf, value: &T) -> Result<(), String>
 where
     T: Serialize,
@@ -6487,6 +5522,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::net::TcpListener;
     use super::*;
     use std::sync::{Mutex, OnceLock};
 
@@ -7979,13 +7015,10 @@ pub fn run() {
             native_list_library_documents,
             native_list_library_files,
             native_get_library_preview,
-            native_build_onlyoffice_preview,
+            native_read_preview_resource,
             native_fetch_library_health,
-            native_get_onlyoffice_settings,
             native_get_agent_integration_settings,
             native_save_agent_integration_settings,
-            native_save_onlyoffice_settings,
-            native_get_onlyoffice_status,
             native_get_http_server_state,
             native_save_http_server_state,
             http_service_hint,
