@@ -60,7 +60,6 @@ import { normalizeBaseUrl } from "../../runtime/runtime-config";
 import {
   notifyWindowReadyForNativeSidebar,
   getNativeLibraryPreview,
-  getNativeOnlyOfficePreview,
   setInitializationWindowMode,
   syncNativeSidebarLayout,
 } from "../../runtime/native-library-bridge";
@@ -103,9 +102,10 @@ import {
 import {
   CodePreview,
   MarkdownPreview,
-  OnlyOfficePreview,
   detectLanguage,
 } from "./LibraryFileCodeViewer";
+import { OfficePreview } from "./OfficePreview";
+import { LibraryPdfPreview } from "./LibraryPdfPreview";
 import { LibraryTaskCenter } from "./LibraryTaskCenter";
 import { useLibraryState, type LibraryState } from "./useLibraryState";
 import {
@@ -360,6 +360,22 @@ type StageLibraryState = Pick<
   | "visibleEntryTotal"
 >;
 
+type LibraryNavigationState = Pick<
+  LibraryState["viewState"],
+  | "browseMode"
+  | "selectedFavoriteId"
+  | "selectedFolderPath"
+  | "selectedTagPath"
+  | "selectedTagPaths"
+>;
+
+interface LibraryNavigationHistory {
+  back: LibraryNavigationState[];
+  forward: LibraryNavigationState[];
+}
+
+const MAX_LIBRARY_NAVIGATION_RECORDS = 10;
+
 type SidebarLibraryState = Pick<
   LibraryState,
   | "documentPage"
@@ -476,6 +492,13 @@ export function LibraryPage({
   const [searchClearToken, setSearchClearToken] = useState(0);
   const libraryRef = useRef(library);
   const libraryClipboardRef = useRef<LibraryClipboardState | null>(libraryClipboard);
+  const navigationStateRef = useRef<LibraryNavigationState | null>(null);
+  const navigationHistoryRef = useRef<LibraryNavigationHistory>({
+    back: [],
+    forward: [],
+  });
+  const navigationRestoreRef = useRef(false);
+  const [navigationRevision, setNavigationRevision] = useState(0);
   const overlayMacOsTitlebar = platformData.runtimePlatform === "desktop"
     && platformData.osFamily === "macos"
     && platformData.overlayTitlebar;
@@ -488,6 +511,83 @@ export function LibraryPage({
   useEffect(() => {
     libraryClipboardRef.current = libraryClipboard;
   }, [libraryClipboard]);
+
+  useEffect(() => {
+    const nextNavigationState = getLibraryNavigationState(library.viewState);
+    const previousNavigationState = navigationStateRef.current;
+    if (!previousNavigationState) {
+      navigationStateRef.current = nextNavigationState;
+      return;
+    }
+    if (areLibraryNavigationStatesEqual(previousNavigationState, nextNavigationState)) {
+      return;
+    }
+
+    const history = navigationHistoryRef.current;
+    if (navigationRestoreRef.current) {
+      navigationRestoreRef.current = false;
+    } else {
+      history.back = [
+        ...history.back,
+        previousNavigationState,
+      ].slice(-MAX_LIBRARY_NAVIGATION_RECORDS);
+      history.forward = [];
+    }
+    navigationStateRef.current = nextNavigationState;
+    setNavigationRevision((current) => current + 1);
+  }, [
+    library.viewState.browseMode,
+    library.viewState.selectedFavoriteId,
+    library.viewState.selectedFolderPath,
+    library.viewState.selectedTagPath,
+    library.viewState.selectedTagPaths.join("\u001f"),
+  ]);
+
+  const navigateToHistoryState = useCallback((target: LibraryNavigationState): void => {
+    library.cancelPreview();
+    library.setViewState((current) => ({
+      ...current,
+      ...target,
+      selectedFolderEntryPath: null,
+      selectedFolderEntryPaths: [],
+      selectedDocumentId: null,
+      selectedDocumentIds: [],
+    }));
+  }, [library.cancelPreview, library.setViewState]);
+
+  const navigateBack = useCallback((): void => {
+    const history = navigationHistoryRef.current;
+    const target = history.back.at(-1);
+    const current = navigationStateRef.current;
+    if (!target || !current) {
+      return;
+    }
+    history.back = history.back.slice(0, -1);
+    history.forward = [
+      ...history.forward,
+      current,
+    ].slice(-MAX_LIBRARY_NAVIGATION_RECORDS);
+    navigationRestoreRef.current = true;
+    setNavigationRevision((revision) => revision + 1);
+    navigateToHistoryState(target);
+  }, [navigateToHistoryState]);
+
+  const navigateForward = useCallback((): void => {
+    const history = navigationHistoryRef.current;
+    const target = history.forward.at(-1);
+    const current = navigationStateRef.current;
+    if (!target || !current) {
+      return;
+    }
+    history.forward = history.forward.slice(0, -1);
+    history.back = [
+      ...history.back,
+      current,
+    ].slice(-MAX_LIBRARY_NAVIGATION_RECORDS);
+    navigationRestoreRef.current = true;
+    setNavigationRevision((revision) => revision + 1);
+    navigateToHistoryState(target);
+  }, [navigateToHistoryState]);
 
   useEffect(() => {
     if (!overlayMacOsTitlebar) {
@@ -1106,6 +1206,11 @@ export function LibraryPage({
           onOpenSettings={onOpenSettings}
           onOpenTagManager={handleOpenTagManager}
           overlayMacOsTitlebar={overlayMacOsTitlebar}
+          navigationRevision={navigationRevision}
+          canGoBack={navigationHistoryRef.current.back.length > 0}
+          canGoForward={navigationHistoryRef.current.forward.length > 0}
+          onNavigateBack={navigateBack}
+          onNavigateForward={navigateForward}
         />
         <WorkbenchPanelResizer
           side="left"
@@ -1130,7 +1235,6 @@ export function LibraryPage({
             onRequestRename={handleRequestRename}
             onRequestDelete={handleRequestDelete}
             onRequestTagAssignment={handleRequestTagAssignment}
-            onOpenSearch={handleOpenSearch}
             searchOpen={searchOpen}
             searchInitialKeyword={searchDraft}
             searchFocusToken={searchFocusToken}
@@ -1147,6 +1251,7 @@ export function LibraryPage({
         />
         <MemoizedLibraryDetail
           library={detailLibrary}
+          allowLocalOpen={runtimeConfig.mode === "local"}
           overlayMacOsTitlebar={overlayMacOsTitlebar}
           onRequestRename={handleRequestRename}
           onRequestDelete={handleRequestDelete}
@@ -1203,6 +1308,7 @@ export function LibraryPage({
           library={library}
           viewerState={viewerState}
           onClose={() => setViewerState(null)}
+          allowLocalOpen={runtimeConfig.mode === "local"}
         />
       ) : null}
       {tagManagerOpen ? (
@@ -1275,6 +1381,7 @@ function LibraryDisabledPanel({
         </section>
         <LibraryDetail
           library={{ ...library, tagRevision: 0 }}
+          allowLocalOpen={false}
           overlayMacOsTitlebar={platformData.runtimePlatform === "desktop"
             && platformData.osFamily === "macos"
             && platformData.overlayTitlebar}
@@ -1289,6 +1396,11 @@ function LibraryDisabledPanel({
 
 function LibraryDesktopSidebar({
   library,
+  navigationRevision: _navigationRevision,
+  canGoBack,
+  canGoForward,
+  onNavigateBack,
+  onNavigateForward,
   onOpenSearch,
   onCancelSearch,
   searchClearToken,
@@ -1297,6 +1409,11 @@ function LibraryDesktopSidebar({
   overlayMacOsTitlebar,
 }: {
   library: SidebarLibraryState;
+  navigationRevision: number;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  onNavigateBack: () => void;
+  onNavigateForward: () => void;
   onOpenSearch: (keyword: string) => void;
   onCancelSearch: () => void;
   searchClearToken: number;
@@ -1447,6 +1564,33 @@ function LibraryDesktopSidebar({
               <strong>{t("appTitle")}</strong>
             </span>
           </div>
+        </div>
+        <div
+          className="xfile-sidebar-navigation"
+          role="group"
+          aria-label={t("libraryNavigation")}
+          data-window-drag="ignore"
+        >
+          <button
+            type="button"
+            className="xfile-sidebar-navigation-button"
+            disabled={!canGoBack}
+            onClick={onNavigateBack}
+            aria-label={t("libraryNavigateBack")}
+            title={t("libraryNavigateBack")}
+          >
+            {renderNavigationArrowIcon("back")}
+          </button>
+          <button
+            type="button"
+            className="xfile-sidebar-navigation-button"
+            disabled={!canGoForward}
+            onClick={onNavigateForward}
+            aria-label={t("libraryNavigateForward")}
+            title={t("libraryNavigateForward")}
+          >
+            {renderNavigationArrowIcon("forward")}
+          </button>
         </div>
         <form
           className="library-quick-find"
@@ -1974,7 +2118,7 @@ function SidebarPlainItem({
           <span className="affairs-sidebar-leading-icon" aria-hidden="true">
             {icon === "folder" ? renderMiniFolderIcon() : renderTagIcon()}
           </span>
-          <span className="affairs-sidebar-item-title" title={title}>
+          <span className="affairs-sidebar-item-title">
             {title}
           </span>
           <span className="affairs-sidebar-item-badge">{count}</span>
@@ -2700,7 +2844,6 @@ function LibraryStage({
   onRequestRename,
   onRequestDelete,
   onRequestTagAssignment: _onRequestTagAssignment,
-  onOpenSearch,
   searchOpen,
   searchInitialKeyword,
   searchFocusToken,
@@ -2718,7 +2861,6 @@ function LibraryStage({
   onRequestRename: (path: string) => void;
   onRequestDelete: (target: LibraryContextMenuTarget) => void;
   onRequestTagAssignment: (target: LibraryContextMenuTarget) => void;
-  onOpenSearch: (keyword?: string) => void;
   searchOpen: boolean;
   searchInitialKeyword: string;
   searchFocusToken: number;
@@ -2771,7 +2913,6 @@ function LibraryStage({
         directoryStatus={directoryStatus}
         onOpenSettings={onOpenSettings}
         onRequestCreate={onRequestCreate}
-        onOpenSearch={onOpenSearch}
       />
       <div
         className="affairs-stage-content"
@@ -2831,7 +2972,6 @@ function LibraryStageToolbar({
   directoryStatus: _directoryStatus,
   onOpenSettings,
   onRequestCreate,
-  onOpenSearch,
 }: {
   library: StageLibraryState;
   platformData: WorkbenchPlatformData;
@@ -2842,7 +2982,6 @@ function LibraryStageToolbar({
   } | null;
   onOpenSettings: () => void;
   onRequestCreate: (state: PendingCreateState) => void;
-  onOpenSearch: (keyword?: string) => void;
 }) {
   const sortOptions: Array<{ value: LibrarySortMode; label: string }> = [
     { value: "recent", label: t("librarySortRecent") },
@@ -2980,15 +3119,6 @@ function LibraryStageToolbar({
           <button
             type="button"
             className="affairs-stage-toolbar-icon"
-            onClick={() => onOpenSearch()}
-            aria-label={t("librarySearchAction")}
-            title={t("librarySearchAction")}
-          >
-            {renderSearchIcon()}
-          </button>
-          <button
-            type="button"
-            className="affairs-stage-toolbar-icon"
             onClick={() => onRequestCreate({ kind: "directory", folderPath: library.viewState.selectedFolderPath, fileName: t("libraryCreateDirectoryDefaultName") })}
             aria-label={t("libraryContextNew")}
             title={t("libraryContextNew")}
@@ -3013,43 +3143,152 @@ function BreadcrumbItems({
   onSelectTag: (path: string | null) => void;
 }) {
   const segments = path?.split("/").filter(Boolean) ?? [];
+  const segmentKey = segments.join("\u001f");
+  const itemsRef = useRef<HTMLSpanElement | null>(null);
+  const measureRef = useRef<HTMLSpanElement | null>(null);
+  const [visibleIndices, setVisibleIndices] = useState<number[]>(() =>
+    segments.map((_, index) => index),
+  );
+
+  useLayoutEffect(() => {
+    const itemsElement = itemsRef.current;
+    const measureElement = measureRef.current;
+    if (!itemsElement || !measureElement || segments.length === 0) {
+      return;
+    }
+
+    const updateVisibleSegments = () => {
+      const availableWidth = itemsElement.clientWidth;
+      if (availableWidth <= 0) {
+        setVisibleIndices(segments.map((_, index) => index));
+        return;
+      }
+
+      const widths = Array.from(measureElement.children)
+        .filter((child) => !child.hasAttribute("data-breadcrumb-ellipsis"))
+        .map((child) => child.getBoundingClientRect().width);
+      const nextVisibleIndices = resolveVisibleBreadcrumbIndices(
+        widths,
+        availableWidth,
+      );
+      setVisibleIndices((current) => {
+        const unchanged = current.length === nextVisibleIndices.length
+          && current.every((index, position) => index === nextVisibleIndices[position]);
+        return unchanged ? current : nextVisibleIndices;
+      });
+    };
+
+    updateVisibleSegments();
+    const observer =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(updateVisibleSegments);
+    observer?.observe(itemsElement);
+    window.addEventListener("resize", updateVisibleSegments);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", updateVisibleSegments);
+    };
+  }, [segmentKey, segments.length]);
+
   if (!segments.length) {
     return null;
   }
+
+  const displayedIndices = visibleIndices.filter(
+    (index) => index >= 0 && index < segments.length,
+  );
   return (
-    <>
-      {segments.map((segment, index) => {
+    <span ref={itemsRef} className="affairs-stage-breadcrumb-items">
+      {displayedIndices.map((index, displayedIndex) => {
+        const segment = segments[index];
         const nextPath = segments.slice(0, index + 1).join("/");
         const sourceEntryPath = segments.slice(0, index + 2).join("/");
         const current = index === segments.length - 1;
+        const previousIndex = displayedIndices[displayedIndex - 1];
+        const hasOmittedSegments =
+          index > 0 && (displayedIndex === 0 || index > previousIndex + 1);
         return (
-          <span key={nextPath} className="affairs-stage-breadcrumb-fragment">
-            <span
-              className="affairs-stage-breadcrumb-separator"
-              aria-hidden="true"
-            >
-              &gt;
+          <Fragment key={nextPath}>
+            {hasOmittedSegments ? (
+              <span
+                className="affairs-stage-breadcrumb-fragment affairs-stage-breadcrumb-ellipsis"
+                aria-hidden="true"
+              >
+                <span className="affairs-stage-breadcrumb-separator">&gt;</span>
+                <span>…</span>
+              </span>
+            ) : null}
+            <span className="affairs-stage-breadcrumb-fragment">
+              <span
+                className="affairs-stage-breadcrumb-separator"
+                aria-hidden="true"
+              >
+                &gt;
+              </span>
+              <button
+                type="button"
+                className={
+                  current
+                    ? "affairs-stage-breadcrumb-button current"
+                    : "affairs-stage-breadcrumb-button"
+                }
+                aria-label={segment}
+                title={segment}
+                onClick={() =>
+                  browseMode === "folder"
+                    ? onSelectFolder(nextPath, sourceEntryPath || null)
+                    : onSelectTag(nextPath)
+                }
+              >
+                <span className="affairs-stage-breadcrumb-label">{segment}</span>
+              </button>
             </span>
-            <button
-              type="button"
+          </Fragment>
+        );
+      })}
+      <span ref={measureRef} className="affairs-stage-breadcrumb-measure" aria-hidden="true">
+        {segments.map((segment, index) => (
+          <span key={`${segment}-${index}`} className="affairs-stage-breadcrumb-fragment">
+            <span className="affairs-stage-breadcrumb-separator">&gt;</span>
+            <span
               className={
-                current
+                index === segments.length - 1
                   ? "affairs-stage-breadcrumb-button current"
                   : "affairs-stage-breadcrumb-button"
               }
-              onClick={() =>
-                browseMode === "folder"
-                  ? onSelectFolder(nextPath, sourceEntryPath || null)
-                  : onSelectTag(nextPath)
-              }
             >
               {segment}
-            </button>
+            </span>
           </span>
-        );
-      })}
-    </>
+        ))}
+        <span
+          className="affairs-stage-breadcrumb-fragment affairs-stage-breadcrumb-ellipsis"
+          data-breadcrumb-ellipsis="true"
+        >
+          <span className="affairs-stage-breadcrumb-separator">&gt;</span>
+          <span>…</span>
+        </span>
+      </span>
+    </span>
   );
+}
+
+function resolveVisibleBreadcrumbIndices(
+  widths: number[],
+  availableWidth: number,
+): number[] {
+  const gap = 4;
+  const fullWidth = widths.reduce((total, width) => total + width, 0)
+    + Math.max(0, widths.length - 1) * gap;
+  if (widths.length <= 1 || fullWidth <= availableWidth) {
+    return widths.map((_, index) => index);
+  }
+
+  const lastIndex = widths.length - 1;
+  return lastIndex === 1
+    ? [0, 1]
+    : [0, lastIndex - 1, lastIndex];
 }
 
 function LibrarySkeleton({ viewMode }: { viewMode: "grid" | "list" }) {
@@ -3443,6 +3682,8 @@ function VirtualLibraryGrid({
             onVisualSelect={handleVisualSelect}
             onOpenContextMenu={onOpenContextMenu}
             onOpenLibraryViewer={onOpenLibraryViewer}
+            onToggleFavorite={library.toggleFavorite}
+            isFavorite={slot.entry.kind === "folder" && isFolderFavorite(library, slot.entry.path)}
           />
         ) : (
           <AffairsGridPlaceholderCard key={`grid-placeholder-${slot.index}`} />
@@ -3490,6 +3731,7 @@ function VirtualLibraryFinderList({
 }) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const [viewport, setViewport] = useState({ height: 0, scrollTop: 0 });
+
   const [measuredRowHeight, setMeasuredRowHeight] = useState(
     VIRTUAL_LIST_ROW_HEIGHT,
   );
@@ -3758,12 +4000,12 @@ function VirtualLibraryFinderList({
     <div
       className="affairs-finder-shell"
       style={{
-        "--finder-table-width": `${Object.values(library.viewState.finderColumnWidths).reduce((total, width) => total + width, 0)}px`,
+        "--finder-table-width": `calc(${Object.values(library.viewState.finderColumnWidths).reduce((total, width) => total + width, 0)}px + var(--control-height-md))`,
       } as CSSProperties}
     >
       <div
         className="affairs-finder-header"
-        style={{ gridTemplateColumns: finderGridTemplateColumns }}
+        style={{ gridTemplateColumns: `${finderGridTemplateColumns} var(--control-height-md)` }}
       >
         {[
           { key: "name", label: t("libraryFinderName") },
@@ -3849,6 +4091,8 @@ function VirtualLibraryFinderList({
                   gridTemplateColumns={finderGridTemplateColumns}
                   onOpenContextMenu={onOpenContextMenu}
                   onOpenLibraryViewer={onOpenLibraryViewer}
+                  onToggleFavorite={library.toggleFavorite}
+                  isFavorite={slot.entry.kind === "folder" && isFolderFavorite(library, slot.entry.path)}
                 />
               ) : (
                 <AffairsFinderPlaceholderRow
@@ -4415,73 +4659,84 @@ function LibraryFinderRow({
 
   if (entry.kind !== "document") {
     return (
-      <button
-        type="button"
-        className={
-          active
-            ? "affairs-finder-row affairs-finder-directory-row active"
-            : "affairs-finder-row affairs-finder-directory-row"
-        }
-        style={{ gridTemplateColumns }}
-        onPointerDown={handlePointerSelection}
-        onClick={(event) => {
-          if (entry.kind !== "folder") {
-            return;
+      <div className="affairs-finder-directory-item" style={{ gridTemplateColumns: `${gridTemplateColumns} var(--control-height-md)` }}>
+        <button
+          type="button"
+          className={
+            active
+              ? "affairs-finder-row affairs-finder-directory-row active"
+              : "affairs-finder-row affairs-finder-directory-row"
           }
-          if (folderOpenBehavior === "single_click") {
-            onSelectFolder(entry.path);
-            return;
-          }
-          if (!event.detail) {
-            onToggleFolderEntrySelection(entry.path);
-            return;
-          }
-          if (!event.metaKey && !event.ctrlKey) {
-            return;
-          }
-          onToggleFolderEntrySelection(entry.path, event.metaKey || event.ctrlKey);
-        }}
-        onDoubleClick={() => {
-          if (entry.kind === "folder") {
-            onSelectFolder(entry.path);
-          }
-        }}
-        onContextMenu={(event) => {
-          if (entry.kind !== "folder") {
-            return;
-          }
-          onSelectFolderEntry(entry.path);
-          onOpenContextMenu(event, { kind: "folder", entry });
-        }}
-      >
-        <span
-          className="affairs-finder-name-cell"
-          style={{
-            "--affairs-finder-depth": entry.kind === "tag-directory" ? entry.depth : 0,
-          } as CSSProperties}
+          style={{ gridTemplateColumns, gridColumn: "1 / 6", gridRow: 1 }}
+          onPointerDown={handlePointerSelection}
+          onClick={(event) => {
+            if (entry.kind !== "folder") {
+              return;
+            }
+            if (folderOpenBehavior === "single_click") {
+              onSelectFolder(entry.path);
+              return;
+            }
+            if (!event.detail) {
+              onToggleFolderEntrySelection(entry.path);
+              return;
+            }
+            if (!event.metaKey && !event.ctrlKey) {
+              return;
+            }
+            onToggleFolderEntrySelection(entry.path, event.metaKey || event.ctrlKey);
+          }}
+          onDoubleClick={() => {
+            if (entry.kind === "folder") {
+              onSelectFolder(entry.path);
+            }
+          }}
+          onContextMenu={(event) => {
+            if (entry.kind !== "folder") {
+              return;
+            }
+            onSelectFolderEntry(entry.path);
+            onOpenContextMenu(event, { kind: "folder", entry });
+          }}
         >
-          {entry.kind === "tag-directory" ? (
-            <span className="affairs-finder-disclosure" aria-hidden="true">▾</span>
-          ) : null}
-          <span className="affairs-finder-icon">
-            {renderFolderShape("row")}
+          <span
+            className="affairs-finder-name-cell"
+            style={{
+              "--affairs-finder-depth": entry.kind === "tag-directory" ? entry.depth : 0,
+            } as CSSProperties}
+          >
+            {entry.kind === "tag-directory" ? (
+              <span className="affairs-finder-disclosure" aria-hidden="true">▾</span>
+            ) : null}
+            <span className="affairs-finder-icon">
+              {renderFolderShape("row")}
+            </span>
+            <span className="affairs-finder-name" title={entry.name}>
+              {entry.name}
+            </span>
+            {entry.kind === "tag-directory" ? (
+              <span className="affairs-finder-directory-count">{t("libraryCountDocuments", { count: entry.documentCount })}</span>
+            ) : null}
           </span>
-          <span className="affairs-finder-name" title={entry.name}>
-            {entry.name}
+          <span className="affairs-finder-cell">--</span>
+          <span className="affairs-finder-cell">
+            {formatDateTime(entry.updatedAt)}
           </span>
-          {entry.kind === "tag-directory" ? (
-            <span className="affairs-finder-directory-count">{t("libraryCountDocuments", { count: entry.documentCount })}</span>
+          <span className="affairs-finder-cell">
+            <span className="library-format-tag">{t("libraryFinderKindFolder")}</span>
+          </span>
+          <span className="affairs-finder-cell">--</span>
+        </button>
+        <span className="affairs-finder-actions-cell">
+          {entry.kind === "folder" ? (
+            <FolderFavoriteButton
+              entry={entry}
+              favorite={isFavorite}
+              onToggleFavorite={onToggleFavorite}
+            />
           ) : null}
         </span>
-        <span className="affairs-finder-cell">--</span>
-        <span className="affairs-finder-cell">
-          {formatDateTime(entry.updatedAt)}
-        </span>
-        <span className="affairs-finder-cell">
-          <span className="library-format-tag">{t("libraryFinderKindFolder")}</span>
-        </span>
-        <span className="affairs-finder-cell">--</span>
-      </button>
+      </div>
     );
   }
 
@@ -4489,7 +4744,7 @@ function LibraryFinderRow({
     <button
       type="button"
       className={active ? "affairs-finder-row active" : "affairs-finder-row"}
-      style={{ gridTemplateColumns }}
+      style={{ gridTemplateColumns: `${gridTemplateColumns} var(--control-height-md)` }}
       onPointerDown={handlePointerSelection}
       onClick={(event) => {
         if (!event.detail || event.metaKey || event.ctrlKey) {
@@ -4535,6 +4790,7 @@ function LibraryFinderRow({
       <span className="affairs-finder-cell">
         {formatDateTime(entry.createdAt)}
       </span>
+      <span className="affairs-finder-actions-cell" />
     </button>
   );
 }
@@ -4581,12 +4837,14 @@ function playLibrarySelectionPressAnimation(target: HTMLElement): void {
 
 function LibraryDetail({
   library,
+  allowLocalOpen,
   overlayMacOsTitlebar,
   onRequestRename,
   onRequestDelete,
   onRequestTagAssignment: _onRequestTagAssignment,
 }: {
   library: DetailLibraryState;
+  allowLocalOpen: boolean;
   overlayMacOsTitlebar: boolean;
   onRequestRename: (path: string) => void;
   onRequestDelete: (target: LibraryContextMenuTarget) => void;
@@ -4746,6 +5004,24 @@ function LibraryDetail({
               />
             </div>
           </section>
+          {selectedFolder.kind === "folder" ? (
+            <section className="affairs-detail-block affairs-detail-actions-block affairs-detail-block-borderless">
+              <div className="affairs-detail-actions-grid affairs-detail-actions-grid-single-row">
+                <button
+                  type="button"
+                  className="affairs-detail-action-button"
+                  aria-label={t(isFolderFavorite(library, selectedFolder.path) ? "libraryFavoriteRemove" : "libraryFavoriteAddFolder")}
+                  aria-pressed={isFolderFavorite(library, selectedFolder.path)}
+                  onClick={() => void toggleFolderFavorite(library, selectedFolder)}
+                >
+                  {isFolderFavorite(library, selectedFolder.path)
+                    ? renderFilledStarIcon()
+                    : renderFavoriteIcon()}
+                  {t("libraryFavoriteAction")}
+                </button>
+              </div>
+            </section>
+          ) : null}
         </div>
       ) : selected ? (
         <div
@@ -5167,9 +5443,7 @@ function LibraryContextMenu({
             void run(() => toggleFolderFavorite(library, target.entry))
           }
         >
-          {isFolderFavorite(library, target.entry.path)
-            ? t("libraryFavoriteRemove")
-            : t("libraryFavoriteAddFolder")}
+          {t("libraryFavoriteAction")}
         </button>
       ) : null}
       {isBlankTarget ? (
@@ -5928,6 +6202,7 @@ function LibraryTagAssignmentModal({
           assignedTagIds={assignedTagIds}
           assignableTags={assignableTags}
           resolvedTagPaths={resolvedTagPaths}
+          suppressedTags={"suppressedTags" in details ? details.suppressedTags ?? [] : []}
           recommendedTags={details.recommendedTags ?? []}
           emptyText={t("libraryTagAssignmentEmpty")}
           inputLabel={t("libraryTagAssignmentTagsLabel")}
@@ -5947,6 +6222,7 @@ function LibraryQuickTagAssignmentEditor({
   assignedTagIds,
   assignableTags,
   resolvedTagPaths = [],
+  suppressedTags = [],
   recommendedTags = [],
   emptyText,
   inputLabel,
@@ -5959,6 +6235,7 @@ function LibraryQuickTagAssignmentEditor({
   assignedTagIds: string[];
   assignableTags: LibraryTagDetailWithRules[];
   resolvedTagPaths?: string[];
+  suppressedTags?: LibraryDocumentTagDetails["suppressedTags"];
   recommendedTags?: LibraryDocumentTagDetails["recommendedTags"];
   emptyText: string;
   inputLabel: string;
@@ -6442,6 +6719,7 @@ function LibraryInlineDocumentTagEditor({
         assignedTagIds={details.manualTagIds}
         assignableTags={assignableTags}
         resolvedTagPaths={details.resolvedTags.map((item) => item.path)}
+        suppressedTags={details.suppressedTags ?? []}
         recommendedTags={details.recommendedTags ?? []}
         emptyText={t("libraryTagAssignmentEmpty")}
         inputLabel={t("libraryTagAssignmentTagsLabel")}
@@ -6884,6 +7162,7 @@ function LibraryTagManagerModal({
     setDescription("");
     setParentId(nextMode === "create-child" ? parentTag?.id ?? "" : "");
     setStatus("active");
+    setChildTagSelectionMode("multiple");
     setSmartRules([]);
   };
 
@@ -7644,10 +7923,12 @@ function LibraryFileViewerModal({
   library,
   viewerState,
   onClose,
+  allowLocalOpen,
 }: {
   library: LibraryState;
   viewerState: LibraryViewerState;
   onClose: () => void;
+  allowLocalOpen: boolean;
 }) {
   const [preview, setPreview] = useState<LibraryPreview | null>(null);
   const [editorContent, setEditorContent] = useState("");
@@ -7726,8 +8007,8 @@ function LibraryFileViewerModal({
   const activeModalSizePreset: ViewerModalSizePreset = useForcedFullSize ? "full" : modalSizePreset;
   const isOfficeViewer = preview?.kind === "office";
   const absoluteFilePath = useMemo(
-    () => resolveLibraryLocalPath(library, viewerState.filePath),
-    [library, viewerState.filePath],
+    () => allowLocalOpen ? resolveLibraryLocalPath(library, viewerState.filePath) : null,
+    [allowLocalOpen, library, viewerState.filePath],
   );
 
   useEffect(() => {
@@ -7949,43 +8230,14 @@ function LibraryFileViewerSurface({
   onPresentationProjectChange: (project: DocumentProject | null) => void;
   onSave: () => void;
 }) {
-  if (!loading && !error && preview?.supported && preview.kind === "office" && preview.onlyOffice) {
-    return <OnlyOfficePreview onlyOffice={preview.onlyOffice} filePath={preview.path} />;
-  }
-
-  if (!loading && !error && preview?.supported && preview.kind === "office" && !preview.onlyOffice) {
-    return (
-      <div className="library-file-viewer-fallback office-native-fallback">
-        <div className="preview-box">
-          <strong>{t("fileViewerOfficeUnavailable")}</strong>
-          <p>{preview.reason || "当前桌面本地模式下，Office 预览已切到原生替代路径。"}</p>
-          <div className="button-row">
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={!absoluteFilePath}
-              onClick={() => void openPathInDesktop(absoluteFilePath ?? preview.path)}
-            >
-              {t("libraryContextOpenLocalApp")}
-            </button>
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={!absoluteFilePath}
-              onClick={() => void revealPathInDesktop(absoluteFilePath ?? preview.path)}
-            >
-              {t("libraryContextRevealInFinder")}
-            </button>
-          </div>
-        </div>
-      </div>
-    );
+  if (!loading && !error && preview?.supported && preview.kind === "office") {
+    return <OfficePreview fileName={getPathName(preview.path)} relativePath={preview.path} previewUrl={preview.previewUrl} localFilePath={absoluteFilePath} size={preview.size} />;
   }
 
   if (loading || error || !preview || !preview.supported) {
     return (
       <div className="library-file-viewer-fallback">
-        <PreviewPanel preview={preview} loading={loading} error={error} />
+        <PreviewPanel preview={preview} loading={loading} error={error} localRootDir={null} />
       </div>
     );
   }
@@ -8028,10 +8280,10 @@ function LibraryFileViewerSurface({
     );
   }
 
-  if (preview.kind === "pdf" && preview.previewUrl) {
+  if (preview.kind === "pdf") {
     return (
       <div className="file-viewer-pdf-shell">
-        <iframe className="library-file-viewer-frame file-viewer-pdf-frame" src={preview.previewUrl} title={preview.path} />
+        <LibraryPdfPreview path={preview.path} previewUrl={preview.previewUrl} />
       </div>
     );
   }
@@ -8061,19 +8313,8 @@ function LibraryFileViewerSurface({
 }
 
 function getLibraryPreviewForViewer(path: string): Promise<LibraryPreview> {
-  return (async () => {
-    const nativePreview = await getNativeLibraryPreview(path, "reading").catch(() => null);
-    if (nativePreview?.kind === "office" && !nativePreview.onlyOffice) {
-      const officePreview = await getNativeOnlyOfficePreview(path, "reading", true).catch(() => null);
-      if (officePreview) {
-        return officePreview;
-      }
-    }
-    if (nativePreview) {
-      return nativePreview;
-    }
-    return getLibraryPreview(path);
-  })();
+  return getNativeLibraryPreview(path, "reading")
+    .then((preview) => preview ?? getLibraryPreview(path));
 }
 
 interface HtmlPresentationModeInput {
@@ -8249,9 +8490,6 @@ function resolveLibraryPreviewDetachedUrl(
   viewerState: LibraryViewerState,
   editorContent = "",
 ): string {
-  if (preview?.onlyOffice?.documentUrl) {
-    return preview.onlyOffice.documentUrl;
-  }
   if (preview?.previewUrl) {
     return preview.previewUrl;
   }
@@ -8290,11 +8528,13 @@ function PreviewPanel({
   loading,
   error,
   compact = false,
+  localRootDir,
 }: {
   preview: LibraryPreview | null;
   loading: boolean;
   error: string | null;
   compact?: boolean;
+  localRootDir: string | null;
 }) {
   if (loading) {
     return <div className="preview-box">{t("libraryDocumentsLoading")}</div>;
@@ -8338,11 +8578,19 @@ function PreviewPanel({
     );
   }
 
-  if ((preview.kind === "pdf" || preview.kind === "html") && preview.previewUrl) {
+  if (preview.kind === "pdf") {
     return (
-      <div className={preview.kind === "pdf" ? "file-viewer-pdf-shell library-detail-preview-shell" : "file-viewer-html-frame-shell library-detail-preview-shell"}>
+      <div className="file-viewer-pdf-shell library-detail-preview-shell">
+        <LibraryPdfPreview path={preview.path} previewUrl={preview.previewUrl} />
+      </div>
+    );
+  }
+
+  if (preview.kind === "html" && preview.previewUrl) {
+    return (
+      <div className="file-viewer-html-frame-shell library-detail-preview-shell">
         <iframe
-          className={preview.kind === "pdf" ? "library-file-viewer-frame file-viewer-pdf-frame" : "library-file-viewer-frame file-viewer-html-frame"}
+          className="library-file-viewer-frame file-viewer-html-frame"
           src={preview.previewUrl}
           title={preview.path}
         />
@@ -8350,13 +8598,18 @@ function PreviewPanel({
     );
   }
 
-  if (preview.kind === "office" && preview.onlyOffice) {
+  if (preview.kind === "office" && localRootDir) {
     return (
-      <div className="library-detail-preview-shell">
-        <OnlyOfficePreview onlyOffice={preview.onlyOffice} filePath={preview.path} />
-      </div>
+      <OfficePreview
+        fileName={getPathName(preview.path)}
+        relativePath={preview.path}
+        previewUrl={preview.previewUrl}
+        localFilePath={`${localRootDir.replace(/\/+$/g, "")}/${preview.path.replace(/^\/+/, "")}`}
+        size={preview.size}
+      />
     );
   }
+  if (preview.kind === "office") return <div className="preview-box">{t("fileViewerOfficeResourceUnavailable")}</div>;
 
   if (preview.kind === "markdown") {
     return (
@@ -9379,6 +9632,29 @@ function areStringArraysEqual(left: string[], right: string[]): boolean {
   return left.length === right.length && left.every((item, index) => item === right[index]);
 }
 
+function getLibraryNavigationState(
+  state: LibraryState["viewState"],
+): LibraryNavigationState {
+  return {
+    browseMode: state.browseMode,
+    selectedFavoriteId: state.selectedFavoriteId,
+    selectedFolderPath: state.selectedFolderPath,
+    selectedTagPath: state.selectedTagPath,
+    selectedTagPaths: [...state.selectedTagPaths],
+  };
+}
+
+function areLibraryNavigationStatesEqual(
+  left: LibraryNavigationState,
+  right: LibraryNavigationState,
+): boolean {
+  return left.browseMode === right.browseMode
+    && left.selectedFavoriteId === right.selectedFavoriteId
+    && left.selectedFolderPath === right.selectedFolderPath
+    && left.selectedTagPath === right.selectedTagPath
+    && areStringArraysEqual(left.selectedTagPaths, right.selectedTagPaths);
+}
+
 function normalizeFavoriteTagPaths(tagPaths: string[]): string[] {
   return Array.from(new Set(tagPaths.map((item) => item.trim()).filter(Boolean)));
 }
@@ -9823,7 +10099,7 @@ function isFolderFavorite(
 }
 
 async function toggleFolderFavorite(
-  library: LibraryState,
+  library: Pick<LibraryState, "toggleFavorite">,
   entry: LibraryFolderEntry,
 ): Promise<void> {
   await library.toggleFavorite({
@@ -10275,6 +10551,18 @@ function renderHomeIcon() {
         strokeLinecap="round"
         strokeLinejoin="round"
       />
+    </svg>
+  );
+}
+
+function renderNavigationArrowIcon(direction: "back" | "forward") {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      {direction === "back" ? (
+        <path d="M9.8 3.2 5 8l4.8 4.8" />
+      ) : (
+        <path d="m6.2 3.2 4.8 4.8-4.8 4.8" />
+      )}
     </svg>
   );
 }
