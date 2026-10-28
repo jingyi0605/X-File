@@ -296,7 +296,8 @@ export class TagService {
     this.scheduleTagRecompute(binding, {
       reason: `tag_definition_saved:${tag.id}`,
       scope: { kind: "full" },
-      shouldRecompute: Array.isArray(input.smartRules),
+      shouldRecompute:
+        Array.isArray(input.smartRules) || oldPath !== nextPath || selectionModeChanged,
     });
     return this.toTagDetail(tag, data);
   }
