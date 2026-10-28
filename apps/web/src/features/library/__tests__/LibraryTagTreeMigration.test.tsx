@@ -1,6 +1,6 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LibraryTagNode } from "@x-file/shared";
 
 import {
@@ -27,6 +27,7 @@ describe("第 8 批：标签筛选树、多选过滤、徽标计数、排序、�
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     localStorage.clear();
   });
 
@@ -152,6 +153,67 @@ describe("第 8 批：标签筛选树、多选过滤、徽标计数、排序、�
     expect(within(breadcrumb).getByRole("button", { name: "项目" })).toBeInTheDocument();
     expect(within(breadcrumb).getByRole("button", { name: "Alpha" })).toBeInTheDocument();
     expect(within(breadcrumb).getByRole("button", { name: "合同" })).toBeInTheDocument();
+  });
+
+  it("面包屑空间不足时保留首级、上一级和当前级，名称仅在实际裁切时省略", async () => {
+    mockTags([
+      tag("项目", 3),
+      tag("项目/Alpha", 2, { parentPath: "项目", depth: 1 }),
+      tag("项目/Alpha/商务合作项目资料归档文件夹", 2, { parentPath: "项目/Alpha", depth: 2 }),
+      tag("项目/Alpha/商务合作项目资料归档文件夹/合同", 1, { parentPath: "项目/Alpha/商务合作项目资料归档文件夹", depth: 3 }),
+    ]);
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={() => undefined} platformData={platformData} />);
+
+    await expandTag("项目");
+    await expandTag("Alpha");
+    await expandTag("商务合作项目资料归档文件夹");
+    await userEvent.click(await screen.findByRole("button", { name: /合同/ }));
+
+    const breadcrumb = document.querySelector(".affairs-stage-breadcrumb") as HTMLElement;
+    const items = breadcrumb.querySelector<HTMLElement>(".affairs-stage-breadcrumb-items")!;
+    Object.defineProperty(items, "clientWidth", { configurable: true, value: 240 });
+    const measure = items.querySelector<HTMLElement>(".affairs-stage-breadcrumb-measure")!;
+    const widths = [42, 42, 180, 42];
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.hasAttribute("data-breadcrumb-ellipsis")) {
+        return { width: 18, height: 24, top: 0, right: 18, bottom: 24, left: 0, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+      }
+      if (this.parentElement === measure) {
+        const index = Array.from(measure.children).indexOf(this);
+        const width = widths[index] ?? 0;
+        return { width, height: 24, top: 0, right: width, bottom: 24, left: 0, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+      }
+      return new DOMRect();
+    });
+    act(() => {
+      Object.defineProperty(items, "clientWidth", { configurable: true, value: 142 });
+      window.dispatchEvent(new Event("resize"));
+    });
+    act(() => window.dispatchEvent(new Event("resize")));
+    await waitFor(() => {
+      expect(within(breadcrumb).queryByRole("button", { name: "Alpha" })).not.toBeInTheDocument();
+      expect(within(breadcrumb).getByRole("button", { name: "商务合作项目资料归档文件夹" })).toBeInTheDocument();
+    });
+    expect(within(breadcrumb).getByRole("button", { name: "项目" })).toBeInTheDocument();
+    expect(within(breadcrumb).getByRole("button", { name: "合同" })).toBeInTheDocument();
+    expect(breadcrumb.textContent).toContain("…");
+    const previousLevelButton = within(breadcrumb).getByRole("button", {
+      name: "商务合作项目资料归档文件夹",
+    });
+    expect(previousLevelButton.textContent).toBe("商务合作项目资料归档文件夹");
+
+    act(() => {
+      Object.defineProperty(items, "clientWidth", { configurable: true, value: 400 });
+      window.dispatchEvent(new Event("resize"));
+    });
+    await waitFor(() => {
+      expect(within(breadcrumb).getByRole("button", { name: "Alpha" })).toBeInTheDocument();
+      expect(within(breadcrumb).getByRole("button", { name: "商务合作项目资料归档文件夹" })).toBeInTheDocument();
+    });
+
+    vi.restoreAllMocks();
   });
 
   it("标签支持多选过滤、顶部重置按钮和筛选后徽标数量", async () => {
