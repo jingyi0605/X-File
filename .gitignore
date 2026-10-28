@@ -16,3 +16,4 @@ apps/desktop/src-tauri/resources/x-file-runtime/
 .x-file-dev/
 apps/server/runtime/
 packages/library-engine/
+/data/
