@@ -296,7 +296,7 @@ describe("第 8 批：标签筛选树、多选过滤、徽标计数、排序、�
     const directory = await screen.findByRole("button", { name: /已标记目录/ });
     const file = await screen.findByRole("button", { name: /合同\.md/ });
     const visibleRows = Array.from(document.querySelectorAll(".affairs-finder-virtual > *"));
-    expect(visibleRows.indexOf(directory.parentElement!)).toBeLessThan(visibleRows.indexOf(file));
+    expect(visibleRows.indexOf(directory.parentElement!)).toBeLessThan(visibleRows.indexOf(file.parentElement!));
     expect(screen.queryByRole("button", { name: /客户/ })).not.toBeInTheDocument();
   });
 
@@ -339,8 +339,8 @@ describe("第 8 批：标签筛选树、多选过滤、徽标计数、排序、�
     const businessDirectory = await screen.findByRole("button", { name: /业务目录/ });
     const file = await screen.findByRole("button", { name: /合同\.md/ });
     const visibleRows = Array.from(document.querySelectorAll(".affairs-finder-virtual > *"));
-    expect(visibleRows.indexOf(projectDirectory.parentElement!)).toBeLessThan(visibleRows.indexOf(file));
-    expect(visibleRows.indexOf(businessDirectory.parentElement!)).toBeLessThan(visibleRows.indexOf(file));
+    expect(visibleRows.indexOf(projectDirectory.parentElement!)).toBeLessThan(visibleRows.indexOf(file.parentElement!));
+    expect(visibleRows.indexOf(businessDirectory.parentElement!)).toBeLessThan(visibleRows.indexOf(file.parentElement!));
   });
 
   it("标签筛选在列表视图可以切到目录视图，按文件实际路径分组显示", async () => {

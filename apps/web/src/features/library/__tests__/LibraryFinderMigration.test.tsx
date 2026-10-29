@@ -31,7 +31,7 @@ describe("第 7 批：列表/Finder 视图、类型文案、列宽和虚拟滚�
     restoreElementMetrics();
   });
 
-  it("列表模式表头显示文件名、大小、时间、种类，并显示真实文件名", async () => {
+  it("列表模式只显示名称、类型和创建时间，不显示大小与修改时间", async () => {
     libraryApiMock.listLibraryDocuments.mockResolvedValue(
       createDocumentList([
         createDocumentRecord({
@@ -53,18 +53,65 @@ describe("第 7 批：列表/Finder 视图、类型文案、列宽和虚拟滚�
     expect(header).not.toBeNull();
     const headerScope = within(header as HTMLElement);
     expect(headerScope.getByText("名称")).toBeInTheDocument();
-    expect(headerScope.getByText("大小")).toBeInTheDocument();
-    expect(headerScope.getByText("更新时间")).toBeInTheDocument();
+    expect(headerScope.queryByText("大小")).not.toBeInTheDocument();
+    expect(headerScope.queryByText("更新时间")).not.toBeInTheDocument();
     expect(headerScope.getByText("类型")).toBeInTheDocument();
     expect(headerScope.getByText("创建时间")).toBeInTheDocument();
 
     const row = await screen.findByRole("button", { name: /Exchange 分层通讯簿\.txt/i });
-    expect(within(row).getByText("2.0 KB")).toBeInTheDocument();
     expect(within(row).getByText("文本文档")).toBeInTheDocument();
+    expect(within(row).queryByText("2.0 KB")).not.toBeInTheDocument();
+    expect(row.querySelectorAll(".affairs-finder-cell")).toHaveLength(2);
+    expect(row.querySelector(".mobile-finder-meta")).toBeNull();
+    const record = row.closest(".affairs-finder-document-item");
+    expect(record).not.toBeNull();
+    expect(record).toContainElement(row);
+    expect(record?.querySelector(":scope > .affairs-finder-actions-cell .library-entry-details-trigger"))
+      .toBeInTheDocument();
+    expect(row).toHaveStyle({ gridColumn: "1 / 4", gridRow: "1" });
     const nameCell = row.querySelector(".affairs-finder-name");
     expect(nameCell).toHaveAttribute("title", "Exchange 分层通讯簿.txt");
     expect(nameCell?.textContent?.trim()).toBe("Exchange 分层通讯簿.txt");
     expect(within(row).queryByText("摘要标题不应该出现")).not.toBeInTheDocument();
+  });
+
+  it("图标模式显示目录文档数和修改时间，以及文件大小和修改时间", async () => {
+    libraryApiMock.listLibraryFiles.mockResolvedValue(
+      createFileList([
+        createFileNode({
+          path: "资料夹",
+          name: "资料夹",
+          kind: "directory",
+          updatedAt: "2026-06-10T00:00:00.000Z",
+        }),
+      ]),
+    );
+    libraryApiMock.listLibraryDocuments.mockResolvedValue(
+      createDocumentList([
+        createDocumentRecord({
+          documentId: "grid-doc",
+          path: "图标文件.md",
+          sizeBytes: 2048,
+          updatedAt: "2026-06-11T00:00:00.000Z",
+        }),
+      ]),
+    );
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={() => undefined} platformData={platformData} />);
+
+    const folderFooter = await waitFor(() => {
+      const footer = document.querySelector(".affairs-folder-grid-item .affairs-doc-footer");
+      expect(footer).not.toBeNull();
+      return footer as HTMLElement;
+    });
+    const documentFooter = document.querySelector(
+      ".affairs-document-grid-item .affairs-doc-footer",
+    );
+    expect(folderFooter).toHaveTextContent("0 个文档");
+    expect(folderFooter).toHaveTextContent("2026");
+    expect(documentFooter).toHaveTextContent("2.0 KB");
+    expect(documentFooter).toHaveTextContent("2026");
   });
 
   it("列表模式文件夹和 html/json/zip/mp4/sql 显示具体类型文案", async () => {
@@ -97,6 +144,12 @@ describe("第 7 批：列表/Finder 视图、类型文案、列宽和虚拟滚�
       return row as HTMLButtonElement;
     });
     expect(within(folderRow).getByText("文件夹")).toBeInTheDocument();
+    const folderRecord = folderRow.closest(".affairs-finder-directory-item");
+    const rowActions = folderRecord?.querySelector(":scope > .affairs-finder-actions-cell");
+    expect(folderRecord).not.toBeNull();
+    expect(folderRecord?.getAttribute("style")).toContain("--finder-actions-width");
+    expect(rowActions?.querySelector(".library-entry-details-trigger")).toBeInTheDocument();
+    expect(rowActions?.querySelector(".affairs-folder-favorite-toggle")).toBeInTheDocument();
     expect(within(await screen.findByRole("button", { name: /schema\.sql/ })).getByText("SQL 脚本")).toBeInTheDocument();
     expect(within(await screen.findByRole("button", { name: /落地页\.html/ })).getByText("HTML 文档")).toBeInTheDocument();
     expect(within(await screen.findByRole("button", { name: /配置\.json/ })).getByText("JSON 配置")).toBeInTheDocument();

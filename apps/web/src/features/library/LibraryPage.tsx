@@ -3995,11 +3995,13 @@ function VirtualLibraryGrid({
 function VirtualLibraryFinderList({
   library,
   entries,
+  onOpenLibraryDetails,
   onOpenContextMenu,
   onOpenLibraryViewer,
 }: {
   library: StageLibraryState;
   entries: LibraryEntry[];
+  onOpenLibraryDetails: (entry?: LibraryEntry) => void;
   onOpenContextMenu: (
     event: ReactMouseEvent<HTMLElement>,
     target: LibraryContextMenuTarget,
@@ -4022,6 +4024,10 @@ function VirtualLibraryFinderList({
   const finderGridTemplateColumns = useMemo(
     () => buildFinderGridTemplateColumns(library.viewState.finderColumnWidths),
     [library.viewState.finderColumnWidths],
+  );
+  const finderTableWidth = FINDER_VISIBLE_COLUMNS.reduce(
+    (total, column) => total + library.viewState.finderColumnWidths[column],
+    0,
   );
   const selectedFolderEntryPathSet = useMemo(
     () => new Set(visualSelection.folderPaths),
@@ -4273,24 +4279,24 @@ function VirtualLibraryFinderList({
     }));
   }
 
+  const finderColumns: Array<{ key: FinderColumnKey; label: string }> = [
+    { key: "name", label: t("libraryFinderName") },
+    { key: "type", label: t("libraryFinderKind") },
+    { key: "createdAt", label: t("libraryMetaCreatedAt") },
+  ];
+
   return (
     <div
       className="affairs-finder-shell"
       style={{
-        "--finder-table-width": `calc(${Object.values(library.viewState.finderColumnWidths).reduce((total, width) => total + width, 0)}px + var(--control-height-md))`,
+        "--finder-table-width": `calc(${finderTableWidth}px + var(--finder-actions-width))`,
       } as CSSProperties}
     >
       <div
         className="affairs-finder-header"
-        style={{ gridTemplateColumns: `${finderGridTemplateColumns} var(--control-height-md)` }}
+        style={{ gridTemplateColumns: `${finderGridTemplateColumns} var(--finder-actions-width)` }}
       >
-        {[
-          { key: "name", label: t("libraryFinderName") },
-          { key: "size", label: t("libraryMetaSize") },
-          { key: "updatedAt", label: t("libraryMetaUpdatedAt") },
-          { key: "type", label: t("libraryFinderKind") },
-          { key: "createdAt", label: t("libraryMetaCreatedAt") },
-        ].map((column) => (
+        {finderColumns.map((column) => (
           <span
             key={column.key}
             className="affairs-finder-header-cell affairs-finder-cell"
@@ -4298,22 +4304,22 @@ function VirtualLibraryFinderList({
             <button
               type="button"
               className="affairs-finder-sort-button"
-              onClick={() => handleFinderSort(column.key as FinderColumnKey)}
+              onClick={() => handleFinderSort(column.key)}
               aria-label={buildFinderSortButtonLabel(
                 column.label,
                 library.viewState.librarySort,
-                column.key as FinderColumnKey,
+                column.key,
               )}
               title={buildFinderSortButtonLabel(
                 column.label,
                 library.viewState.librarySort,
-                column.key as FinderColumnKey,
+                column.key,
               )}
             >
               <span>{column.label}</span>
               {renderFinderSortIndicator(
                 library.viewState.librarySort,
-                column.key as FinderColumnKey,
+                column.key,
               )}
             </button>
             <span
@@ -4324,10 +4330,7 @@ function VirtualLibraryFinderList({
                 column: column.label,
               })}
               onPointerDown={(event) =>
-                handleFinderColumnResizeStart(
-                  column.key as FinderColumnKey,
-                  event,
-                )
+                handleFinderColumnResizeStart(column.key, event)
               }
             />
           </span>
@@ -4365,6 +4368,7 @@ function VirtualLibraryFinderList({
                   onSelectDocument={library.selectDocument}
                   onToggleDocumentSelection={library.toggleDocumentSelection}
                   onVisualSelect={handleVisualSelect}
+                  onOpenLibraryDetails={onOpenLibraryDetails}
                   gridTemplateColumns={finderGridTemplateColumns}
                   onOpenContextMenu={onOpenContextMenu}
                   onOpenLibraryViewer={onOpenLibraryViewer}
@@ -4609,29 +4613,16 @@ function buildFinderSortButtonLabel(
 function buildFinderGridTemplateColumns(
   widths: Record<FinderColumnKey, number>,
 ): string {
-  const normalized = {
-    name: Number.isFinite(widths.name)
-      ? widths.name
-      : DEFAULT_FINDER_COLUMN_WIDTHS.name,
-    size: Number.isFinite(widths.size)
-      ? widths.size
-      : DEFAULT_FINDER_COLUMN_WIDTHS.size,
-    updatedAt: Number.isFinite(widths.updatedAt)
-      ? widths.updatedAt
-      : DEFAULT_FINDER_COLUMN_WIDTHS.updatedAt,
-    type: Number.isFinite(widths.type)
-      ? widths.type
-      : DEFAULT_FINDER_COLUMN_WIDTHS.type,
-    createdAt: Number.isFinite(widths.createdAt)
-      ? widths.createdAt
-      : DEFAULT_FINDER_COLUMN_WIDTHS.createdAt,
-  };
+  const resolveWidth = (column: FinderColumnKey): number => Math.max(
+    FINDER_COLUMN_MIN_WIDTHS[column],
+    Math.round(Number.isFinite(widths[column])
+      ? widths[column]
+      : DEFAULT_FINDER_COLUMN_WIDTHS[column]),
+  );
   return [
-    `minmax(${FINDER_COLUMN_MIN_WIDTHS.name}px, ${Math.max(FINDER_COLUMN_MIN_WIDTHS.name, Math.round(normalized.name))}px)`,
-    `minmax(${FINDER_COLUMN_MIN_WIDTHS.size}px, ${Math.max(FINDER_COLUMN_MIN_WIDTHS.size, Math.round(normalized.size))}px)`,
-    `minmax(${FINDER_COLUMN_MIN_WIDTHS.updatedAt}px, ${Math.max(FINDER_COLUMN_MIN_WIDTHS.updatedAt, Math.round(normalized.updatedAt))}px)`,
-    `minmax(${FINDER_COLUMN_MIN_WIDTHS.type}px, ${Math.max(FINDER_COLUMN_MIN_WIDTHS.type, Math.round(normalized.type))}px)`,
-    `minmax(${Math.max(FINDER_COLUMN_MIN_WIDTHS.createdAt, Math.round(normalized.createdAt))}px, 1fr)`,
+    `minmax(${FINDER_COLUMN_MIN_WIDTHS.name}px, ${resolveWidth("name")}px)`,
+    `minmax(${FINDER_COLUMN_MIN_WIDTHS.type}px, ${resolveWidth("type")}px)`,
+    `minmax(${resolveWidth("createdAt")}px, 1fr)`,
   ].join(" ");
 }
 
@@ -4699,7 +4690,7 @@ function AffairsFinderPlaceholderRow({
   return (
     <div
       className="affairs-finder-row is-placeholder"
-      style={{ gridTemplateColumns: `${gridTemplateColumns} var(--control-height-md)` }}
+      style={{ gridTemplateColumns: `${gridTemplateColumns} var(--finder-actions-width)` }}
       aria-hidden="true"
     >
       <span className="affairs-finder-name-cell">
@@ -4757,6 +4748,7 @@ function LibraryEntryCard({
   onSelectDocument,
   onToggleDocumentSelection,
   onVisualSelect,
+  onOpenLibraryDetails,
   onOpenContextMenu,
   onOpenLibraryViewer,
   onToggleFavorite,
@@ -4771,6 +4763,7 @@ function LibraryEntryCard({
   onSelectDocument: (documentId: string) => void;
   onToggleDocumentSelection: (documentId: string, additive?: boolean) => void;
   onVisualSelect: (entry: LibraryEntry) => void;
+  onOpenLibraryDetails: (entry?: LibraryEntry) => void;
   onOpenContextMenu: (
     event: ReactMouseEvent<HTMLElement>,
     target: LibraryContextMenuTarget,
@@ -4785,11 +4778,24 @@ function LibraryEntryCard({
     }
     playLibrarySelectionPressAnimation(event.currentTarget);
     onVisualSelect(entry);
+    if (entry.kind === "document") {
+      onSelectDocument(entry.documentId);
+    }
   }
 
   if (entry.kind !== "document") {
     return (
       <div className="affairs-folder-grid-item">
+        <button
+          type="button"
+          className="library-entry-details-trigger"
+          aria-label={t("libraryOpenDetails")}
+          aria-description={entry.name}
+          title={t("libraryDetails")}
+          onClick={() => onOpenLibraryDetails(entry)}
+        >
+          {renderInfoIcon()}
+        </button>
         {entry.kind === "folder" ? (
           <FolderFavoriteButton
             entry={entry}
@@ -4840,6 +4846,7 @@ function LibraryEntryCard({
           <div className="affairs-doc-footer">
             <span className="affairs-doc-muted">
               {t("libraryCountDocuments", { count: entry.documentCount })}
+              {` · ${formatDateTime(entry.updatedAt)}`}
             </span>
           </div>
         </button>
@@ -4847,46 +4854,51 @@ function LibraryEntryCard({
     );
   }
   return (
-    <button
-      type="button"
-      className={
-        active ? "affairs-doc-item grid active" : "affairs-doc-item grid"
-      }
-      onPointerDown={handlePointerSelection}
-      onClick={(event) => {
-        if (!event.detail || event.metaKey || event.ctrlKey) {
-          onToggleDocumentSelection(entry.documentId, event.metaKey || event.ctrlKey);
-        }
-      }}
-      onContextMenu={(event) => {
-        onSelectDocument(entry.documentId);
-        onOpenContextMenu(event, { kind: "document", entry });
-      }}
-      onDoubleClick={() => {
-        if (getFileOpenModeForPath(entry.path) === "local_app") {
-          void openPathInDesktop(entry.path).then((opened) => {
-            if (!opened) {
-              onOpenLibraryViewer(entry);
-            }
-          });
-          return;
-        }
-        onOpenLibraryViewer(entry);
-      }}
-    >
-      <div className="affairs-doc-icon">{renderDocumentShape(entry.path)}</div>
-      <div
-        className="affairs-doc-title"
-        title={resolveLibraryDocumentDisplayName(entry)}
+    <div className="affairs-document-grid-item">
+      <button
+        type="button"
+        className={active ? "affairs-doc-item grid active" : "affairs-doc-item grid"}
+        onPointerDown={handlePointerSelection}
+        onClick={(event) => {
+          if (!event.detail || event.metaKey || event.ctrlKey) {
+            onToggleDocumentSelection(entry.documentId, event.metaKey || event.ctrlKey);
+          }
+        }}
+        onContextMenu={(event) => {
+          onSelectDocument(entry.documentId);
+          onOpenContextMenu(event, { kind: "document", entry });
+        }}
+        onDoubleClick={() => {
+          if (getFileOpenModeForPath(entry.path) === "local_app") {
+            void openPathInDesktop(entry.path).then((opened) => {
+              if (!opened) onOpenLibraryViewer(entry);
+            });
+            return;
+          }
+          onOpenLibraryViewer(entry);
+        }}
       >
-        {resolveLibraryDocumentDisplayName(entry)}
-      </div>
-      <div className="affairs-doc-footer">
-        <span className="affairs-doc-muted">
-          {formatDateTime(entry.updatedAt)}
-        </span>
-      </div>
-    </button>
+        <div className="affairs-doc-icon">{renderDocumentShape(entry.path)}</div>
+        <div className="affairs-doc-title" title={resolveLibraryDocumentDisplayName(entry)}>
+          {resolveLibraryDocumentDisplayName(entry)}
+        </div>
+        <div className="affairs-doc-footer">
+          <span className="affairs-doc-muted">
+            {formatFinderBytes(entry.sizeBytes)} · {formatDateTime(entry.updatedAt)}
+          </span>
+        </div>
+      </button>
+      <button
+        type="button"
+        className="library-entry-details-trigger"
+        aria-label={t("libraryObjectDetail")}
+        aria-description={resolveLibraryDocumentDisplayName(entry)}
+        title={t("libraryDetails")}
+        onClick={() => onOpenLibraryDetails(entry)}
+      >
+        {renderInfoIcon()}
+      </button>
+    </div>
   );
 }
 
@@ -4902,6 +4914,7 @@ function LibraryFinderRow({
   onSelectDocument,
   onToggleDocumentSelection,
   onVisualSelect,
+  onOpenLibraryDetails,
   gridTemplateColumns,
   onOpenContextMenu,
   onOpenLibraryViewer,
@@ -4917,6 +4930,7 @@ function LibraryFinderRow({
   onSelectDocument: (documentId: string) => void;
   onToggleDocumentSelection: (documentId: string, additive?: boolean) => void;
   onVisualSelect: (entry: LibraryEntry) => void;
+  onOpenLibraryDetails: (entry?: LibraryEntry) => void;
   gridTemplateColumns: string;
   onOpenContextMenu: (
     event: ReactMouseEvent<HTMLElement>,
@@ -4932,11 +4946,17 @@ function LibraryFinderRow({
     }
     playLibrarySelectionPressAnimation(event.currentTarget);
     onVisualSelect(entry);
+    if (entry.kind === "document") {
+      onSelectDocument(entry.documentId);
+    }
   }
 
   if (entry.kind !== "document") {
     return (
-      <div className="affairs-finder-directory-item" style={{ gridTemplateColumns: `${gridTemplateColumns} var(--control-height-md)` }}>
+      <div
+        className="affairs-finder-directory-item"
+        style={{ gridTemplateColumns: `${gridTemplateColumns} var(--finder-actions-width)` }}
+      >
         <button
           type="button"
           className={
@@ -4944,7 +4964,7 @@ function LibraryFinderRow({
               ? "affairs-finder-row affairs-finder-directory-row active"
               : "affairs-finder-row affairs-finder-directory-row"
           }
-          style={{ gridTemplateColumns, gridColumn: "1 / 6", gridRow: 1 }}
+          style={{ gridTemplateColumns, gridColumn: "1 / 4", gridRow: 1 }}
           onPointerDown={handlePointerSelection}
           onClick={(event) => {
             if (entry.kind !== "folder") {
@@ -4991,20 +5011,30 @@ function LibraryFinderRow({
             <span className="affairs-finder-name" title={entry.name}>
               {entry.name}
             </span>
-            {entry.kind === "tag-directory" ? (
-              <span className="affairs-finder-directory-count">{t("libraryCountDocuments", { count: entry.documentCount })}</span>
-            ) : null}
-          </span>
-          <span className="affairs-finder-cell">--</span>
-          <span className="affairs-finder-cell">
-            {formatDateTime(entry.updatedAt)}
           </span>
           <span className="affairs-finder-cell">
             <span className="library-format-tag">{t("libraryFinderKindFolder")}</span>
           </span>
-          <span className="affairs-finder-cell">--</span>
+          <span className="affairs-finder-cell">
+            {"createdAt" in entry ? formatDateTime(entry.createdAt) : "--"}
+          </span>
         </button>
         <span className="affairs-finder-actions-cell">
+          <button
+            type="button"
+            className="library-entry-details-trigger"
+            aria-label={t("libraryObjectDetail")}
+            aria-description={entry.name}
+            title={t("libraryDetails")}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onOpenLibraryDetails(entry);
+            }}
+          >
+            {renderInfoIcon()}
+          </button>
           {entry.kind === "folder" ? (
             <FolderFavoriteButton
               entry={entry}

@@ -12105,6 +12105,12 @@ input[type="range"] {
   .affairs-finder-name-cell .affairs-finder-name {
     flex: 1 1 auto;
     min-width: 0;
+    overflow-wrap: anywhere;
+    white-space: normal;
+    line-height: 1.35;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
   }
 
   .affairs-finder-name-cell .affairs-finder-directory-count {
