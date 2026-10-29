@@ -74,10 +74,42 @@ export interface NativeDesktopRuntimeInfo {
   windowChrome?: NativeDesktopWindowChromeInfo | null;
 }
 
+export interface NativeOfficeConverterStatus {
+  supported: boolean;
+  installed: boolean;
+  busy: boolean;
+  version: string;
+  platform: string;
+}
+
+export interface NativeOfficeConverterProgress {
+  stage: "downloading" | "installing" | "ready" | "error";
+  current: number;
+  total: number;
+}
+
+export interface NativeOfficeConversionResult {
+  pdfBase64: string;
+  pageCount: number;
+  elapsedMs: number;
+  cached: boolean;
+  missingFonts: string[];
+}
+
 export interface NativeResetApplicationDataResult {
   dataDir: string;
   appDataDir: string | null;
   clearedLibraryIndexDir: string | null;
+}
+
+export interface NativeLibraryBackupImportResult {
+  imported: true;
+  tagCount: number;
+  documentBindingCount: number;
+  folderBindingCount: number;
+  documentCount: number;
+  refreshScheduled: boolean;
+  refreshError: string | null;
 }
 
 export interface NativeSidebarLayoutInput {
@@ -269,6 +301,43 @@ export async function getNativeDesktopRuntimeInfo(): Promise<NativeDesktopRuntim
   return invokeOptional<NativeDesktopRuntimeInfo>("get_runtime_info");
 }
 
+export async function getNativeOfficeConverterStatus(): Promise<NativeOfficeConverterStatus | null> {
+  return invokeOptional<NativeOfficeConverterStatus>("native_office_converter_status");
+}
+
+export async function installNativeOfficeConverter(): Promise<NativeOfficeConverterStatus | null> {
+  return invokeOptional<NativeOfficeConverterStatus>("native_office_converter_install");
+}
+
+export async function cancelNativeOfficeConverterOperation(): Promise<void> {
+  await invokeOptional<void>("native_office_converter_cancel");
+}
+
+export async function uninstallNativeOfficeConverter(): Promise<NativeOfficeConverterStatus | null> {
+  return invokeOptional<NativeOfficeConverterStatus>("native_office_converter_uninstall");
+}
+
+export async function convertNativeOfficePreview(path: string): Promise<{ bytes: Uint8Array; pageCount: number; elapsedMs: number; cached: boolean; missingFonts: string[] } | null> {
+  const result = await invokeOptional<NativeOfficeConversionResult>("native_convert_office_preview", { relativePath: path });
+  if (result === null) return null;
+  const binary = atob(result.pdfBase64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return { bytes, pageCount: result.pageCount, elapsedMs: result.elapsedMs, cached: result.cached, missingFonts: result.missingFonts };
+}
+
+export async function listenNativeOfficeConverterProgress(
+  callback: (progress: NativeOfficeConverterProgress) => void,
+): Promise<(() => void) | null> {
+  if (!isDesktopTauriRuntime()) return null;
+  try {
+    const eventApi = await import("@tauri-apps/api/event");
+    return await eventApi.listen<NativeOfficeConverterProgress>("x-file-office-converter-progress", (event) => callback(event.payload));
+  } catch {
+    return null;
+  }
+}
+
 export async function setInitializationWindowMode(active: boolean): Promise<boolean> {
   if (!isDesktopTauriRuntime()) {
     return false;
@@ -337,6 +406,37 @@ export async function saveNativeLibraryConfig(
   input: SaveLibraryConfigInput,
 ): Promise<LibraryConfig | null> {
   return invokeOptional<LibraryConfig>("native_save_library_config", { request: input });
+}
+
+export async function exportNativeLibraryBackup(): Promise<import("@x-file/shared").LibraryBackup | null> {
+  return invokeOptional<import("@x-file/shared").LibraryBackup>("native_export_library_backup");
+}
+
+export async function saveNativeLibraryBackup(
+  content: string,
+  defaultFileName: string,
+): Promise<boolean | null> {
+  if (!isDesktopTauriRuntime()) return null;
+  const { save } = await import("@tauri-apps/plugin-dialog");
+  const path = await save({
+    defaultPath: defaultFileName,
+    filters: [{ name: "JSON", extensions: ["json"] }],
+  });
+  if (path === null) return false;
+  const written = await invokeOptional<boolean>("native_write_library_backup", {
+    path: String(path),
+    content,
+  });
+  if (written !== true) {
+    throw new Error("桌面端未能写入资料库备份");
+  }
+  return true;
+}
+
+export async function importNativeLibraryBackup(
+  backup: import("@x-file/shared").LibraryBackup,
+): Promise<NativeLibraryBackupImportResult | null> {
+  return invokeOptional<NativeLibraryBackupImportResult>("native_import_library_backup", { backup });
 }
 
 export async function browseNativeHostDirectories(

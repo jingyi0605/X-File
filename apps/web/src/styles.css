@@ -23,6 +23,7 @@
   --library-task-center-width: 420px;
   --library-task-title-size: 12px;
   --library-task-category-size: calc(var(--library-task-title-size) - 1px);
+  --toast-z-index: 3000;
   --library-task-center-max-height: 420px;
   --library-task-list-max-height: 360px;
   --library-task-viewport-inset: calc(var(--space-6) * 2);
@@ -8346,21 +8347,43 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
   font-size: 12px;
 }
 
-.file-viewer-pdf-canvas-wrap {
-  display: flex;
-  flex: 1 1 auto;
-  min-height: 0;
-  align-items: flex-start;
-  justify-content: center;
-  overflow: auto;
-  padding: var(--space-3);
+.file-viewer-pdf-zoom-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-left: var(--space-3);
 }
 
-.file-viewer-pdf-canvas-wrap canvas {
+.file-viewer-pdf-continuous-scroll {
+  display: grid;
+  flex: 1 1 auto;
+  min-height: 0;
+  align-content: start;
+  justify-items: center;
+  gap: var(--space-4);
+  overflow: auto;
+  padding: var(--space-4);
+}
+
+.file-viewer-pdf-continuous-page {
+  display: grid;
+  width: min(100%, 1000px);
+  min-height: 720px;
+  align-content: center;
+  justify-items: center;
+  overflow: hidden;
+  border: 1px solid var(--glass-control-border);
+  border-radius: var(--radius-control);
+  background: var(--viewer-surface);
+  box-shadow: var(--glass-panel-shadow);
+  scroll-margin-top: var(--space-4);
+}
+
+.file-viewer-pdf-continuous-page canvas {
+  display: block;
   max-width: 100%;
   height: auto;
   background: #ffffff;
-  box-shadow: var(--glass-panel-shadow);
 }
 
 .file-viewer-pdf-error {
@@ -8371,6 +8394,30 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
   padding: var(--space-5);
   color: var(--text-secondary);
   text-align: center;
+}
+
+.office-preview-conversion-action {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--glass-control-border);
+}
+
+.office-preview-conversion-action p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--settings-module-description-size);
+}
+
+.office-preview-conversion-meta {
+  margin: 0;
+  padding: var(--space-2) var(--space-4);
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 .workbench-modal-layer .workbench-modal-card textarea.file-viewer-editor {
@@ -8399,6 +8446,18 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
   padding: 0 2px 18px;
   overflow: auto;
   overflow-y: auto;
+}
+
+.file-viewer-markdown-shell {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.file-viewer-markdown-header {
+  flex: 0 0 auto;
 }
 
 .office-preview-shell {
@@ -8494,20 +8553,49 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
 }
 
 .office-preview-docx-body .xfile-docx-wrapper {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  align-items: stretch;
   padding: var(--space-4);
-  background: transparent;
+  background: color-mix(in srgb, var(--text-primary) 4%, var(--bg-primary));
+  overflow-x: auto;
 }
 
 .office-preview-docx-body .xfile-docx {
-  max-width: 100%;
-  margin: 0 auto var(--space-5);
-  overflow: auto;
+  box-sizing: border-box;
+  width: max(100%, 720px);
+  max-width: none;
+  margin: 0 auto var(--space-4);
+  overflow: visible;
+  border-radius: var(--radius-control);
+  background: var(--bg-surface);
   box-shadow: var(--glass-panel-shadow);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.65;
+}
+
+.office-preview-docx-body .xfile-docx-wrapper > section.xfile-docx > article {
+  width: 100%;
+  max-width: 100%;
+}
+
+.office-preview-docx-body .xfile-docx-wrapper > section.xfile-docx > article > * {
+  max-width: 100%;
 }
 
 .office-preview-docx-body .xfile-docx table {
+  width: 100%;
   max-width: 100%;
+  table-layout: auto;
   border-collapse: collapse;
+}
+
+.office-preview-docx-body .xfile-docx td,
+.office-preview-docx-body .xfile-docx th {
+  overflow-wrap: anywhere;
 }
 
 .office-preview-document > p,
@@ -8516,8 +8604,7 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
 .office-preview-document > h3,
 .office-preview-document > h4,
 .office-preview-document > h5,
-.office-preview-document > h6,
-.office-preview-document > .office-preview-grid-scroll {
+.office-preview-document > h6 {
   width: min(100%, 860px);
   margin: 0;
 }
@@ -8543,23 +8630,98 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
   line-height: 1.35;
 }
 
-.office-preview-grid-scroll {
+.office-preview-spreadsheet {
+  display: grid;
   width: 100%;
   min-width: 0;
-  overflow: auto;
-  border: 1px solid var(--glass-control-border);
-  border-radius: var(--radius-control);
+  min-height: min(640px, 70vh);
+  gap: var(--space-3);
 }
 
-.office-preview-grid,
+.office-preview-spreadsheet-toolbar {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) max-content;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.office-preview-spreadsheet-address {
+  display: inline-flex;
+  min-width: 58px;
+  height: var(--control-height-sm);
+  align-items: center;
+  justify-content: center;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--glass-control-border);
+  border-radius: var(--radius-control);
+  background: var(--glass-control-surface);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.office-preview-spreadsheet-formula {
+  display: block;
+  min-width: 0;
+  min-height: var(--control-height-sm);
+  overflow: hidden;
+  padding: 6px var(--space-3);
+  border: 1px solid var(--glass-control-border);
+  border-radius: var(--radius-control);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 16px;
+  overflow-wrap: anywhere;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.office-preview-spreadsheet-notice {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--glass-control-border));
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--accent) 8%, var(--glass-control-surface));
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.office-preview-fortune-grid {
+  min-width: 0;
+  min-height: 520px;
+  overflow: hidden;
+  border: 1px solid var(--glass-control-border);
+  border-radius: var(--radius-control);
+  background: var(--viewer-surface);
+}
+
+.office-preview-fortune-grid .fortune-sheet-container {
+  width: 100%;
+  height: min(640px, 70vh);
+}
+
+.office-preview-grid-accessibility {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .office-preview-word-table {
   border-collapse: collapse;
   color: var(--text-primary);
   font-size: 12px;
 }
 
-.office-preview-grid td,
-.office-preview-grid th,
 .office-preview-word-table td {
   min-width: 72px;
   max-width: 320px;
@@ -8570,16 +8732,6 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
   vertical-align: top;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-
-.office-preview-grid th {
-  position: sticky;
-  top: 0;
-  min-width: 38px;
-  background: var(--glass-control-surface);
-  color: var(--text-tertiary);
-  font-weight: 600;
-  text-align: center;
 }
 
 .office-preview-sheet-tabs {
@@ -8649,6 +8801,58 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
   padding: var(--space-2);
   color: var(--text-tertiary);
   font-size: 11px;
+}
+
+.library-detached-preview-page {
+  display: flex;
+  min-width: 0;
+  min-height: 100vh;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.library-detached-preview-header {
+  display: grid;
+  flex: 0 0 auto;
+  gap: var(--space-1);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--glass-control-border);
+  background: var(--glass-control-surface);
+}
+
+.library-detached-preview-header strong {
+  overflow: hidden;
+  font-size: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-detached-preview-header span {
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-detached-preview-content {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.library-detached-preview-page > .office-preview-renderer,
+.library-detached-preview-page > .file-viewer-pdf-shell,
+.library-detached-preview-page > .file-viewer-html-frame-shell,
+.library-detached-preview-page > .library-detail-preview-shell,
+.library-detached-preview-page > .office-preview-shell {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .office-preview-empty {
@@ -8850,6 +9054,48 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
   white-space: nowrap;
 }
 
+.file-viewer-code-search {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-1);
+  margin-left: auto;
+}
+
+.file-viewer-code-search input {
+  width: min(180px, 24vw);
+  min-width: 72px;
+  height: var(--control-height-sm);
+  padding: 0 var(--space-2);
+  border: 1px solid color-mix(in srgb, var(--border-primary) 82%, transparent);
+  border-radius: var(--radius-control);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 11px;
+}
+
+.file-viewer-code-search span {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.file-viewer-search-button {
+  min-height: var(--control-height-sm);
+  padding: 0 var(--space-2);
+  border: 1px solid color-mix(in srgb, var(--border-primary) 82%, transparent);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.file-viewer-search-button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
 .file-viewer-copy-button {
   display: inline-flex;
   align-items: center;
@@ -8953,6 +9199,16 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
 
 .file-viewer-code-line.diff-line-modify {
   background: color-mix(in srgb, #60a5fa 12%, transparent);
+}
+
+.file-viewer-code-line.search-match {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.file-viewer-code-line.search-match-active {
+  outline: 1px solid color-mix(in srgb, var(--accent) 48%, transparent);
+  outline-offset: -1px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 .file-viewer-code-line {
@@ -9386,6 +9642,10 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
   box-shadow: var(--settings-save-button-shadow-hover);
 }
 
+.settings-backup-file-input {
+  display: none;
+}
+
 .settings-module .settings-heading-row {
   flex-wrap: wrap;
 }
@@ -9767,6 +10027,11 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
   min-height: 0;
 }
 
+.file-viewer-modal-body.library-file-viewer-body > .file-viewer-markdown-shell {
+  min-width: 0;
+  min-height: 0;
+}
+
 .file-viewer-modal-body.library-file-viewer-body > .file-viewer-code-block {
   min-width: 0;
   min-height: 0;
@@ -9795,6 +10060,10 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
 
 .file-viewer-modal-body.library-file-viewer-body > .file-viewer-markdown {
   padding: 22px 28px 28px;
+}
+
+.file-viewer-modal-body.library-file-viewer-body > .file-viewer-markdown-shell > .file-viewer-markdown {
+  padding: 0 28px 28px;
 }
 
 .file-viewer-modal-body.library-file-viewer-body > .file-viewer-code-block {
@@ -11403,10 +11672,39 @@ input[type="range"] {
 }
 
 .settings-tab-panel,
-.settings-page > .inline-alert,
-.settings-page > .inline-success {
+.settings-page > .inline-alert {
   grid-column: 2;
   gap: var(--settings-content-gap);
+}
+
+.settings-toast {
+  position: fixed;
+  top: calc(var(--startup-toolbar-height) + var(--space-5));
+  inset-inline-end: var(--space-7);
+  z-index: var(--toast-z-index);
+  max-width: min(420px, calc(100vw - 2 * var(--space-7)));
+  padding: var(--space-3) var(--space-5);
+  border: 1px solid color-mix(in srgb, var(--success) 30%, var(--glass-control-border));
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--success) 12%, var(--glass-control-surface));
+  box-shadow: var(--glass-panel-shadow);
+  color: color-mix(in srgb, var(--success) 72%, var(--text-primary));
+  font-size: 12px;
+  line-height: 1.45;
+  pointer-events: none;
+  animation: settings-toast-in var(--transition-fast) both;
+}
+
+@keyframes settings-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .settings-tab-panel .settings-current:first-child {
@@ -11565,6 +11863,13 @@ input[type="range"] {
   box-shadow: var(--glass-panel-shadow);
 }
 
+.file-viewer-modal-body.library-file-viewer-body > .file-viewer-markdown-shell {
+  border: 1px solid var(--glass-control-border);
+  border-radius: var(--radius-control);
+  background: var(--bg-surface);
+  box-shadow: var(--glass-panel-shadow);
+}
+
 .workbench-modal-layer .workbench-modal-card.file-viewer-modal .file-viewer-action-button {
   height: var(--app-button-height);
   min-height: var(--app-button-height);
@@ -11667,6 +11972,11 @@ input[type="range"] {
 .workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] .affairs-detail-panel {
   background: transparent;
   box-shadow: inset 1px 0 0 var(--glass-edge);
+}
+
+.workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] .affairs-detail-panel.library-detail {
+  background: var(--modal-frame-surface);
+  box-shadow: var(--modal-frame-shadow);
 }
 
 @keyframes glass-reveal {
@@ -12129,6 +12439,7 @@ input[type="range"] {
 
   .affairs-finder-name-cell {
     gap: var(--space-3);
+    white-space: normal;
   }
 
   .affairs-finder-icon {
@@ -12288,8 +12599,7 @@ input[type="range"] {
   }
 
   .settings-tab-panel,
-  .settings-page > .inline-alert,
-  .settings-page > .inline-success {
+  .settings-page > .inline-alert {
     grid-column: 1;
   }
 

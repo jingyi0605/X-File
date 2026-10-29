@@ -7001,10 +7001,12 @@ fn try_run_library_worker_cli_from_args(args: &[String]) -> Result<String, Strin
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Mutex::new(DesktopState::new()))
         .manage(MacosNativeSidebarState::default())
         .manage(updater::DownloadedDesktopUpdateState::default())
+        .manage(office_converter::OfficeConverterState::default())
         .setup(|app| {
             let task_app = app.handle().clone();
             task_center::set_event_handler(move |task| {
@@ -7042,6 +7044,9 @@ pub fn run() {
             native_save_library_binding,
             native_get_library_config,
             native_save_library_config,
+            native_export_library_backup,
+            native_write_library_backup,
+            native_import_library_backup,
             native_browse_host_directories,
             native_get_library_snapshot,
             native_list_library_tag_details,

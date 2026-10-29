@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import type {
   HostDirectoryOption,
   HttpServerHostOption,
@@ -6,17 +6,20 @@ import type {
   LibraryIndexStatus,
   LibraryBinding,
   LibraryConfig,
+  LibraryBackup,
 } from "@x-file/shared";
 
 import {
   browseHostDirectories,
   getHttpServerState,
   getLibraryBinding,
+  getLibraryBackup,
   getLibraryConfig,
   getLibrarySnapshot,
   saveHttpServerState,
   saveLibraryBinding,
   saveLibraryConfig,
+  restoreLibraryBackup,
 } from "../../api/library";
 import { toApiErrorMessage } from "../../api/http";
 import { t } from "../../i18n";
@@ -30,7 +33,18 @@ import { UpdatePanel } from "./UpdatePanel";
 import { AgentIntegrationSettings } from "./AgentIntegrationSettings";
 import { SettingsModule } from "./SettingsModule";
 import { getRuntimeConfigSnapshot, updateRuntimeConfig } from "../../runtime/runtime-config-store";
-import { clearNativeApplicationData, requestNativeAppRestart } from "../../runtime/native-library-bridge";
+import {
+  cancelNativeOfficeConverterOperation,
+  clearNativeApplicationData,
+  getNativeOfficeConverterStatus,
+  installNativeOfficeConverter,
+  listenNativeOfficeConverterProgress,
+  requestNativeAppRestart,
+  saveNativeLibraryBackup,
+  uninstallNativeOfficeConverter,
+  type NativeOfficeConverterProgress,
+  type NativeOfficeConverterStatus,
+} from "../../runtime/native-library-bridge";
 
 interface SettingsPageProps {
   onSaved?: () => void;
@@ -71,6 +85,11 @@ interface ResetApplicationModalState {
   step: 1 | 2 | 3;
   confirmationText: string;
   submitting: boolean;
+}
+
+interface LibraryBackupImportModalState {
+  open: boolean;
+  file: File | null;
 }
 
 type SettingsTabId = "appearance" | "library" | "integration" | "network" | "updates";
@@ -165,6 +184,14 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
   const [error, setError] = useState<string | null>(null);
   const [configUnavailable, setConfigUnavailable] = useState<string | null>(null);
   const [serverUnavailable, setServerUnavailable] = useState<string | null>(null);
+  const [officeConverterStatus, setOfficeConverterStatus] = useState<NativeOfficeConverterStatus | null>(null);
+  const [officeConverterProgress, setOfficeConverterProgress] = useState<NativeOfficeConverterProgress | null>(null);
+  const [officeConverterWorking, setOfficeConverterWorking] = useState(false);
+  const [backupWorking, setBackupWorking] = useState(false);
+  const [backupInputKey, setBackupInputKey] = useState(0);
+  const [backupImportError, setBackupImportError] = useState<string | null>(null);
+  const backupInputRef = useRef<HTMLInputElement>(null);
+  const [backupImportModal, setBackupImportModal] = useState<LibraryBackupImportModalState>({ open: false, file: null });
   const [directoryBrowserOpen, setDirectoryBrowserOpen] = useState(false);
   const [directoryBrowserLoading, setDirectoryBrowserLoading] = useState(false);
   const [directoryBrowserError, setDirectoryBrowserError] = useState<string | null>(null);
@@ -176,6 +203,12 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
   const isMirrorMode = runtimeForm.mode === "mirror";
   const runtimeModeLabel = isMirrorMode ? t("runtimeModeMirror") : t("runtimeModeLocal");
   const isDesktopContext = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+  useEffect(() => {
+    if (!message) return;
+    const timeout = window.setTimeout(() => setMessage(null), 4000);
+    return () => window.clearTimeout(timeout);
+  }, [message]);
 
   async function loadSettings(): Promise<void> {
     setLoading(true);
@@ -288,6 +321,88 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
       onSaved?.();
     } catch (err) {
       setError(toApiErrorMessage(err));
+    }
+  }
+
+  async function exportLibraryBackup(): Promise<void> {
+    if (backupWorking) return;
+    setBackupWorking(true);
+    setError(null);
+    setMessage(null);
+    let objectUrl: string | null = null;
+    try {
+      const backup = await getLibraryBackup();
+      const content = `${JSON.stringify(backup, null, 2)}\n`;
+      const fileName = `x-file-backup-${new Date(backup.createdAt).toISOString().slice(0, 10)}.json`;
+      if (isDesktopContext && !isMirrorMode) {
+        const saved = await saveNativeLibraryBackup(content, fileName);
+        if (saved === false) return;
+        if (saved !== true) throw new Error("桌面端未能保存资料库备份");
+      } else {
+        const blob = new Blob([content], { type: "application/json" });
+        objectUrl = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = objectUrl;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      }
+      setMessage(t("settingsBackupExportSuccess"));
+    } catch (err) {
+      setError(toApiErrorMessage(err));
+    } finally {
+      if (objectUrl) window.setTimeout(() => URL.revokeObjectURL(objectUrl!), 1000);
+      setBackupWorking(false);
+    }
+  }
+
+  function importLibraryBackup(file: File | undefined): void {
+    if (!file || backupWorking) return;
+    setBackupImportError(null);
+    setBackupImportModal({ open: true, file });
+  }
+
+  function closeBackupImportModal(): void {
+    if (backupWorking) return;
+    setBackupImportModal({ open: false, file: null });
+    setBackupImportError(null);
+    setBackupInputKey((current) => current + 1);
+  }
+
+  async function confirmLibraryBackupImport(): Promise<void> {
+    const file = backupImportModal.file;
+    if (!file || backupWorking) return;
+    setBackupWorking(true);
+    setError(null);
+    setMessage(null);
+    setBackupImportError(null);
+    try {
+      const backup = JSON.parse(await file.text()) as LibraryBackup;
+      const result = await restoreLibraryBackup(backup);
+      const refreshWarning = !result.refresh.accepted
+        ? result.refresh.status.errorSummary ?? t("settingsBackupRefreshUnavailable")
+        : null;
+      setBackupImportModal({ open: false, file: null });
+      try {
+        await loadSettings();
+        const snapshot = await getLibrarySnapshot();
+        setLibraryIndexStatus(snapshot.status);
+      } catch (err) {
+        setError(toApiErrorMessage(err));
+      }
+      setMessage(t("settingsBackupImportSuccess", {
+        tags: result.tagCount,
+        documents: result.documentCount,
+      }));
+      if (refreshWarning) setError(refreshWarning);
+      onSaved?.();
+    } catch (err) {
+      const detail = toApiErrorMessage(err);
+      setBackupImportError(detail);
+    } finally {
+      setBackupWorking(false);
+      setBackupInputKey((current) => current + 1);
     }
   }
 
@@ -497,6 +612,68 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
     void loadSettings();
   }, []);
 
+  useEffect(() => {
+    if (!isDesktopContext || isMirrorMode) return;
+    let mounted = true;
+    const listener = listenNativeOfficeConverterProgress((progress) => {
+      if (!mounted) return;
+      setOfficeConverterProgress(progress);
+      if (progress.stage === "ready" || progress.stage === "error") setOfficeConverterWorking(false);
+    });
+    void getNativeOfficeConverterStatus().then((status) => {
+      if (mounted && status) setOfficeConverterStatus(status);
+    }).catch((err) => {
+      if (mounted) setError((current) => current ?? toApiErrorMessage(err));
+    });
+    return () => {
+      mounted = false;
+      void listener.then((unlisten) => unlisten?.());
+    };
+  }, [isDesktopContext, isMirrorMode]);
+
+  async function installOfficeConverter(): Promise<void> {
+    if (officeConverterWorking) return;
+    setOfficeConverterWorking(true);
+    setOfficeConverterProgress({ stage: "installing", current: 0, total: 1 });
+    setError(null);
+    try {
+      const status = await installNativeOfficeConverter();
+      if (status) setOfficeConverterStatus(status);
+      setOfficeConverterProgress({ stage: "ready", current: 1, total: 1 });
+      setMessage(t("settingsOfficeConverterInstallSuccess"));
+    } catch (err) {
+      setError(t("settingsOfficeConverterInstallFailed", { error: toApiErrorMessage(err) }));
+    } finally {
+      setOfficeConverterWorking(false);
+      void getNativeOfficeConverterStatus().then((status) => {
+        if (status) setOfficeConverterStatus(status);
+      });
+    }
+  }
+
+  async function cancelOfficeConverterOperation(): Promise<void> {
+    try {
+      await cancelNativeOfficeConverterOperation();
+      setMessage(t("settingsOfficeConverterCancel"));
+    } catch (err) {
+      setError(toApiErrorMessage(err));
+    }
+  }
+
+  async function removeOfficeConverter(): Promise<void> {
+    if (officeConverterWorking) return;
+    setOfficeConverterWorking(true);
+    try {
+      const status = await uninstallNativeOfficeConverter();
+      if (status) setOfficeConverterStatus(status);
+      setMessage(t("settingsOfficeConverterRemoveSuccess"));
+    } catch (err) {
+      setError(toApiErrorMessage(err));
+    } finally {
+      setOfficeConverterWorking(false);
+    }
+  }
+
   const tabPanels: Record<SettingsTabId, ReactNode> = {
     appearance: (
       <section className="settings-module-stack">
@@ -558,6 +735,38 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
             </div>
           </form>
         </SettingsModule>
+
+        {isDesktopContext && !isMirrorMode ? (
+          <SettingsModule
+            title={t("settingsOfficeConverterTitle")}
+            description={t("settingsOfficeConverterDescription")}
+            status={officeConverterStatus?.installed ? t("settingsOfficeConverterInstalled", { platform: officeConverterStatus.platform }) : undefined}
+          >
+            <div className="settings-module-form">
+              {!officeConverterStatus?.supported ? <p>{t("settingsOfficeConverterUnavailable")}</p> : null}
+              {officeConverterStatus?.supported && !officeConverterStatus.installed ? <p>{t("settingsOfficeConverterNotInstalled")}</p> : null}
+              {officeConverterProgress?.stage === "downloading" && officeConverterProgress.total > 0 ? (
+                <p role="status">{t("settingsOfficeConverterDownloading", { percent: Math.min(100, Math.floor(officeConverterProgress.current * 100 / officeConverterProgress.total)) })}</p>
+              ) : null}
+              {officeConverterWorking ? <p role="status">{t("settingsOfficeConverterInstalling")}</p> : null}
+              {officeConverterStatus?.supported && officeConverterStatus.installed ? (
+                <div className="button-row settings-action-row">
+                  <button type="button" className="danger-button" disabled={officeConverterWorking} onClick={() => void removeOfficeConverter()}>
+                    {t("settingsOfficeConverterUninstall")}
+                  </button>
+                </div>
+              ) : officeConverterStatus?.supported ? (
+                <div className="button-row settings-action-row">
+                  {officeConverterWorking ? (
+                    <button type="button" className="secondary-button" onClick={() => void cancelOfficeConverterOperation()}>{t("settingsOfficeConverterCancel")}</button>
+                  ) : (
+                    <button type="button" className="primary-button" onClick={() => void installOfficeConverter()}>{t("settingsOfficeConverterInstall")}</button>
+                  )}
+                </div>
+              ) : null}
+            </div>
+          </SettingsModule>
+        ) : null}
 
         <SettingsModule title={t("settingsConfigTitle")}>
           <form className="settings-module-form" onSubmit={(event) => void submitConfig(event)}>
@@ -665,6 +874,27 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
             </div>
           </form>
         </SettingsModule>
+
+        {binding ? (
+          <SettingsModule title={t("settingsBackupTitle")} description={t("settingsBackupDescription")}>
+            <div className="settings-module-form">
+              <p>{t("settingsBackupHint")}</p>
+              <div className="button-row settings-action-row">
+                <button type="button" className="secondary-button" disabled={backupWorking || !binding}
+                  onClick={() => void exportLibraryBackup()}>
+                  {t(backupWorking ? "settingsSaving" : "settingsBackupExport")}
+                </button>
+                <button type="button" className="primary-button" disabled={backupWorking || !binding}
+                  onClick={() => backupInputRef.current?.click()}>
+                  {t(backupWorking ? "settingsSaving" : "settingsBackupImport")}
+                </button>
+                <input key={backupInputKey} ref={backupInputRef} className="settings-backup-file-input"
+                  type="file" accept=".json,application/json" aria-label={t("settingsBackupFileLabel")}
+                  onChange={(event) => void importLibraryBackup(event.currentTarget.files?.[0])} />
+              </div>
+            </div>
+          </SettingsModule>
+        ) : null}
       </section>
     ),
     integration: (
@@ -823,7 +1053,6 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
         role="tabpanel"
         aria-labelledby={`settings-tab-${activeTab}`}
       >
-        {message ? <div className="inline-success" role="status">{message}</div> : null}
         {error ? <div className="inline-alert" role="alert">{error}</div> : null}
         {tabPanels[activeTab]}
       </section>
@@ -860,6 +1089,15 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
           onClose={closeResetApplicationModal}
           onSubmit={() => void submitResetApplication()}
         />
+        <LibraryBackupImportModal
+          open={backupImportModal.open}
+          file={backupImportModal.file}
+          error={backupImportError}
+          submitting={backupWorking}
+          onClose={closeBackupImportModal}
+          onSubmit={() => void confirmLibraryBackupImport()}
+        />
+        <SettingsToast message={message} />
       </>
     );
   }
@@ -908,7 +1146,71 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
         onClose={closeResetApplicationModal}
         onSubmit={() => void submitResetApplication()}
       />
+      <LibraryBackupImportModal
+        open={backupImportModal.open}
+        file={backupImportModal.file}
+        error={backupImportError}
+        submitting={backupWorking}
+        onClose={closeBackupImportModal}
+        onSubmit={() => void confirmLibraryBackupImport()}
+      />
+      <SettingsToast message={message} />
     </>
+  );
+}
+
+function SettingsToast({ message }: { message: string | null }) {
+  if (!message) return null;
+  return (
+    <div className="settings-toast" role="status" aria-live="polite">
+      {message}
+    </div>
+  );
+}
+
+function LibraryBackupImportModal({
+  open,
+  file,
+  error,
+  submitting,
+  onClose,
+  onSubmit,
+}: {
+  open: boolean;
+  file: File | null;
+  error: string | null;
+  submitting: boolean;
+  onClose: () => void;
+  onSubmit: () => void;
+}) {
+  return (
+    <DesktopModal
+      open={open}
+      title={t("settingsBackupConfirmTitle")}
+      description={t("settingsBackupConfirm")}
+      size="compact"
+      layout="confirm"
+      dismissible={!submitting}
+      closeOnBackdrop={!submitting}
+      closeOnEscape={!submitting}
+      onClose={onClose}
+      footer={(
+        <ModalActions align="between">
+          <button type="button" className="secondary-button" disabled={submitting} onClick={onClose}>{t("actionCancel")}</button>
+          <button type="button" className="primary-button" disabled={submitting || !file} onClick={onSubmit}>
+            {t(submitting ? "settingsSaving" : "settingsBackupConfirmAction")}
+          </button>
+        </ModalActions>
+      )}
+    >
+      <section className="modal-section">
+        <div className="modal-section-copy">
+          <h3 className="modal-section-title">{file?.name ?? t("settingsBackupFileLabel")}</h3>
+          <p className="modal-section-description">{t("settingsBackupConfirmImpact")}</p>
+        </div>
+      </section>
+      {error ? <div className="inline-note" role="alert">{error}</div> : null}
+    </DesktopModal>
   );
 }
 

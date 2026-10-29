@@ -16,7 +16,7 @@ installLibraryApiMock();
 vi.mock("../../../api/agent-integration", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../../api/agent-integration")>(),
   getAgentIntegrationSettings: async () => ({
-    enabled: false, apiKeyConfigured: false, updatedAt: null,
+    enabled: false, apiKeyConfigured: false, accessMode: "read_only", updatedAt: null,
     executablePath: "/host/x-file", dataDir: "/host/.x-file", platform: "linux",
     capabilities: [{ name: "xfile_status", description: "读取应用状态", readOnly: true, destructive: false, requiresBinding: false }],
   }),
@@ -25,6 +25,7 @@ vi.mock("../../../api/agent-integration", async (importOriginal) => ({
 const nativeBridgeMock = {
   clearNativeApplicationData: vi.fn(),
   requestNativeAppRestart: vi.fn(),
+  saveNativeLibraryBackup: vi.fn(),
 };
 
 vi.mock("../../../runtime/native-library-bridge", async () => {
@@ -35,6 +36,7 @@ vi.mock("../../../runtime/native-library-bridge", async () => {
     ...actual,
     clearNativeApplicationData: nativeBridgeMock.clearNativeApplicationData,
     requestNativeAppRestart: nativeBridgeMock.requestNativeAppRestart,
+    saveNativeLibraryBackup: nativeBridgeMock.saveNativeLibraryBackup,
   };
 });
 
@@ -49,6 +51,8 @@ describe("SettingsPage 文档库索引配置迁移行为", () => {
     resetLibraryApiMock();
     nativeBridgeMock.clearNativeApplicationData.mockReset();
     nativeBridgeMock.requestNativeAppRestart.mockReset();
+    nativeBridgeMock.saveNativeLibraryBackup.mockReset();
+    nativeBridgeMock.saveNativeLibraryBackup.mockResolvedValue(true);
     delete (window as typeof window & { __TAURI_INTERNALS__?: object }).__TAURI_INTERNALS__;
   });
 
@@ -402,5 +406,59 @@ describe("SettingsPage 文档库索引配置迁移行为", () => {
     });
     expect(nativeBridgeMock.requestNativeAppRestart).toHaveBeenCalledTimes(1);
     expect(localStorage.getItem("x-file.runtime.config")).toBeNull();
+  });
+
+  it("桌面本地资料库支持导出和在确认后导入备份", async () => {
+    (window as typeof window & { __TAURI_INTERNALS__?: object }).__TAURI_INTERNALS__ = {};
+    const { SettingsPage } = await import("../SettingsPage");
+    render(<SettingsPage />);
+
+    await userEvent.click(await screen.findByRole("tab", { name: /资料库/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "导出备份" }));
+    await waitFor(() => expect(libraryApiMock.getLibraryBackup).toHaveBeenCalledTimes(1));
+    expect(nativeBridgeMock.saveNativeLibraryBackup).toHaveBeenCalledWith(
+      expect.stringContaining('"format": "x-file-library-backup"'),
+      "x-file-backup-2026-10-29.json",
+    );
+    expect(await screen.findByRole("status")).toHaveTextContent("资料库备份已导出。");
+
+    const file = new File([JSON.stringify({ format: "x-file-library-backup" })], "backup.json", { type: "application/json" });
+    Object.defineProperty(file, "text", { value: async () => JSON.stringify({ format: "x-file-library-backup" }) });
+    await userEvent.upload(screen.getByLabelText("选择资料库备份文件"), file);
+    expect(await screen.findByRole("dialog", { name: "确认恢复资料库备份" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(libraryApiMock.restoreLibraryBackup).not.toHaveBeenCalled();
+    await userEvent.upload(screen.getByLabelText("选择资料库备份文件"), file);
+    await userEvent.click(screen.getByRole("button", { name: "确认导入" }));
+    await waitFor(() => expect(libraryApiMock.restoreLibraryBackup).toHaveBeenCalledTimes(1));
+    expect(libraryApiMock.restoreLibraryBackup).toHaveBeenCalledWith({ format: "x-file-library-backup" });
+    expect(await screen.findByText(/已恢复 0 个标签和 0 条索引记录/)).toBeInTheDocument();
+  });
+
+  it("镜像模式显示备份入口并调用远端资料库备份 API", async () => {
+    localStorage.setItem("x-file.runtime.config", JSON.stringify({ mode: "mirror", remoteApiBaseUrl: "http://localhost" }));
+    initializeRuntimeConfig();
+    const clickLink = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    Object.defineProperty(URL, "createObjectURL", { configurable: true, value: vi.fn().mockReturnValue("blob:mirror-backup") });
+    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: vi.fn() });
+    const { SettingsPage } = await import("../SettingsPage");
+    render(<SettingsPage />);
+    await userEvent.click(await screen.findByRole("tab", { name: /资料库/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "导出备份" }));
+    expect(libraryApiMock.getLibraryBackup).toHaveBeenCalledTimes(1);
+    clickLink.mockRestore();
+  });
+
+  it("浏览器 Web 环境显示备份入口并使用 HTTP API", async () => {
+    expect("__TAURI_INTERNALS__" in window).toBe(false);
+    const clickLink = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    Object.defineProperty(URL, "createObjectURL", { configurable: true, value: vi.fn().mockReturnValue("blob:web-backup") });
+    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: vi.fn() });
+    const { SettingsPage } = await import("../SettingsPage");
+    render(<SettingsPage />);
+    await userEvent.click(await screen.findByRole("tab", { name: /资料库/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "导出备份" }));
+    expect(libraryApiMock.getLibraryBackup).toHaveBeenCalledTimes(1);
+    clickLink.mockRestore();
   });
 });
