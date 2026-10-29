@@ -75,6 +75,37 @@ function CopyBlockButton({ content }: { content: string }) {
   );
 }
 
+function PreviewSearchControls({
+  query,
+  matchCount,
+  onQueryChange,
+  onMove,
+}: {
+  query: string;
+  matchCount: number;
+  onQueryChange: (query: string) => void;
+  onMove: (direction: -1 | 1) => void;
+}) {
+  return (
+    <div className="file-viewer-code-search">
+      <input
+        type="search"
+        value={query}
+        aria-label={t("fileViewerSearch")}
+        placeholder={t("fileViewerSearch")}
+        onChange={(event) => onQueryChange(event.target.value)}
+      />
+      <span aria-live="polite">{t("fileViewerSearchMatches", { count: matchCount })}</span>
+      <button type="button" className="file-viewer-search-button" disabled={!matchCount} onClick={() => onMove(-1)}>
+        {t("fileViewerSearchPrevious")}
+      </button>
+      <button type="button" className="file-viewer-search-button" disabled={!matchCount} onClick={() => onMove(1)}>
+        {t("fileViewerSearchNext")}
+      </button>
+    </div>
+  );
+}
+
 function OverviewRuler(_props: {
   markers: FileOverviewMarker[];
   totalLines: number;
@@ -86,6 +117,10 @@ function OverviewRuler(_props: {
 function MarkdownPreview({ content }: { content: string }) {
   const markdownComponents = useMemo(() => buildMarkdownComponents(), []);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const markdownMatchesRef = useRef<HTMLElement[]>([]);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [activeSearchIndex, setActiveSearchIndex] = useState(0);
+  const [searchMatchCount, setSearchMatchCount] = useState(0);
 
   useEffect(() => {
     const element = containerRef.current;
@@ -95,15 +130,63 @@ function MarkdownPreview({ content }: { content: string }) {
     return installAutoHideScrollbarBehavior(element);
   }, []);
 
+  useEffect(() => {
+    const container = containerRef.current;
+    const query = searchQuery.trim().toLocaleLowerCase();
+    if (!container || !query) {
+      markdownMatchesRef.current = [];
+      setSearchMatchCount(0);
+      setActiveSearchIndex(0);
+      return;
+    }
+    const matches: HTMLElement[] = [];
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    let node = walker.nextNode();
+    while (node) {
+      const text = node.textContent?.toLocaleLowerCase() || "";
+      let start = text.indexOf(query);
+      while (start >= 0) {
+        if (node.parentElement) matches.push(node.parentElement);
+        start = text.indexOf(query, start + query.length);
+      }
+      node = walker.nextNode();
+    }
+    markdownMatchesRef.current = matches;
+    setSearchMatchCount(matches.length);
+    setActiveSearchIndex(0);
+  }, [content, searchQuery]);
+
+  useEffect(() => {
+    markdownMatchesRef.current[activeSearchIndex]?.scrollIntoView?.({ block: "center" });
+  }, [activeSearchIndex]);
+
+  function moveMarkdownMatch(direction: -1 | 1): void {
+    if (!searchMatchCount) return;
+    setActiveSearchIndex((current) => (
+      (current + direction + searchMatchCount) % searchMatchCount
+    ));
+  }
+
   return (
-    <div
-      ref={containerRef}
-      className="markdown-content file-viewer-markdown"
-      data-scrollbar="macos-thin"
-    >
-      <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-        {content}
-      </Markdown>
+    <div className="file-viewer-markdown-shell">
+      <div className="file-viewer-code-header file-viewer-markdown-header">
+        <span className="file-viewer-code-header-label">{t("fileViewerMarkdown")}</span>
+        <PreviewSearchControls
+          query={searchQuery}
+          matchCount={searchMatchCount}
+          onQueryChange={setSearchQuery}
+          onMove={moveMarkdownMatch}
+        />
+      </div>
+      <div
+        ref={containerRef}
+        className="markdown-content file-viewer-markdown"
+        data-scrollbar="macos-thin"
+      >
+        <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+          {content}
+        </Markdown>
+      </div>
     </div>
   );
 }
@@ -208,6 +291,9 @@ function CodePreview({
 }) {
   const lines = content.split(/\r?\n/);
   const bodyRef = useRef<HTMLDivElement | null>(null);
+  const lineRefs = useRef(new Map<number, HTMLDivElement>());
+  const [searchQuery, setSearchQuery] = useState("");
+  const [activeSearchIndex, setActiveSearchIndex] = useState(0);
 
   useEffect(() => {
     const element = bodyRef.current;
@@ -227,10 +313,44 @@ function CodePreview({
     return map;
   }, [overviewMarkers]);
 
+  const searchMatches = useMemo(() => {
+    const normalizedQuery = searchQuery.trim().toLocaleLowerCase();
+    if (!normalizedQuery || editable) return [];
+    return lines.reduce<number[]>((matches, line, index) => {
+      if (line.toLocaleLowerCase().includes(normalizedQuery)) matches.push(index + 1);
+      return matches;
+    }, []);
+  }, [editable, lines, searchQuery]);
+
+  useEffect(() => {
+    setActiveSearchIndex(0);
+  }, [searchQuery, content]);
+
+  useEffect(() => {
+    const lineNumber = searchMatches[activeSearchIndex];
+    if (!lineNumber) return;
+    lineRefs.current.get(lineNumber)?.scrollIntoView?.({ block: "center" });
+  }, [activeSearchIndex, searchMatches]);
+
+  function moveSearchMatch(direction: -1 | 1): void {
+    if (!searchMatches.length) return;
+    setActiveSearchIndex((current) => (
+      (current + direction + searchMatches.length) % searchMatches.length
+    ));
+  }
+
   return (
     <div className="file-viewer-code-block">
       <div className="file-viewer-code-header">
         <span className="file-viewer-code-header-label">{formatLanguageLabel(language)}</span>
+        {!editable ? (
+          <PreviewSearchControls
+            query={searchQuery}
+            matchCount={searchMatches.length}
+            onQueryChange={setSearchQuery}
+            onMove={moveSearchMatch}
+          />
+        ) : null}
         <CopyBlockButton content={content} />
       </div>
       <div className="file-viewer-scroll-shell">
@@ -256,7 +376,11 @@ function CodePreview({
               return (
                 <div
                   key={`${index}-${line}`}
-                  className={`file-viewer-code-line${changeKind ? ` diff-line-${changeKind}` : ""}`}
+                  ref={(element) => {
+                    if (element) lineRefs.current.set(lineNo, element);
+                    else lineRefs.current.delete(lineNo);
+                  }}
+                  className={`file-viewer-code-line${changeKind ? ` diff-line-${changeKind}` : ""}${searchMatches.includes(lineNo) ? " search-match" : ""}${searchMatches[activeSearchIndex] === lineNo ? " search-match-active" : ""}`}
                 >
                   <span className="file-viewer-code-gutter">{lineNo}</span>
                   <code className="file-viewer-code-content">

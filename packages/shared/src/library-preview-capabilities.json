@@ -1,0 +1,132 @@
+{
+  "version": 1,
+  "budgets": {
+    "textMaxBytes": 524288,
+    "editMaxBytes": 262144,
+    "resourceMaxBytes": 20971520,
+    "xlsxMaxSheets": 32,
+    "xlsxMaxRows": 500,
+    "xlsxMaxColumns": 80,
+    "xlsxMaxCells": 40000,
+    "xlsxMaxArchiveEntries": 4000,
+    "xlsxMaxUncompressedBytes": 50331648
+  },
+  "formats": [
+    {
+      "extensions": [".md", ".markdown", ".mdown", ".mkd"],
+      "previewKind": "markdown",
+      "adapterFamily": "markdown",
+      "previewable": true,
+      "editable": true,
+      "resourceClass": "text"
+    },
+    {
+      "extensions": [".html", ".htm"],
+      "previewKind": "html",
+      "adapterFamily": "html",
+      "previewable": true,
+      "editable": true,
+      "resourceClass": "resource"
+    },
+    {
+      "extensions": [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico"],
+      "previewKind": "image",
+      "adapterFamily": "image",
+      "previewable": true,
+      "editable": false,
+      "resourceClass": "resource",
+      "nativeBytes": true
+    },
+    {
+      "extensions": [".pdf"],
+      "previewKind": "pdf",
+      "adapterFamily": "pdf",
+      "previewable": true,
+      "editable": false,
+      "resourceClass": "resource",
+      "nativeBytes": true
+    },
+    {
+      "extensions": [".docx", ".pptx"],
+      "previewKind": "office",
+      "adapterFamily": "office-document",
+      "previewable": true,
+      "editable": false,
+      "resourceClass": "resource",
+      "nativeBytes": true
+    },
+    {
+      "extensions": [".xls", ".xlsx"],
+      "previewKind": "office",
+      "adapterFamily": "spreadsheet",
+      "previewable": true,
+      "editable": false,
+      "resourceClass": "resource",
+      "nativeBytes": true
+    },
+    {
+      "extensions": [
+        ".mdx", ".txt", ".text", ".log", ".json", ".map", ".xml", ".yaml", ".yml",
+        ".css", ".scss", ".less", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx",
+        ".py", ".go", ".rs", ".java", ".c", ".h", ".cpp", ".cc", ".hpp",
+        ".sh", ".bash", ".zsh", ".sql", ".toml", ".ini", ".conf", ".properties",
+        ".env", ".dockerfile", ".gitignore", ".editorconfig"
+      ],
+      "previewKind": "text",
+      "adapterFamily": "text-code",
+      "previewable": true,
+      "editable": true,
+      "resourceClass": "text"
+    },
+    {
+      "extensions": [".csv", ".tsv"],
+      "previewKind": "text",
+      "adapterFamily": "delimited-text",
+      "previewable": true,
+      "editable": true,
+      "resourceClass": "text"
+    },
+    {
+      "extensions": [
+        ".rtf", ".doc", ".ppt", ".odt", ".ods", ".odp", ".wps", ".et", ".key", ".numbers",
+        ".heic", ".zip", ".rar", ".7z", ".tar", ".gz", ".mp3", ".wav", ".flac", ".m4a",
+        ".mp4", ".mov", ".mkv", ".webm"
+      ],
+      "previewKind": "unsupported",
+      "adapterFamily": "unsupported",
+      "previewable": false,
+      "editable": false,
+      "resourceClass": "text"
+    }
+  ],
+  "contentTypes": {
+    ".html": "text/html; charset=utf-8",
+    ".htm": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".mjs": "text/javascript; charset=utf-8",
+    ".cjs": "text/javascript; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".map": "application/json; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".ico": "image/x-icon",
+    ".bmp": "image/bmp",
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xls": "application/vnd.ms-excel",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".txt": "text/plain; charset=utf-8",
+    ".wasm": "application/wasm",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+    ".ttf": "font/ttf",
+    ".otf": "font/otf",
+    ".eot": "application/vnd.ms-fontobject"
+  }
+}

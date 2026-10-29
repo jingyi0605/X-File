@@ -1,5 +1,7 @@
 import {
   Fragment,
+  Suspense,
+  lazy,
   memo,
   useCallback,
   useDeferredValue,
@@ -103,11 +105,9 @@ import {
 } from "../static-html-editor";
 import {
   CodePreview,
-  MarkdownPreview,
   detectLanguage,
 } from "./LibraryFileCodeViewer";
-import { OfficePreview } from "./OfficePreview";
-import { LibraryPdfPreview } from "./LibraryPdfPreview";
+import { LibraryPreviewRenderer } from "./LibraryPreviewRenderer";
 import { LibraryTaskCenter } from "./LibraryTaskCenter";
 import { useLibraryState, type LibraryState } from "./useLibraryState";
 import {
@@ -1596,16 +1596,6 @@ function LibraryDisabledPanel({
             </div>
           </section>
         </section>
-        <LibraryDetail
-          library={{ ...library, tagRevision: 0 }}
-          allowLocalOpen={false}
-          overlayMacOsTitlebar={platformData.runtimePlatform === "desktop"
-            && platformData.osFamily === "macos"
-            && platformData.overlayTitlebar}
-          onRequestRename={() => undefined}
-          onRequestDelete={() => undefined}
-          onRequestTagAssignment={() => undefined}
-        />
       </section>
     </main>
   );
@@ -5068,57 +5058,58 @@ function LibraryFinderRow({
   }
 
   return (
-    <button
-      type="button"
-      className={active ? "affairs-finder-row active" : "affairs-finder-row"}
-      style={{ gridTemplateColumns: `${gridTemplateColumns} var(--control-height-md)` }}
-      onPointerDown={handlePointerSelection}
-      onClick={(event) => {
-        if (!event.detail || event.metaKey || event.ctrlKey) {
-          onToggleDocumentSelection(entry.documentId, event.metaKey || event.ctrlKey);
-        }
-      }}
-      onContextMenu={(event) => {
-        onSelectDocument(entry.documentId);
-        onOpenContextMenu(event, { kind: "document", entry });
-      }}
-      onDoubleClick={() => {
-        if (getFileOpenModeForPath(entry.path) === "local_app") {
-          void openPathInDesktop(entry.path).then((opened) => {
-            if (!opened) {
-              onOpenLibraryViewer(entry);
-            }
-          });
-          return;
-        }
-        onOpenLibraryViewer(entry);
-      }}
+    <div
+      className="affairs-finder-document-item"
+      style={{ gridTemplateColumns: `${gridTemplateColumns} var(--finder-actions-width)` }}
     >
-      <span className="affairs-finder-name-cell" style={{ "--affairs-finder-depth": entry.depth ?? 0 } as CSSProperties}>
-        <span className="affairs-finder-icon">
-          {renderDocumentShape(entry.path, "row")}
+      <button
+        type="button"
+        className={active ? "affairs-finder-row active" : "affairs-finder-row"}
+        style={{ gridTemplateColumns, gridColumn: "1 / 4", gridRow: 1 }}
+        onPointerDown={handlePointerSelection}
+        onClick={(event) => {
+          if (!event.detail || event.metaKey || event.ctrlKey) {
+            onToggleDocumentSelection(entry.documentId, event.metaKey || event.ctrlKey);
+          }
+        }}
+        onContextMenu={(event) => {
+          onSelectDocument(entry.documentId);
+          onOpenContextMenu(event, { kind: "document", entry });
+        }}
+        onDoubleClick={() => {
+          if (getFileOpenModeForPath(entry.path) === "local_app") {
+            void openPathInDesktop(entry.path).then((opened) => {
+              if (!opened) onOpenLibraryViewer(entry);
+            });
+            return;
+          }
+          onOpenLibraryViewer(entry);
+        }}
+      >
+        <span className="affairs-finder-name-cell" style={{ "--affairs-finder-depth": entry.depth ?? 0 } as CSSProperties}>
+          <span className="affairs-finder-icon">{renderDocumentShape(entry.path, "row")}</span>
+          <span className="affairs-finder-name" title={resolveLibraryDocumentDisplayName(entry)}>
+            {resolveLibraryDocumentDisplayName(entry)}
+          </span>
         </span>
-        <span
-          className="affairs-finder-name"
-          title={resolveLibraryDocumentDisplayName(entry)}
-        >
-          {resolveLibraryDocumentDisplayName(entry)}
+        <span className="affairs-finder-cell">
+          <span className="library-format-tag">{resolveFinderKindLabel(entry.path)}</span>
         </span>
+        <span className="affairs-finder-cell">{formatDateTime(entry.createdAt)}</span>
+      </button>
+      <span className="affairs-finder-actions-cell">
+          <button
+            type="button"
+            className="library-entry-details-trigger"
+            aria-label={t("libraryObjectDetail")}
+            aria-description={resolveLibraryDocumentDisplayName(entry)}
+            title={t("libraryDetails")}
+            onClick={() => onOpenLibraryDetails(entry)}
+          >
+            {renderInfoIcon()}
+          </button>
       </span>
-      <span className="affairs-finder-cell">
-        {formatFinderBytes(entry.sizeBytes)}
-      </span>
-      <span className="affairs-finder-cell">
-        {formatDateTime(entry.updatedAt)}
-      </span>
-      <span className="affairs-finder-cell">
-        <span className="library-format-tag">{resolveFinderKindLabel(entry.path)}</span>
-      </span>
-      <span className="affairs-finder-cell">
-        {formatDateTime(entry.createdAt)}
-      </span>
-      <span className="affairs-finder-actions-cell" />
-    </button>
+    </div>
   );
 }
 
@@ -5164,6 +5155,11 @@ function playLibrarySelectionPressAnimation(target: HTMLElement): void {
 
 function LibraryDetail({
   library,
+  isOpen,
+  onClose,
+  onTouchStart,
+  onTouchEnd,
+  closeButtonRef,
   allowLocalOpen,
   overlayMacOsTitlebar,
   onRequestRename,
@@ -5171,6 +5167,11 @@ function LibraryDetail({
   onRequestTagAssignment: _onRequestTagAssignment,
 }: {
   library: DetailLibraryState;
+  isOpen: boolean;
+  onClose: () => void;
+  onTouchStart: (event: ReactTouchEvent<HTMLElement>) => void;
+  onTouchEnd: (event: ReactTouchEvent<HTMLElement>) => void;
+  closeButtonRef: RefObject<HTMLButtonElement | null>;
   allowLocalOpen: boolean;
   overlayMacOsTitlebar: boolean;
   onRequestRename: (path: string) => void;
@@ -8512,7 +8513,7 @@ function LibraryFileViewerModal({
   }
 
   function openDetachedPreview(): void {
-    openLibraryPreviewDetachedWindow(preview, viewerState, editorContent);
+    void openLibraryPreviewDetachedWindow(viewerState);
     onClose();
   }
 
@@ -8654,10 +8655,6 @@ function LibraryFileViewerSurface({
   onPresentationProjectChange: (project: DocumentProject | null) => void;
   onSave: () => void;
 }) {
-  if (!loading && !error && preview?.supported && preview.kind === "office") {
-    return <OfficePreview fileName={getPathName(preview.path)} relativePath={preview.path} previewUrl={preview.previewUrl} localFilePath={absoluteFilePath} size={preview.size} />;
-  }
-
   if (loading || error || !preview || !preview.supported) {
     return (
       <div className="library-file-viewer-fallback">
@@ -8692,46 +8689,12 @@ function LibraryFileViewerSurface({
     );
   }
 
-  if (preview.kind === "markdown") {
-    return <MarkdownPreview content={editorContent || t("libraryPreviewEmpty")} />;
-  }
-
-  if (preview.kind === "image" && preview.previewUrl) {
-    return (
-      <div className="library-file-viewer-image-wrap file-viewer-media-shell">
-        <img className="library-file-viewer-image" src={preview.previewUrl} alt={preview.path} />
-      </div>
-    );
-  }
-
-  if (preview.kind === "pdf") {
-    return (
-      <div className="file-viewer-pdf-shell">
-        <LibraryPdfPreview path={preview.path} previewUrl={preview.previewUrl} />
-      </div>
-    );
-  }
-
-  if (preview.kind === "html") {
-    if (preview.previewUrl) {
-      return (
-        <div className="file-viewer-html-frame-shell">
-          <iframe className="library-file-viewer-frame file-viewer-html-frame" src={preview.previewUrl} title={preview.path} />
-        </div>
-      );
-    }
-    return (
-      <div className="file-viewer-html-frame-shell">
-        <iframe className="library-file-viewer-frame file-viewer-html-frame" srcDoc={editorContent} title={preview.path} />
-      </div>
-    );
-  }
-
   return (
-    <CodePreview
-      content={editorContent || t("libraryPreviewEmpty")}
-      language={detectLanguage(filePath)}
-      overviewTotalLines={editorContent.split(/\r?\n/).length}
+    <LibraryPreviewRenderer
+      preview={preview}
+      content={editorContent}
+      layout="viewer"
+      localFilePath={absoluteFilePath}
     />
   );
 }
@@ -8893,58 +8856,51 @@ function isPresentationFile(filePath: string | null): boolean {
   return extension === "ppt" || extension === "pptx";
 }
 
-function openLibraryPreviewDetachedWindow(
-  preview: LibraryPreview | null,
-  viewerState: LibraryViewerState,
-  editorContent = "",
-): void {
-  const targetUrl = resolveLibraryPreviewDetachedUrl(preview, viewerState, editorContent);
-  const opened = window.open(
-    targetUrl,
-    "_blank",
-    "noopener,noreferrer,width=1180,height=820",
-  );
-  if (!opened && targetUrl.startsWith("blob:")) {
-    window.location.href = targetUrl;
+async function openLibraryPreviewDetachedWindow(viewerState: LibraryViewerState): Promise<void> {
+  const targetUrl = buildDetachedPreviewUrl(viewerState);
+  if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+    try {
+      const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+      const label = `preview-${hashPreviewWindowLabel(viewerState.filePath)}`;
+      const existing = await WebviewWindow.getByLabel(label);
+      const previewWindow = existing ?? new WebviewWindow(label, {
+        url: targetUrl,
+        title: viewerState.title,
+        width: 1180,
+        height: 820,
+        minWidth: 760,
+        minHeight: 520,
+        center: true,
+        resizable: true,
+      });
+      await previewWindow.show();
+      await previewWindow.setFocus();
+      return;
+    } catch {
+      // Fallback uses the same application renderer URL, never a raw file URL or content blob.
+    }
   }
+
+  const opened = window.open(targetUrl, "_blank", "noopener,noreferrer,width=1180,height=820");
+  if (!opened) window.location.href = targetUrl;
 }
 
-function resolveLibraryPreviewDetachedUrl(
-  preview: LibraryPreview | null,
-  viewerState: LibraryViewerState,
-  editorContent = "",
-): string {
-  if (preview?.previewUrl) {
-    return preview.previewUrl;
-  }
-  const content = editorContent || preview?.content || "";
-  const title = escapeHtml(viewerState.title);
-  const path = escapeHtml(viewerState.filePath);
-  const body = escapeHtml(content || t("libraryPreviewEmpty"));
-  return URL.createObjectURL(new Blob([`<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8" />
-<title>${title}</title>
-<style>
-body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif;background:#f8f8f7;color:#1c1c1e;}
-header{position:sticky;top:0;padding:14px 18px;border-bottom:1px solid rgba(0,0,0,.08);background:rgba(248,248,247,.92);backdrop-filter:blur(16px);}
-h1{margin:0;font-size:15px;}
-p{margin:6px 0 0;color:rgba(60,60,67,.68);font-size:12px;word-break:break-all;}
-pre{margin:0;padding:20px 24px;white-space:pre-wrap;line-height:1.7;font:13px/1.7 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif;}
-</style>
-</head>
-<body><header><h1>${title}</h1><p>${path}</p></header><pre>${body}</pre></body>
-</html>`], { type: "text/html;charset=utf-8" }));
+function buildDetachedPreviewUrl(viewerState: LibraryViewerState): string {
+  const url = new URL(window.location.href);
+  url.search = "";
+  url.searchParams.set("x-file-preview", viewerState.filePath);
+  url.searchParams.set("x-file-preview-title", viewerState.title);
+  url.hash = "";
+  return url.toString();
 }
 
-function escapeHtml(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
+function hashPreviewWindowLabel(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
 }
 
 function PreviewPanel({
@@ -8980,77 +8936,16 @@ function PreviewPanel({
     );
   }
 
-  if (compact && (preview.kind === "markdown" || preview.kind === "text")) {
-    return (
-      <pre className="preview-box text compact">
-        {buildCompactPreviewContent(preview.content || t("libraryPreviewEmpty"))}
-      </pre>
-    );
-  }
-
-  if (preview.kind === "image" && preview.previewUrl) {
-    return (
-      <div className="file-viewer-media-shell library-detail-preview-shell">
-        <div className="file-viewer-image-stage">
-          <img
-            className="preview-image file-viewer-image"
-            src={preview.previewUrl}
-            alt={preview.path}
-          />
-        </div>
-      </div>
-    );
-  }
-
-  if (preview.kind === "pdf") {
-    return (
-      <div className="file-viewer-pdf-shell library-detail-preview-shell">
-        <LibraryPdfPreview path={preview.path} previewUrl={preview.previewUrl} />
-      </div>
-    );
-  }
-
-  if (preview.kind === "html" && preview.previewUrl) {
-    return (
-      <div className="file-viewer-html-frame-shell library-detail-preview-shell">
-        <iframe
-          className="library-file-viewer-frame file-viewer-html-frame"
-          src={preview.previewUrl}
-          title={preview.path}
-        />
-      </div>
-    );
-  }
-
-  if (preview.kind === "office" && localRootDir) {
-    return (
-      <OfficePreview
-        fileName={getPathName(preview.path)}
-        relativePath={preview.path}
-        previewUrl={preview.previewUrl}
-        localFilePath={`${localRootDir.replace(/\/+$/g, "")}/${preview.path.replace(/^\/+/, "")}`}
-        size={preview.size}
-      />
-    );
-  }
-  if (preview.kind === "office") return <div className="preview-box">{t("fileViewerOfficeResourceUnavailable")}</div>;
-
-  if (preview.kind === "markdown") {
-    return (
-      <div className="library-detail-preview-shell library-detail-text-preview-shell">
-        <MarkdownPreview content={preview.content || t("libraryPreviewEmpty")} />
-      </div>
-    );
-  }
-
   return (
-    <div className="library-detail-preview-shell library-detail-text-preview-shell">
-      <CodePreview
-        content={preview.content || t("libraryPreviewEmpty")}
-        language={detectLanguage(preview.path)}
-        overviewTotalLines={Math.max(1, (preview.content || t("libraryPreviewEmpty")).split(/\r?\n/).length)}
-      />
-    </div>
+    <LibraryPreviewRenderer
+      preview={preview}
+      content={preview.content || ""}
+      layout="detail"
+      compact={compact}
+      localFilePath={localRootDir
+        ? `${localRootDir.replace(/\/+$/g, "")}/${preview.path.replace(/^\/+/, "")}`
+        : null}
+    />
   );
 }
 
@@ -10545,16 +10440,17 @@ async function toggleFolderFavorite(
 function selectContextProperties(
   library: LibraryState,
   target: LibraryContextMenuTarget,
-): void {
+): LibraryEntry | null {
   if (target.kind === "document") {
     library.selectDocument(target.entry.documentId);
-    return;
+    return target.entry;
   }
-  library.selectFolderEntry(
-    target.kind === "folder"
-      ? target.entry.path
-      : library.viewState.selectedFolderPath,
-  );
+  if (target.kind === "folder") {
+    library.selectFolderEntry(target.entry.path);
+    return target.entry;
+  }
+  library.selectFolderEntry(library.viewState.selectedFolderPath);
+  return library.selectedFolderEntries[0] ?? null;
 }
 
 function resolvePendingTagAssignmentTarget(

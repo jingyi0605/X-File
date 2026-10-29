@@ -4,82 +4,28 @@ import type {
   LibraryPreviewCapabilities,
   LibraryPreviewKind
 } from "@x-file/shared";
+import {
+  LIBRARY_PREVIEW_BUDGETS,
+  LIBRARY_PREVIEW_CONTENT_TYPES,
+  LIBRARY_PREVIEW_FORMATS,
+  resolveLibraryPreviewFormat,
+} from "@x-file/shared";
 
-export const MAX_TEXT_FILE_BYTES = 256 * 1024;
-export const MAX_PREVIEW_FILE_BYTES = 512 * 1024;
-export const MAX_RESOURCE_PREVIEW_FILE_BYTES = 20 * 1024 * 1024;
+export const MAX_TEXT_FILE_BYTES = LIBRARY_PREVIEW_BUDGETS.editMaxBytes;
+export const MAX_PREVIEW_FILE_BYTES = LIBRARY_PREVIEW_BUDGETS.textMaxBytes;
+export const MAX_RESOURCE_PREVIEW_FILE_BYTES = LIBRARY_PREVIEW_BUDGETS.resourceMaxBytes;
 
-const MARKDOWN_FILE_EXTENSIONS = new Set([".md", ".markdown", ".mdown", ".mkd"]);
-const HTML_FILE_EXTENSIONS = new Set([".html", ".htm"]);
-const IMAGE_FILE_EXTENSIONS = new Set([
-  ".png",
-  ".jpg",
-  ".jpeg",
-  ".gif",
-  ".webp",
-  ".svg",
-  ".bmp",
-  ".ico"
-]);
-const PDF_FILE_EXTENSIONS = new Set([".pdf"]);
-const OFFICE_FILE_EXTENSIONS = new Set([".docx", ".xlsx", ".pptx"]);
+export const RESOURCE_PREVIEW_KINDS = new Set<LibraryPreviewKind>(
+  LIBRARY_PREVIEW_FORMATS
+    .filter((format) => format.previewable && format.resourceClass === "resource")
+    .map((format) => format.previewKind),
+);
 
-export const RESOURCE_PREVIEW_KINDS = new Set<LibraryPreviewKind>(["html", "image", "pdf", "office"]);
-
-export const PREVIEW_CONTENT_TYPES = new Map<string, string>([
-  [".html", "text/html; charset=utf-8"],
-  [".htm", "text/html; charset=utf-8"],
-  [".css", "text/css; charset=utf-8"],
-  [".js", "text/javascript; charset=utf-8"],
-  [".mjs", "text/javascript; charset=utf-8"],
-  [".cjs", "text/javascript; charset=utf-8"],
-  [".json", "application/json; charset=utf-8"],
-  [".map", "application/json; charset=utf-8"],
-  [".svg", "image/svg+xml"],
-  [".png", "image/png"],
-  [".jpg", "image/jpeg"],
-  [".jpeg", "image/jpeg"],
-  [".gif", "image/gif"],
-  [".webp", "image/webp"],
-  [".ico", "image/x-icon"],
-  [".bmp", "image/bmp"],
-  [".pdf", "application/pdf"],
-  [".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
-  [".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
-  [".pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"],
-  [".txt", "text/plain; charset=utf-8"],
-  [".wasm", "application/wasm"],
-  [".woff", "font/woff"],
-  [".woff2", "font/woff2"],
-  [".ttf", "font/ttf"],
-  [".otf", "font/otf"],
-  [".eot", "application/vnd.ms-fontobject"]
-]);
+export const PREVIEW_CONTENT_TYPES = new Map(Object.entries(LIBRARY_PREVIEW_CONTENT_TYPES));
 
 export function detectPreviewKind(filePath: string): LibraryPreviewKind {
   const extension = path.extname(filePath).toLowerCase();
-
-  if (MARKDOWN_FILE_EXTENSIONS.has(extension)) {
-    return "markdown";
-  }
-
-  if (HTML_FILE_EXTENSIONS.has(extension)) {
-    return "html";
-  }
-
-  if (IMAGE_FILE_EXTENSIONS.has(extension)) {
-    return "image";
-  }
-
-  if (PDF_FILE_EXTENSIONS.has(extension)) {
-    return "pdf";
-  }
-
-  if (OFFICE_FILE_EXTENSIONS.has(extension)) {
-    return "office";
-  }
-
-  return "text";
+  return resolveLibraryPreviewFormat(filePath)?.previewKind ?? "text";
 }
 
 export function isResourcePreviewKind(kind: LibraryPreviewKind): boolean {

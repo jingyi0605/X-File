@@ -4,6 +4,7 @@ import { getHttpAuthStatus, loginHttpAuth } from "./api/auth";
 import { fetchHealthWithTransport, type HealthResponse } from "./api/health";
 import { toApiErrorMessage } from "./api/http";
 import { LibraryPage, type WorkbenchPlatformData } from "./features/library/LibraryPage";
+import { DetachedPreviewPage } from "./features/library/DetachedPreviewPage";
 import { SettingsPage } from "./features/settings/SettingsPage";
 import { t } from "./i18n";
 import { usePreferencesSelector } from "./preferences/preferences-store";
@@ -106,6 +107,13 @@ export function App() {
     void checkHealth();
   }, [runtimeConfig.mode, runtimeConfig.remoteApiBaseUrl]);
 
+  const detachedPath = typeof window !== "undefined"
+    ? new URLSearchParams(window.location.search).get("x-file-preview")
+    : null;
+  const detachedTitle = typeof window !== "undefined"
+    ? new URLSearchParams(window.location.search).get("x-file-preview-title") ?? ""
+    : "";
+
   if (httpAuth.status === "checking") {
     return <AuthLoadingScreen />;
   }
@@ -127,6 +135,10 @@ export function App() {
         }}
       />
     );
+  }
+
+  if (detachedPath) {
+    return <DetachedPreviewPage path={detachedPath} title={detachedTitle} />;
   }
 
   if (section === "library") {

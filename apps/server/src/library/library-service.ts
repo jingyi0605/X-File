@@ -273,6 +273,20 @@ export class LibraryService {
     const fileSize = resolved.stats?.size ?? 0;
     const updatedAt = resolved.stats?.mtime.toISOString() ?? null;
 
+    if (previewKind === "unsupported") {
+      return buildPreviewResult({
+        libraryId: resolved.binding.libraryId,
+        path: resolved.relativePath,
+        supported: false,
+        kind: "unsupported",
+        reason: "当前文件类型已识别，但没有启用内置预览器",
+        content: null,
+        version: null,
+        size: fileSize,
+        updatedAt
+      });
+    }
+
     if (
       isResourcePreviewKind(previewKind)
       && fileSize > MAX_RESOURCE_PREVIEW_FILE_BYTES

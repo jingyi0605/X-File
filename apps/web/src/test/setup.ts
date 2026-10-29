@@ -28,6 +28,21 @@ Object.defineProperty(globalThis, "localStorage", {
   value: testLocalStorage,
 });
 
+Object.defineProperty(window, "matchMedia", {
+  writable: true,
+  configurable: true,
+  value: (query: string) => ({
+    matches: query.includes("(min-width: 641px)"),
+    media: query,
+    onchange: null,
+    addListener: () => undefined,
+    removeListener: () => undefined,
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+    dispatchEvent: () => false,
+  }),
+});
+
 // jsdom 不实现 ResizeObserver，LibraryPage 虚拟列表测量需要一个稳定空实现。
 class TestResizeObserver implements ResizeObserver {
   observe(): void {}

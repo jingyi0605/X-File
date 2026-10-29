@@ -14,6 +14,7 @@
     "dev:desktop:frontend": "bash scripts/dev-desktop-frontend.sh",
     "start:server": "pnpm --filter @x-file/server start",
     "verify:desktop": "node scripts/verify-desktop.mjs",
+    "report:preview-capabilities": "node scripts/report-preview-capabilities.mjs",
     "package:desktop": "bash scripts/package-desktop.sh",
     "package:desktop:macos": "bash scripts/package-desktop.sh macos",
     "package:desktop:windows": "bash scripts/package-desktop.sh windows",

@@ -22,6 +22,7 @@ test("预览、下载和写入沿用文档库安全边界", () => {
   const rootDir = path.join(tempDir, "library");
   fs.mkdirSync(rootDir, { recursive: true });
   fs.writeFileSync(path.join(rootDir, "note.md"), "# 标题\n", "utf8");
+  fs.writeFileSync(path.join(rootDir, "legacy.doc"), Buffer.from([0x00, 0x01, 0x02]));
 
   const service = new LibraryService(new LibraryBindingStore({ dataDir }));
   assert.equal(service.getSnapshot().requiresInitialization, true);
@@ -42,6 +43,10 @@ test("预览、下载和写入沿用文档库安全边界", () => {
   assert.equal(preview.content, "# 标题\n");
   assert.equal(typeof preview.version, "string");
   assert.equal(preview.capabilities.canEdit, true);
+
+  const unsupportedPreview = service.previewFile({ path: "legacy.doc" });
+  assert.equal(unsupportedPreview.supported, false);
+  assert.equal(unsupportedPreview.kind, "unsupported");
 
   const download = service.downloadFile({ path: "note.md" });
   assert.equal(download.fileName, "note.md");
