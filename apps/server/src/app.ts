@@ -7,6 +7,7 @@ import {
 import { registerLibraryEngineFeature } from "./library/library-engine-feature.js";
 import { registerWebShellRoutes } from "./web-shell-routes.js";
 import { registerAgentSettingsRoutes } from "./routes/agent-settings-routes.js";
+import { registerAgentMcpRoutes } from "./routes/agent-mcp-routes.js";
 import { registerHttpAuthRoutes } from "./routes/http-auth-routes.js";
 
 const APP_VERSION = "0.1.0";
@@ -57,6 +58,7 @@ export function createServer(options: CreateServerOptions = {}) {
 
   registerHttpAuthRoutes(server, httpServerManager);
   registerAgentSettingsRoutes(server);
+  registerAgentMcpRoutes(server);
 
   // Node 入口现在只负责装配仍需 HTTP sidecar 的服务；
   // 文档库主读链与 refresh 宿主已经优先走桌面 native 路径。

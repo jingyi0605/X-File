@@ -124,6 +124,8 @@ function isPublicPath(pathname: string): boolean {
   return (
     pathname === "/"
     || pathname === "/api/health"
+    // MCP authenticates each request with the Agent Bearer key in its own route.
+    || pathname === "/api/mcp"
     || pathname.startsWith("/api/auth/")
     || (!pathname.startsWith("/api/") && !pathname.startsWith("/preview/"))
   );
