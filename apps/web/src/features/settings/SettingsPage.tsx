@@ -553,7 +553,9 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
                 <LibraryIndexStatusCard binding={binding} status={libraryIndexStatus} />
               </>
             )}
-            <button type="submit" className="primary-button">{t("settingsSaveBinding")}</button>
+            <div className="button-row settings-action-row">
+              <button type="submit" className="primary-button settings-save-button">{t("settingsSaveBinding")}</button>
+            </div>
           </form>
         </SettingsModule>
 
@@ -656,9 +658,11 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
                 </button>
               </div>
             </div>
-            <button type="submit" className="primary-button" disabled={Boolean(configUnavailable)}>
-              {t("settingsSaveConfig")}
-            </button>
+            <div className="button-row settings-action-row">
+              <button type="submit" className="primary-button settings-save-button" disabled={Boolean(configUnavailable)}>
+                {t("settingsSaveConfig")}
+              </button>
+            </div>
           </form>
         </SettingsModule>
       </section>
@@ -753,12 +757,12 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
             copiedUrl={copiedServerUrl}
             onCopyUrl={(url) => void copyServerAccessUrl(url, setCopiedServerUrl)}
           />
-          <div className="button-row">
-            <button type="submit" className="primary-button" disabled={Boolean(serverUnavailable)}>
-              {t("settingsServerSave")}
-            </button>
+          <div className="button-row settings-action-row">
             <button type="button" className="secondary-button" onClick={() => void getHttpServerState().then(applyServerState).catch((err) => setServerUnavailable(toApiErrorMessage(err)))}>
               {t("settingsServerRefresh")}
+            </button>
+            <button type="submit" className="primary-button settings-save-button" disabled={Boolean(serverUnavailable)}>
+              {t("settingsServerSave")}
             </button>
           </div>
         </form>
