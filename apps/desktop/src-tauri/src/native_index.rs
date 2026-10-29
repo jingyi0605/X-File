@@ -1291,6 +1291,10 @@ fn state_versions(root: &str) -> Vec<FileVersion> {
     .collect()
 }
 
+pub(crate) fn invalidate_state_cache(root: &str) {
+    state_cache().lock().unwrap().remove(root);
+}
+
 fn commit_cached_state(root: &str, scanned: &ScanDocumentsResult) {
     let mut cache = state_cache().lock().unwrap();
     let entry = cache

@@ -75,6 +75,16 @@ pub(crate) fn write_catalog(root: &str, snapshot: ExportCatalogSnapshot) -> Resu
     Ok(())
 }
 
+pub(crate) fn refresh_catalog_cache(root: &str, snapshot: Option<ExportCatalogSnapshot>) {
+    let path = export_catalog_snapshot_path(root);
+    let mut cache = cache().lock().unwrap();
+    if let Some(snapshot) = snapshot {
+        cache.insert(path.clone(), (file_version(&path), Arc::new(snapshot)));
+    } else {
+        cache.remove(&path);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
