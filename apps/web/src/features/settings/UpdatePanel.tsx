@@ -198,7 +198,7 @@ export function UpdatePanel() {
               <strong>{manifest.publishedAt}</strong>
             </div>
           ) : null}
-          <div className="button-row">
+          <div className="button-row settings-action-row">
             <button
               type="button"
               className="primary-button"
@@ -210,7 +210,7 @@ export function UpdatePanel() {
             {manifest?.htmlUrl ? (
               <button
                 type="button"
-                className="secondary-button"
+                className="primary-button"
                 onClick={() => void handleViewRelease(manifest.htmlUrl)}
               >
                 {t("settingsUpdatesViewRelease")}
@@ -234,10 +234,10 @@ export function UpdatePanel() {
               <pre className="settings-code-block">{manifest.notes}</pre>
             </section>
           ) : null}
-          <div className="button-row">
+          <div className="button-row settings-action-row">
             <button
               type="button"
-              className="primary-button"
+              className="primary-button settings-save-button"
               disabled={busy}
               onClick={() => void handleDownloadAndInstall()}
             >

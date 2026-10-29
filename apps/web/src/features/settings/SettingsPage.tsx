@@ -946,7 +946,7 @@ function ResetApplicationSection({
       {!isDesktopContext ? (
         <div className="inline-note">{t("settingsResetDesktopOnly")}</div>
       ) : null}
-      <div className="button-row">
+      <div className="button-row settings-action-row">
         <button type="button" className="danger-button" disabled={!isDesktopContext} onClick={onReset}>
           {t("settingsResetAction")}
         </button>

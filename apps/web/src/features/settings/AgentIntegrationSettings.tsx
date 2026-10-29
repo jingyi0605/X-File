@@ -182,7 +182,7 @@ function AgentIntegrationForm({ mirrorMode }: { mirrorMode: boolean }) {
       {loading ? <p>{t("agentLoading")}</p> : null}
       {mirrorMode ? <p className="inline-note">{t("agentMirrorNotice")}</p> : null}
       {!loading && !settings ? (
-        <div className="button-row">
+        <div className="button-row settings-action-row">
           <button type="button" className="secondary-button" onClick={() => setRetryKey((current) => current + 1)}>
             {t("agentRetry")}
           </button>
