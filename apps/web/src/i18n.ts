@@ -964,7 +964,7 @@ export const enUS = {
   agentCapabilitiesTab: "MCP capabilities",
   agentViewConfiguration: "View configuration",
   agentConfigurationStepsTitle: "Get started",
-  agentConfigurationStepsDescription: "Generate an API key, then add local or remote MCP settings to an Agent client."
+  agentConfigurationStepsDescription: "Generate an API key, then add local or remote MCP settings to an Agent client.",
   agentConfigurationStepKey: "Generate and save an API key here, then enable external Agent integration.",
   agentConfigurationStepClient: "Merge the JSON below into the Agent client configuration and replace the placeholder with the API key.",
   agentConfigurationStepRun: "Use stdio locally; remote connections require an HTTPS reverse proxy and Bearer API key.",
