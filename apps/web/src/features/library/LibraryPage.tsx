@@ -13,7 +13,9 @@ import {
   type FormEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
+  type RefObject,
   type ReactNode,
+  type TouchEvent as ReactTouchEvent,
 } from "react";
 import { createPortal } from "react-dom";
 import type {
@@ -143,6 +145,11 @@ const DEFAULT_RUNTIME_CONFIG: XFileRuntimeConfig = {
   localRootDir: "",
   updatedAt: new Date(0).toISOString(),
 };
+
+function isLibraryMobileViewport(): boolean {
+  return typeof window !== "undefined"
+    && window.matchMedia?.("(max-width: 640px)").matches === true;
+}
 
 function readCssPixelValue(value: string): number {
   const parsed = Number.parseFloat(value);
@@ -403,6 +410,7 @@ type DetailLibraryState = Pick<
   | "previewLoading"
   | "reload"
   | "reloadDocuments"
+  | "selectDocument"
   | "selectedDocument"
   | "selectedDocuments"
   | "selectedFolderEntries"
@@ -486,6 +494,19 @@ export function LibraryPage({
   const [tagRevision, setTagRevision] = useState(0);
   const [viewerState, setViewerState] = useState<LibraryViewerState | null>(null);
   const [tagManagerOpen, setTagManagerOpen] = useState(false);
+  const [libraryDetailsOpen, setLibraryDetailsOpen] = useState(
+    () => !isLibraryMobileViewport(),
+  );
+  const [sidebarOpen, setSidebarOpen] = useState(
+    () => !isLibraryMobileViewport(),
+  );
+  const [isMobileViewport, setIsMobileViewport] = useState(
+    isLibraryMobileViewport,
+  );
+  const mobileTouchStartRef = useRef<{ x: number; y: number } | null>(null);
+  const detailsTriggerRef = useRef<HTMLElement | null>(null);
+  const detailsCloseRef = useRef<HTMLButtonElement | null>(null);
+  const detailsWasOpenRef = useRef(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchDraft, setSearchDraft] = useState("");
   const [searchFocusToken, setSearchFocusToken] = useState(0);
@@ -502,6 +523,123 @@ export function LibraryPage({
   const overlayMacOsTitlebar = platformData.runtimePlatform === "desktop"
     && platformData.osFamily === "macos"
     && platformData.overlayTitlebar;
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const media = window.matchMedia("(max-width: 640px)");
+    const syncViewportMode = () => {
+      const nextIsMobile = media.matches;
+      setIsMobileViewport(nextIsMobile);
+      setSidebarOpen((current) => nextIsMobile ? false : current || true);
+      setLibraryDetailsOpen((current) => nextIsMobile ? false : current || true);
+    };
+    syncViewportMode();
+    media.addEventListener?.("change", syncViewportMode);
+    return () => media.removeEventListener?.("change", syncViewportMode);
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setSidebarOpen(false);
+        setLibraryDetailsOpen(false);
+        window.dispatchEvent(new CustomEvent("x-file-close-mobile-sidebar"));
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  const handleWorkbenchTouchStart = useCallback((event: ReactTouchEvent<HTMLElement>): void => {
+    if (!isMobileViewport) {
+      mobileTouchStartRef.current = null;
+      return;
+    }
+    const touch = event.touches[0];
+    if (touch) {
+      mobileTouchStartRef.current = { x: touch.clientX, y: touch.clientY };
+    }
+  }, [isMobileViewport]);
+
+  const handleWorkbenchTouchEnd = useCallback((event: ReactTouchEvent<HTMLElement>): void => {
+    const start = mobileTouchStartRef.current;
+    const touch = event.changedTouches[0];
+    mobileTouchStartRef.current = null;
+    if (!isMobileViewport || !start || !touch || Math.abs(touch.clientY - start.y) > 64) {
+      return;
+    }
+    const deltaX = touch.clientX - start.x;
+    if (!sidebarOpen && start.x <= 28 && deltaX >= 56) {
+      window.dispatchEvent(new CustomEvent("x-file-open-mobile-sidebar"));
+    } else if (sidebarOpen && deltaX <= -56) {
+      window.dispatchEvent(new CustomEvent("x-file-close-mobile-sidebar"));
+    }
+  }, [isMobileViewport, sidebarOpen]);
+
+  const handleLibraryDetailsTouchStart = useCallback((event: ReactTouchEvent<HTMLElement>): void => {
+    if (!isMobileViewport) {
+      mobileTouchStartRef.current = null;
+      return;
+    }
+    const touch = event.touches[0];
+    if (touch) mobileTouchStartRef.current = { x: touch.clientX, y: touch.clientY };
+  }, [isMobileViewport]);
+
+  const handleLibraryDetailsTouchEnd = useCallback((event: ReactTouchEvent<HTMLElement>): void => {
+    const start = mobileTouchStartRef.current;
+    const touch = event.changedTouches[0];
+    mobileTouchStartRef.current = null;
+    if (!isMobileViewport || !start || !touch || Math.abs(touch.clientY - start.y) > 64) return;
+    if (touch.clientX - start.x <= -56) setLibraryDetailsOpen(false);
+  }, [isMobileViewport]);
+
+  const handleOpenLibraryDetails = useCallback((entry?: LibraryEntry): void => {
+    if (entry?.kind === "document") {
+      libraryRef.current.selectDocument(entry.documentId);
+    } else if (entry) {
+      libraryRef.current.selectFolderEntry(entry.path);
+    } else if (libraryRef.current.selectedDocument) {
+      libraryRef.current.selectDocument(libraryRef.current.selectedDocument.documentId);
+    }
+    if (typeof document !== "undefined" && document.activeElement instanceof HTMLElement) {
+      const activeElement = document.activeElement;
+      if (activeElement.matches(".library-entry-details-trigger, .mobile-library-details-trigger, .workbench-inspector-edge-trigger")) {
+        detailsTriggerRef.current = activeElement;
+      }
+    }
+    setLibraryDetailsOpen(true);
+  }, []);
+
+  useEffect(() => {
+    if (!libraryDetailsOpen) {
+      if (detailsWasOpenRef.current) {
+        detailsTriggerRef.current?.focus();
+      }
+      detailsWasOpenRef.current = false;
+      return;
+    }
+    detailsWasOpenRef.current = true;
+    if (window.matchMedia?.("(min-width: 641px)").matches) return;
+    const frame = window.requestAnimationFrame(() => detailsCloseRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [libraryDetailsOpen]);
+
+  useEffect(() => {
+    const openSidebar = () => setSidebarOpen(true);
+    const closeSidebar = () => setSidebarOpen(false);
+    const openDetails = (event: Event) => {
+      const entry = (event as CustomEvent<LibraryEntry>).detail;
+      handleOpenLibraryDetails(entry);
+    };
+    window.addEventListener("x-file-open-mobile-sidebar", openSidebar);
+    window.addEventListener("x-file-close-mobile-sidebar", closeSidebar);
+    window.addEventListener("x-file-open-library-details", openDetails);
+    return () => {
+      window.removeEventListener("x-file-open-mobile-sidebar", openSidebar);
+      window.removeEventListener("x-file-close-mobile-sidebar", closeSidebar);
+      window.removeEventListener("x-file-open-library-details", openDetails);
+    };
+  }, [handleOpenLibraryDetails]);
 
   // 子视图会在 effect 中继续预加载，必须先同步分页回调使用的最新状态。
   useLayoutEffect(() => {
@@ -615,8 +753,8 @@ export function LibraryPage({
         : {
             leftWidth: panels.resolvedSidebarWidth,
             rightWidth: panels.resolvedDetailWidth,
-            leftCollapsed: false,
-            rightCollapsed: false,
+            leftCollapsed: !sidebarOpen,
+            rightCollapsed: !libraryDetailsOpen,
             prefersDarkAppearance: theme === "dark",
             isResizing: panels.isResizing,
           };
@@ -642,6 +780,8 @@ export function LibraryPage({
     panels.isResizing,
     panels.resolvedDetailWidth,
     panels.resolvedSidebarWidth,
+    libraryDetailsOpen,
+    sidebarOpen,
     shouldShowDisabled,
     shouldShowInitialization,
     theme,
@@ -1128,6 +1268,7 @@ export function LibraryPage({
     previewLoading: library.previewLoading,
     reload: callLibraryReload,
     reloadDocuments: callLibraryReloadDocuments,
+    selectDocument: callLibrarySelectDocument,
     selectedDocument: library.selectedDocument,
     selectedDocuments: library.selectedDocuments,
     selectedFolderEntries: library.selectedFolderEntries,
@@ -1142,6 +1283,7 @@ export function LibraryPage({
     callLibraryOpenPreview,
     callLibraryReload,
     callLibraryReloadDocuments,
+    callLibrarySelectDocument,
     callLibrarySelectFolder,
     callLibraryToggleFavorite,
     library.documentPage,
@@ -1184,9 +1326,13 @@ export function LibraryPage({
       data-runtime-platform={platformData.runtimePlatform}
       data-os-family={platformData.osFamily}
       data-overlay-titlebar={String(platformData.overlayTitlebar)}
+      data-sidebar-open={String(sidebarOpen)}
+      data-details-open={String(libraryDetailsOpen)}
       ref={workbenchShellRef}
       onMouseDownCapture={handleUnifiedTitlebarMouseDownCapture}
       onDoubleClickCapture={handleUnifiedTitlebarDoubleClickCapture}
+      onTouchStart={handleWorkbenchTouchStart}
+      onTouchEnd={handleWorkbenchTouchEnd}
     >
       <section
         className="workbench-window xfile-workbench-window workbench-window-resizable"
@@ -1198,11 +1344,64 @@ export function LibraryPage({
             : undefined
         }
       >
+        <button
+          type="button"
+          className="workbench-sidebar-backdrop"
+          aria-label={t("libraryCloseNavigation")}
+          tabIndex={sidebarOpen ? 0 : -1}
+          onClick={() => window.dispatchEvent(new CustomEvent("x-file-close-mobile-sidebar"))}
+        />
+        <button
+          type="button"
+          className="workbench-sidebar-edge-trigger"
+          aria-label={t("libraryOpenNavigation")}
+          aria-expanded={sidebarOpen}
+          onMouseEnter={() => {
+            if (window.matchMedia?.("(hover: hover) and (min-width: 641px)").matches) {
+              window.dispatchEvent(new CustomEvent("x-file-open-mobile-sidebar"));
+            }
+          }}
+          onClick={() => window.dispatchEvent(new CustomEvent("x-file-open-mobile-sidebar"))}
+          onPointerDown={(event) => {
+            if (event.pointerType === "touch") {
+              window.dispatchEvent(new CustomEvent("x-file-open-mobile-sidebar"));
+            }
+          }}
+        >
+          {renderNavigationArrowIcon("forward")}
+        </button>
+        <button
+          type="button"
+          className="workbench-inspector-edge-trigger workbench-inspector-edge-trigger-right"
+          aria-label={t("libraryOpenDetails")}
+          aria-expanded={libraryDetailsOpen}
+          onMouseEnter={() => {
+            if (window.matchMedia?.("(hover: hover) and (min-width: 641px)").matches) {
+              handleOpenLibraryDetails();
+            }
+          }}
+          onClick={() => handleOpenLibraryDetails()}
+        >
+          {renderInfoIcon()}
+        </button>
+        <button
+          type="button"
+          className="workbench-inspector-edge-dismiss"
+          aria-label={t("libraryCloseDetails")}
+          tabIndex={libraryDetailsOpen ? 0 : -1}
+          onMouseEnter={() => {
+            if (window.matchMedia?.("(hover: hover) and (min-width: 641px)").matches) {
+              setLibraryDetailsOpen(false);
+            }
+          }}
+        />
         <MemoizedLibraryDesktopSidebar
           library={sidebarLibrary}
           onOpenSearch={handleOpenSearch}
           onCancelSearch={handleCancelSearch}
           searchClearToken={searchClearToken}
+          sidebarOpen={sidebarOpen}
+          onCloseMobileSidebar={() => window.dispatchEvent(new CustomEvent("x-file-close-mobile-sidebar"))}
           onOpenSettings={onOpenSettings}
           onOpenTagManager={handleOpenTagManager}
           overlayMacOsTitlebar={overlayMacOsTitlebar}
@@ -1238,7 +1437,9 @@ export function LibraryPage({
             searchOpen={searchOpen}
             searchInitialKeyword={searchDraft}
             searchFocusToken={searchFocusToken}
-          onCancelSearch={handleCancelSearch}
+            onCancelSearch={handleCancelSearch}
+            onOpenLibraryDetails={handleOpenLibraryDetails}
+            onOpenSearch={handleOpenSearch}
             onOpenLibraryViewer={openLibraryViewer}
           />
         </section>
@@ -1249,8 +1450,13 @@ export function LibraryPage({
           onResizeStart={panels.startResize}
           onReset={panels.resetSize}
         />
-        <MemoizedLibraryDetail
+        <LibraryDetailsPortal
           library={detailLibrary}
+          isOpen={libraryDetailsOpen}
+          onClose={() => setLibraryDetailsOpen(false)}
+          onTouchStart={handleLibraryDetailsTouchStart}
+          onTouchEnd={handleLibraryDetailsTouchEnd}
+          closeButtonRef={detailsCloseRef}
           allowLocalOpen={runtimeConfig.mode === "local"}
           overlayMacOsTitlebar={overlayMacOsTitlebar}
           onRequestRename={handleRequestRename}
@@ -1404,6 +1610,8 @@ function LibraryDesktopSidebar({
   onOpenSearch,
   onCancelSearch,
   searchClearToken,
+  sidebarOpen,
+  onCloseMobileSidebar,
   onOpenSettings,
   onOpenTagManager,
   overlayMacOsTitlebar,
@@ -1417,6 +1625,8 @@ function LibraryDesktopSidebar({
   onOpenSearch: (keyword: string) => void;
   onCancelSearch: () => void;
   searchClearToken: number;
+  sidebarOpen: boolean;
+  onCloseMobileSidebar: () => void;
   onOpenSettings: () => void;
   onOpenTagManager: () => void;
   overlayMacOsTitlebar: boolean;
@@ -1546,7 +1756,20 @@ function LibraryDesktopSidebar({
   }
 
   return (
-    <aside className="workbench-sidebar affairs-layout-sidebar">
+    <aside
+      className="workbench-sidebar affairs-layout-sidebar"
+      data-open={sidebarOpen}
+      onMouseLeave={() => {
+        if (window.matchMedia?.("(hover: hover) and (min-width: 641px)").matches) {
+          window.dispatchEvent(new CustomEvent("x-file-close-mobile-sidebar"));
+        }
+      }}
+      onClickCapture={(event) => {
+        if (event.target instanceof Element && event.target.closest("button")) {
+          window.dispatchEvent(new CustomEvent("x-file-close-mobile-sidebar"));
+        }
+      }}
+    >
       <div className="affairs-sidebar-panel">
         <div
           className="xfile-sidebar-brand"
@@ -1622,6 +1845,13 @@ function LibraryDesktopSidebar({
             }}
           />
         </form>
+        <button
+          type="button"
+          className="mobile-sidebar-close secondary-button"
+          onClick={onCloseMobileSidebar}
+        >
+          {t("libraryCloseNavigation")}
+        </button>
         <div className="affairs-sidebar-shell">
           <div className="affairs-sidebar-content">
             <div className="affairs-sidebar-groups affairs-library-sidebar-groups">
@@ -2848,6 +3078,8 @@ function LibraryStage({
   searchInitialKeyword,
   searchFocusToken,
   onCancelSearch,
+  onOpenLibraryDetails,
+  onOpenSearch,
   onOpenLibraryViewer,
 }: {
   library: StageLibraryState;
@@ -2865,6 +3097,8 @@ function LibraryStage({
   searchInitialKeyword: string;
   searchFocusToken: number;
   onCancelSearch: () => void;
+  onOpenLibraryDetails: (entry?: LibraryEntry) => void;
+  onOpenSearch: (keyword?: string) => void;
   onOpenLibraryViewer: (entry: LibraryDocumentEntry) => void;
 }) {
   const [searchView, setSearchView] = useState<{
@@ -2912,6 +3146,8 @@ function LibraryStage({
         platformData={platformData}
         directoryStatus={directoryStatus}
         onOpenSettings={onOpenSettings}
+        onOpenLibraryDetails={() => onOpenLibraryDetails()}
+        onOpenSearch={onOpenSearch}
         onRequestCreate={onRequestCreate}
       />
       <div
@@ -2950,6 +3186,7 @@ function LibraryStage({
           <VirtualLibraryGrid
             library={visibleLibrary}
             entries={visibleEntries}
+            onOpenLibraryDetails={onOpenLibraryDetails}
             onOpenContextMenu={onOpenContextMenu}
             onOpenLibraryViewer={onOpenLibraryViewer}
           />
@@ -2957,6 +3194,7 @@ function LibraryStage({
           <VirtualLibraryFinderList
             library={visibleLibrary}
             entries={visibleEntries}
+            onOpenLibraryDetails={onOpenLibraryDetails}
             onOpenContextMenu={onOpenContextMenu}
             onOpenLibraryViewer={onOpenLibraryViewer}
           />
@@ -2971,6 +3209,8 @@ function LibraryStageToolbar({
   platformData,
   directoryStatus: _directoryStatus,
   onOpenSettings,
+  onOpenLibraryDetails,
+  onOpenSearch,
   onRequestCreate,
 }: {
   library: StageLibraryState;
@@ -2981,6 +3221,8 @@ function LibraryStageToolbar({
     errorSummary?: string | null;
   } | null;
   onOpenSettings: () => void;
+  onOpenLibraryDetails: () => void;
+  onOpenSearch: (keyword?: string) => void;
   onRequestCreate: (state: PendingCreateState) => void;
 }) {
   const sortOptions: Array<{ value: LibrarySortMode; label: string }> = [
@@ -3004,7 +3246,16 @@ function LibraryStageToolbar({
     <div className={titlebarClassName}>
       <div className="xfile-stage-titlebar-content">
         <div className="xfile-stage-titlebar-left">
-          <div className="affairs-stage-toolbar-left" data-window-drag="ignore">
+            <div className="affairs-stage-toolbar-left" data-window-drag="ignore">
+              <button
+                type="button"
+                className="affairs-stage-toolbar-icon mobile-navigation-trigger"
+                aria-label={t("libraryOpenNavigation")}
+                title={t("libraryOpenNavigation")}
+                onClick={() => window.dispatchEvent(new CustomEvent("x-file-open-mobile-sidebar"))}
+              >
+                {renderMenuIcon()}
+              </button>
             <div className="affairs-stage-breadcrumb" aria-label={t("libraryCurrentFolder")}>
               <button
                 type="button"
@@ -3035,6 +3286,15 @@ function LibraryStageToolbar({
           />
         </div>
         <div className="affairs-stage-toolbar-right" data-window-drag="ignore">
+          <button
+            type="button"
+            className="affairs-stage-toolbar-icon mobile-library-details-trigger"
+            aria-label={t("libraryDetails")}
+            title={t("libraryDetails")}
+            onClick={onOpenLibraryDetails}
+          >
+            {renderInfoIcon()}
+          </button>
           <div className="affairs-stage-toolbar-group">
             <button
               type="button"
@@ -3126,6 +3386,19 @@ function LibraryStageToolbar({
             {renderPlusIcon()}
           </button>
         </div>
+        <form
+          className="mobile-library-search"
+          role="search"
+          aria-label={t("libraryQuickFindLabel")}
+          data-window-drag="ignore"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const input = event.currentTarget.elements.namedItem("keyword");
+            onOpenSearch(input instanceof HTMLInputElement ? input.value : "");
+          }}
+        >
+          <input name="keyword" type="search" placeholder={t("libraryQuickFindPlaceholder")} />
+        </form>
       </div>
     </div>
   );
@@ -3393,6 +3666,7 @@ const VIRTUAL_GRID_MIN_ITEMS = 80;
 const VIRTUAL_LIST_ROW_HEIGHT = 36;
 const VIRTUAL_OVERSCAN = 2;
 const VIRTUAL_LIST_OVERSCAN = 8;
+const FINDER_VISIBLE_COLUMNS: FinderColumnKey[] = ["name", "type", "createdAt"];
 const LIBRARY_SELECTION_PRESS_ANIMATION_MS = 140;
 const LIBRARY_FAVORITE_TAG_PREVIEW_DELAY_MS = 2000;
 const LIBRARY_DETAIL_SETTLE_DELAY_MS = 500;
@@ -3453,6 +3727,7 @@ function VirtualLibraryGrid({
   library,
   entries,
   onOpenContextMenu,
+  onOpenLibraryDetails,
   onOpenLibraryViewer,
 }: {
   library: StageLibraryState;
@@ -3461,6 +3736,7 @@ function VirtualLibraryGrid({
     event: ReactMouseEvent<HTMLElement>,
     target: LibraryContextMenuTarget,
   ) => void;
+  onOpenLibraryDetails: (entry?: LibraryEntry) => void;
   onOpenLibraryViewer: (entry: LibraryDocumentEntry) => void;
 }) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
@@ -3680,6 +3956,7 @@ function VirtualLibraryGrid({
             onSelectDocument={library.selectDocument}
             onToggleDocumentSelection={library.toggleDocumentSelection}
             onVisualSelect={handleVisualSelect}
+            onOpenLibraryDetails={onOpenLibraryDetails}
             onOpenContextMenu={onOpenContextMenu}
             onOpenLibraryViewer={onOpenLibraryViewer}
             onToggleFavorite={library.toggleFavorite}
@@ -4851,6 +5128,7 @@ function LibraryDetail({
   onRequestTagAssignment: (target: LibraryContextMenuTarget) => void;
 }) {
   const detailScrollRef = useRef<HTMLDivElement | null>(null);
+  const detailPanelRef = useRef<HTMLElement | null>(null);
   const incomingDetailSelection = useMemo<SettledLibraryDetailSelection>(() => ({
     key: buildLibraryDetailSelectionKey(
       library.viewState.selectedDocumentIds,
@@ -4903,9 +5181,13 @@ function LibraryDetail({
 
   useEffect(() => {
     if (!detailPending && selected) {
-      void library.openPreview(selected.path);
+      if (isOpen) {
+        void library.openPreview(selected.path);
+      } else {
+        library.cancelPreview();
+      }
     }
-  }, [detailPending, library.openPreview, selected?.documentId]);
+  }, [detailPending, isOpen, library.cancelPreview, library.openPreview, selected?.documentId]);
 
   useEffect(() => {
     const element = detailScrollRef.current;
@@ -4915,10 +5197,42 @@ function LibraryDetail({
     return installAutoHideScrollbarBehavior(element);
   }, [selected?.documentId, selectedFolder?.path]);
 
+  useEffect(() => {
+    if (!isOpen || window.matchMedia?.("(min-width: 641px)").matches) return;
+    const panel = detailPanelRef.current;
+    if (!panel) return;
+    const handleTab = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return;
+      const focusable = Array.from(panel.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      )).filter((element) => !element.hasAttribute("inert") && element.getAttribute("aria-hidden") !== "true");
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    panel.addEventListener("keydown", handleTab);
+    return () => panel.removeEventListener("keydown", handleTab);
+  }, [isOpen]);
+
   return (
     <aside
+      ref={detailPanelRef}
       className="affairs-detail-panel library-detail"
       aria-label={t("libraryDetails")}
+      role="dialog"
+      aria-modal={window.matchMedia?.("(max-width: 640px)").matches || undefined}
+      aria-hidden={!isOpen}
+      data-open={isOpen}
+      inert={!isOpen}
+      onTouchStart={onTouchStart}
+      onTouchEnd={onTouchEnd}
     >
       <header
         className="workbench-auxiliary-header"
@@ -4934,6 +5248,15 @@ function LibraryDetail({
             {t("libraryObjectDetail")}
           </button>
         </div>
+        <button
+          type="button"
+          className="affairs-detail-close secondary-button"
+          ref={closeButtonRef}
+          aria-label={t("libraryCloseDetails")}
+          onClick={onClose}
+        >
+          {renderCloseIcon()}
+        </button>
         <div
           className="workbench-auxiliary-header-drag-spacer"
           aria-hidden="true"
@@ -5146,6 +5469,59 @@ function LibraryDetail({
   );
 }
 
+const LibraryDetailsPortal = memo(function LibraryDetailsPortal({
+  library,
+  isOpen,
+  onClose,
+  onTouchStart,
+  onTouchEnd,
+  closeButtonRef,
+  allowLocalOpen,
+  overlayMacOsTitlebar,
+  onRequestRename,
+  onRequestDelete,
+  onRequestTagAssignment,
+}: {
+  library: DetailLibraryState;
+  isOpen: boolean;
+  onClose: () => void;
+  onTouchStart: (event: ReactTouchEvent<HTMLElement>) => void;
+  onTouchEnd: (event: ReactTouchEvent<HTMLElement>) => void;
+  closeButtonRef: RefObject<HTMLButtonElement | null>;
+  allowLocalOpen: boolean;
+  overlayMacOsTitlebar: boolean;
+  onRequestRename: (path: string) => void;
+  onRequestDelete: (target: LibraryContextMenuTarget) => void;
+  onRequestTagAssignment: (target: LibraryContextMenuTarget) => void;
+}) {
+  if (!isOpen || typeof document === "undefined") {
+    return null;
+  }
+  return (
+    <>
+      <button
+        type="button"
+        className="library-details-backdrop"
+        aria-label={t("libraryCloseDetails")}
+        onClick={onClose}
+      />
+      <MemoizedLibraryDetail
+        library={library}
+        isOpen={isOpen}
+        onClose={onClose}
+        onTouchStart={onTouchStart}
+        onTouchEnd={onTouchEnd}
+        closeButtonRef={closeButtonRef}
+        allowLocalOpen={allowLocalOpen}
+        overlayMacOsTitlebar={overlayMacOsTitlebar}
+        onRequestRename={onRequestRename}
+        onRequestDelete={onRequestDelete}
+        onRequestTagAssignment={onRequestTagAssignment}
+      />
+    </>
+  );
+});
+
 const MemoizedLibraryDetail = memo(LibraryDetail);
 
 function buildLibraryDetailSelectionKey(
@@ -5308,6 +5684,14 @@ function LibraryContextMenu({
   async function run(action: () => void | Promise<void>): Promise<void> {
     onClose();
     await action();
+  }
+
+  async function openObjectDetails(): Promise<void> {
+    const selected = selectContextProperties(library, target);
+    onClose();
+    if (selected) {
+      window.dispatchEvent(new CustomEvent("x-file-open-library-details", { detail: selected }));
+    }
   }
 
   async function pasteIntoTarget(): Promise<void> {
@@ -5611,7 +5995,7 @@ function LibraryContextMenu({
       <button
         type="button"
         role="menuitem"
-        onClick={() => void run(() => selectContextProperties(library, target))}
+        onClick={() => void openObjectDetails()}
       >
         {t("libraryContextProperties")}
       </button>
@@ -10496,6 +10880,31 @@ function renderPlusIcon() {
   return (
     <svg viewBox="0 0 16 16" aria-hidden="true">
       <path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function renderInfoIcon() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M8 7.2v4M8 4.8h.01" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function renderCloseIcon() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="m4 4 8 8m0-8-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function renderMenuIcon() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M2.5 4h11M2.5 8h11M2.5 12h11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
     </svg>
   );
 }

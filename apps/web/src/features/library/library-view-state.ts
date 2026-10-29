@@ -34,6 +34,8 @@ export interface LibraryViewState {
   libraryId: string;
   browseMode: "folder" | "tag";
   viewMode: LibraryViewMode;
+  desktopViewMode: LibraryViewMode;
+  mobileViewMode: LibraryViewMode;
   selectedFolderPath: string | null;
   selectedFolderEntryPath: string | null;
   selectedFolderEntryPaths: string[];
@@ -79,6 +81,8 @@ const DEFAULT_SORT: LibrarySortState = {
 const DEFAULT_STATE: Omit<LibraryViewState, "libraryId"> = {
   browseMode: "folder",
   viewMode: "grid",
+  desktopViewMode: "grid",
+  mobileViewMode: "list",
   selectedFolderPath: null,
   selectedFolderEntryPath: null,
   selectedFolderEntryPaths: [],
@@ -98,10 +102,25 @@ function buildStateKey(libraryId: string): string {
 }
 
 export function createDefaultLibraryViewState(libraryId = "default"): LibraryViewState {
+  const desktopViewMode: LibraryViewMode = "grid";
+  const mobileViewMode: LibraryViewMode = "list";
+
   return {
     libraryId,
-    ...DEFAULT_STATE
+    ...DEFAULT_STATE,
+    viewMode: isMobileViewport() ? mobileViewMode : desktopViewMode,
+    desktopViewMode,
+    mobileViewMode,
   };
+}
+
+export function resolveLibraryViewModeForViewport(
+  state: Partial<LibraryViewState>,
+  isMobile: boolean,
+): LibraryViewMode {
+  const desktopMode = normalizeViewMode(state.desktopViewMode ?? state.viewMode, "grid");
+  const mobileMode = normalizeViewMode(state.mobileViewMode, "list");
+  return isMobile ? mobileMode : desktopMode;
 }
 
 export function readLibraryViewState(libraryId = "default"): LibraryViewState {
@@ -149,10 +168,15 @@ export function sortLibraryEntries(entries: LibraryEntry[], sort: LibrarySortSta
 }
 
 function normalizeLibraryViewState(libraryId: string, value: Partial<LibraryViewState>): LibraryViewState {
+  const desktopViewMode = normalizeViewMode(value.desktopViewMode ?? value.viewMode, "grid");
+  const mobileViewMode = normalizeViewMode(value.mobileViewMode, "list");
+
   return {
     libraryId,
     browseMode: value.browseMode === "tag" ? "tag" : "folder",
-    viewMode: value.viewMode === "list" ? "list" : "grid",
+    viewMode: resolveLibraryViewModeForViewport(value, isMobileViewport()),
+    desktopViewMode,
+    mobileViewMode,
     selectedFolderPath: normalizeNullable(value.selectedFolderPath),
     selectedFolderEntryPath: normalizeNullable(value.selectedFolderEntryPath),
     selectedFolderEntryPaths: normalizeSelectionList(
@@ -174,6 +198,14 @@ function normalizeLibraryViewState(libraryId: string, value: Partial<LibraryView
     finderColumnWidths: normalizeFinderColumnWidths(value.finderColumnWidths),
     tagResultStructureMode: value.tagResultStructureMode === "directory" ? "directory" : "file"
   };
+}
+
+function normalizeViewMode(value: unknown, fallback: LibraryViewMode): LibraryViewMode {
+  return value === "grid" || value === "list" ? value : fallback;
+}
+
+function isMobileViewport(): boolean {
+  return typeof window !== "undefined" && window.matchMedia?.("(max-width: 640px)").matches === true;
 }
 
 export function normalizeFinderColumnWidths(

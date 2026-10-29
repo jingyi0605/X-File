@@ -174,10 +174,11 @@ describe("第 3 批：macOS 原生右键菜单与桌面本地动作", () => {
     render(<LibraryPage onOpenSettings={vi.fn()} platformData={desktopPlatformData} />);
 
     await userEvent.click(await screen.findByRole("button", { name: /合同\.docx/ }));
+    await userEvent.click(document.querySelector(".workbench-inspector-edge-trigger-right") as HTMLElement);
 
-    const detailPanel = screen.getByRole("complementary", { name: "详情" });
-    expect(within(detailPanel).getByText("本地镜像路径")).toBeInTheDocument();
-    expect(within(detailPanel).getByText("/Users/test/Mirror/客户资料/合同.docx")).toBeInTheDocument();
+    const detailPanel = screen.getByRole("dialog", { name: "详情" });
+    expect(await within(detailPanel).findByText("本地镜像路径")).toBeInTheDocument();
+    expect(await within(detailPanel).findByText("/Users/test/Mirror/客户资料/合同.docx")).toBeInTheDocument();
     expect(within(detailPanel).getByText("大小")).toBeInTheDocument();
     expect(within(detailPanel).getByText("更新时间")).toBeInTheDocument();
   });

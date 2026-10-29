@@ -238,7 +238,14 @@ export function useLibraryState(): LibraryState {
 
   const setViewState = useCallback((updater: LibraryViewState | ((current: LibraryViewState) => LibraryViewState)): void => {
     setViewStateState((current) => {
-      return typeof updater === "function" ? updater(current) : updater;
+      const next = typeof updater === "function" ? updater(current) : updater;
+      const isMobile = window.matchMedia?.("(max-width: 640px)").matches === true;
+      if (next.viewMode === current.viewMode) {
+        return next;
+      }
+      return isMobile
+        ? { ...next, mobileViewMode: next.viewMode }
+        : { ...next, desktopViewMode: next.viewMode };
     });
   }, []);
 
@@ -248,6 +255,22 @@ export function useLibraryState(): LibraryState {
     }, VIEW_STATE_PERSIST_DELAY_MS);
     return () => window.clearTimeout(timer);
   }, [viewState]);
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") {
+      return;
+    }
+    const media = window.matchMedia("(max-width: 640px)");
+    const syncViewMode = () => {
+      setViewStateState((current) => {
+        const viewMode = media.matches ? current.mobileViewMode : current.desktopViewMode;
+        return current.viewMode === viewMode ? current : { ...current, viewMode };
+      });
+    };
+    syncViewMode();
+    media.addEventListener?.("change", syncViewMode);
+    return () => media.removeEventListener?.("change", syncViewMode);
+  }, []);
 
   const runtimeConfig = getRuntimeConfigSnapshot().config;
   const nativeBridgeEligible = runtimeConfig.mode === "local";

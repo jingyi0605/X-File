@@ -46,8 +46,9 @@ describe("第 2 批：文件夹打开行为、目录选中与目录导航", () =
     const folder = await screen.findByRole("button", { name: /客户资料/ });
     await userEvent.click(folder);
 
+    await userEvent.click(document.querySelector(".workbench-inspector-edge-trigger-right") as HTMLElement);
     expect(await screen.findByRole("heading", { name: "客户资料" })).toBeInTheDocument();
-    const selectedFolderDetails = screen.getByRole("complementary", { name: "详情" });
+    const selectedFolderDetails = screen.getByRole("dialog", { name: "详情" });
     expect(within(selectedFolderDetails).getByRole("heading", { name: "客户资料" })).toBeInTheDocument();
     expect(within(selectedFolderDetails).getByText("文件夹")).toBeInTheDocument();
     expect(libraryApiMock.listLibraryFiles).toHaveBeenLastCalledWith(null, 200);
@@ -175,8 +176,9 @@ describe("第 2 批：文件夹打开行为、目录选中与目录导航", () =
     const rowFavorite = await screen.findByRole("button", { name: "收藏当前目录" });
     await userEvent.click(folderRow);
 
+    await userEvent.click(document.querySelector(".workbench-inspector-edge-trigger-right") as HTMLElement);
     await screen.findByRole("heading", { name: "客户资料" });
-    const detailPanel = screen.getByRole("complementary", { name: "详情" });
+    const detailPanel = screen.getByRole("dialog", { name: "详情" });
     const detailFavorite = within(detailPanel).getByRole("button", { name: "收藏当前目录" });
     expect(detailFavorite).toHaveClass("affairs-detail-action-button");
     expect(detailFavorite).toHaveTextContent("收藏");
@@ -393,7 +395,8 @@ describe("第 2 批：文件夹打开行为、目录选中与目录导航", () =
     render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
 
     await userEvent.click(await screen.findByRole("button", { name: /报价\.md/ }));
-    const detailPanel = screen.getByRole("complementary", { name: "详情" });
+    await userEvent.click(document.querySelector(".workbench-inspector-edge-trigger-right") as HTMLElement);
+    const detailPanel = screen.getByRole("dialog", { name: "详情" });
     await userEvent.click(await within(detailPanel).findByRole("button", { name: "合同" }));
     await waitFor(() => expect(libraryApiMock.listLibraryFiles).toHaveBeenLastCalledWith("客户资料/合同", 200));
   });

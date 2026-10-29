@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useEffect } from "react";
 import type { ReactElement } from "react";
 import type { LibraryState } from "../useLibraryState";
@@ -27,10 +27,28 @@ const platformData = {
   overlayTitlebar: false,
 };
 
+const defaultMatchMedia = window.matchMedia;
+
+function mockMobileViewport(): void {
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    value: (query: string) => ({
+      ...defaultMatchMedia(query),
+      matches: query.includes("(max-width: 640px)"),
+    }),
+  });
+}
+
 describe("LibraryPage 高风险交互", () => {
   beforeEach(() => {
     localStorage.clear();
     resetLibraryApiMock();
+  });
+  afterEach(() => {
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: defaultMatchMedia,
+    });
   });
 
   it("首次读取资料库状态时直接显示工作台，不闪现初始化页", async () => {
@@ -48,10 +66,52 @@ describe("LibraryPage 高风险交互", () => {
 
     resolveSnapshot?.(createLibrarySnapshot());
     expect(await screen.findByRole("tab", { name: "对象详情" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "详情" })).toBeInTheDocument();
     expect(screen.getByText("选择一个文档后，这里会显示预览、标签、路径和下载入口。"))
       .toHaveClass("affairs-detail-empty");
     expect(document.querySelector(".affairs-detail-scroll-empty"))
       .toContainElement(document.querySelector(".affairs-detail-empty"));
+
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "详情" })).not.toBeInTheDocument());
+  });
+
+  it("移动端从左缘右滑打开导航抽屉，并可向左滑关闭", async () => {
+    mockMobileViewport();
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
+
+    await screen.findByRole("button", { name: "详情" });
+    const shell = document.querySelector(".xfile-workbench-shell") as HTMLElement;
+    const sidebar = document.querySelector(".affairs-layout-sidebar") as HTMLElement;
+    expect(sidebar).toHaveAttribute("data-open", "false");
+
+    fireEvent.touchStart(shell, { touches: [{ clientX: 8, clientY: 120 }] });
+    fireEvent.touchEnd(shell, { changedTouches: [{ clientX: 90, clientY: 124 }] });
+    await waitFor(() => expect(sidebar).toHaveAttribute("data-open", "true"));
+
+    fireEvent.touchStart(shell, { touches: [{ clientX: 190, clientY: 120 }] });
+    fireEvent.touchEnd(shell, { changedTouches: [{ clientX: 80, clientY: 124 }] });
+    await waitFor(() => expect(sidebar).toHaveAttribute("data-open", "false"));
+  });
+
+  it("对象详情按需作为浮层打开，并支持移动端左滑关闭", async () => {
+    mockMobileViewport();
+    libraryApiMock.listLibraryDocuments.mockResolvedValue(
+      createDocumentList([createDocumentRecord({ documentId: "doc-detail", path: "docs/detail.md" })]),
+    );
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
+
+    const entry = await screen.findByRole("button", { name: /detail\.md/ });
+    fireEvent.pointerDown(entry, { button: 0 });
+    await userEvent.click(screen.getByRole("button", { name: "详情" }));
+    const dialog = await screen.findByRole("dialog", { name: "详情" });
+    expect(dialog).toHaveTextContent("detail.md");
+
+    fireEvent.touchStart(dialog, { touches: [{ clientX: 220, clientY: 180 }] });
+    fireEvent.touchEnd(dialog, { changedTouches: [{ clientX: 120, clientY: 182 }] });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "详情" })).not.toBeInTheDocument());
   });
 
   it("文档详情保留对象详情与预览，不再显示文件助手或会话入口", async () => {
@@ -215,6 +275,8 @@ describe("LibraryPage 高风险交互", () => {
     const { LibraryPage } = await import("../LibraryPage");
     render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
 
+    await userEvent.click(await screen.findByRole("button", { name: "详情" }));
+    fireEvent.pointerDown(await screen.findByRole("button", { name: /B\.md/ }), { button: 0 });
     const documentB = await screen.findByRole("button", { name: /B\.md/ });
     const documentC = screen.getByRole("button", { name: /C\.md/ });
 
@@ -565,6 +627,8 @@ function createLibraryStateMock(
       libraryId: "library-test",
       browseMode: "folder",
       viewMode: "grid",
+      desktopViewMode: "grid",
+      mobileViewMode: "list",
       selectedFolderPath: null,
       selectedFolderEntryPath: null,
       selectedFolderEntryPaths: [],

@@ -535,49 +535,24 @@ describe("第 10 批：文档与文件夹标签分配、推荐标签和任务进
     expect(screen.getByRole("dialog", { name: "分配标签" })).toBeInTheDocument();
   });
 
-  it("弹窗分配标签后右侧对象详情自动刷新为最新标签", async () => {
-    const tag = createTagDetail({ id: "tag-sync", path: "项目/联动刷新", rootType: "项目" });
+  it("文档行属性入口打开对应对象详情浮层", async () => {
     libraryApiMock.listLibraryDocuments.mockResolvedValue(
       createDocumentList([createDocumentRecord({ documentId: "doc-sync", path: "docs/联动.md" })]),
     );
-    libraryApiMock.listLibraryTagDetails.mockResolvedValue([tag]);
-    libraryApiMock.getDocumentTagDetails.mockResolvedValue(
-      createDocumentTagDetails({ documentId: "doc-sync", path: "docs/联动.md" }),
-    );
-    libraryApiMock.saveDocumentTags.mockResolvedValue(createDocumentTagDetails({
+    let currentDetails = createDocumentTagDetails({
       documentId: "doc-sync",
       path: "docs/联动.md",
-      manualTagIds: [tag.id],
-      resolvedTags: [resolvedTag(tag)],
-    }));
+    });
+    libraryApiMock.getDocumentTagDetails.mockImplementation(async () => currentDetails);
 
     const { LibraryPage } = await import("../LibraryPage");
     render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
 
-    // 右键选中后右侧对象详情先处于“还没有分配标签”状态
     fireEvent.contextMenu(await screen.findByRole("button", { name: /联动\.md/ }), { clientX: 10, clientY: 10 });
-    const detail = document.querySelector(".affairs-detail-panel");
-    expect(detail).not.toBeNull();
-    await within(detail as HTMLElement).findByText("还没有分配标签。");
-
-    // 弹窗里分配标签，保存接口之后重新拉取详情会返回已分配结果
-    await userEvent.click(await screen.findByRole("menuitem", { name: "标签" }));
-    const tagDialog = await screen.findByRole("dialog", { name: "分配标签" });
-    libraryApiMock.getDocumentTagDetails.mockResolvedValue(createDocumentTagDetails({
-      documentId: "doc-sync",
-      path: "docs/联动.md",
-      manualTagIds: [tag.id],
-      resolvedTags: [resolvedTag(tag)],
-    }));
-    await userEvent.type(within(tagDialog).getByLabelText("添加标签"), "项目/联动刷新");
-    await userEvent.keyboard("{Enter}");
-
-    await waitFor(() => {
-      expect(screen.queryByRole("dialog", { name: "分配标签" })).not.toBeInTheDocument();
-    });
-    await waitFor(() => {
-      expect(within(detail as HTMLElement).getByText("项目/联动刷新")).toBeInTheDocument();
-    });
+    await userEvent.click(await screen.findByRole("menuitem", { name: "属性" }));
+    const detail = await screen.findByRole("dialog", { name: "详情" });
+    await within(detail).findByRole("heading", { name: "联动.md" });
+    expect(await within(detail).findByLabelText("添加标签")).toBeInTheDocument();
   });
 
   it("创建并分配入口只保留单行标签，不再显示底部备注说明", async () => {
@@ -593,6 +568,8 @@ describe("第 10 批：文档与文件夹标签分配、推荐标签和任务进
     const { LibraryPage } = await import("../LibraryPage");
     render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
 
+    fireEvent.contextMenu(await screen.findByRole("button", { name: /创建\.md/ }), { clientX: 10, clientY: 10 });
+    await userEvent.click(await screen.findByRole("menuitem", { name: "属性" }));
     await openDocumentTagDialog("创建.md");
     const dialog = screen.getByRole("dialog", { name: "分配标签" });
     await userEvent.type(within(dialog).getByLabelText("添加标签"), "电力");
