@@ -5288,16 +5288,12 @@ function LibraryDetail({
         className="workbench-auxiliary-header"
         aria-label={t("libraryDetails")}
       >
-        <div className="workbench-info-tabs affairs-auxiliary-tabs" role="tablist" aria-label={t("libraryDetails")}>
-          <button
-            type="button"
-            className="active"
-            role="tab"
-            aria-selected={true}
-          >
-            {t("libraryObjectDetail")}
-          </button>
-        </div>
+        <div
+          className="workbench-auxiliary-header-drag-spacer"
+          aria-hidden="true"
+          data-window-drag-handle={overlayMacOsTitlebar ? "xfile-detail-header-spacer" : undefined}
+          data-tauri-drag-region={overlayMacOsTitlebar ? "" : undefined}
+        />
         <button
           type="button"
           className="affairs-detail-close secondary-button"
@@ -5307,12 +5303,6 @@ function LibraryDetail({
         >
           {renderCloseIcon()}
         </button>
-        <div
-          className="workbench-auxiliary-header-drag-spacer"
-          aria-hidden="true"
-          data-window-drag-handle={overlayMacOsTitlebar ? "xfile-detail-header-spacer" : undefined}
-          data-tauri-drag-region={overlayMacOsTitlebar ? "" : undefined}
-        />
       </header>
       {detailPending ? (
         <LibraryDetailSkeleton />

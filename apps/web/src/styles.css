@@ -11026,6 +11026,12 @@ input[type="range"] {
   flex: 0 0 auto;
 }
 
+@media (min-width: 641px) {
+  .affairs-detail-panel.library-detail .workbench-auxiliary-header {
+    display: none;
+  }
+}
+
 .library-entry-details-trigger {
   display: inline-flex;
   width: var(--control-height-md);
