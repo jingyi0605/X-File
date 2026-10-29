@@ -5407,7 +5407,7 @@ function LibraryDetail({
             <dl className="affairs-detail-meta-list">
               <div>
                 <dt>{t("libraryMetaPath")}</dt>
-                <dd>
+                <dd className="affairs-detail-path-value">
                   <DetailPathRow
                     path={selected.path}
                     onSelectFolder={library.selectFolder}
@@ -9229,17 +9229,26 @@ function DetailPathRow({
         const isFileName = index === segments.length - 1;
         return (
           <Fragment key={currentPath}>
-            {index > 0 ? <span className="detail-path-separator">/</span> : null}
             {isFileName ? (
               <span>{segment}</span>
             ) : (
-              <button
-                type="button"
-                className="affairs-detail-path-segment"
-                onClick={() => onSelectFolder(currentPath)}
-              >
-                {segment}
-              </button>
+              <span className="detail-path-segment-group">
+                <span
+                  role="button"
+                  tabIndex={0}
+                  className="affairs-detail-path-segment"
+                  onClick={() => onSelectFolder(currentPath)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      onSelectFolder(currentPath);
+                    }
+                  }}
+                >
+                  {segment}
+                </span>
+                <span className="detail-path-separator"> / </span>
+              </span>
             )}
           </Fragment>
         );

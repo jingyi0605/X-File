@@ -2388,10 +2388,18 @@ html[data-workbench-finder-column-resizing="true"] * {
 }
 
 .detail-path-segments {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px;
+  display: block;
+  max-width: 100%;
+  line-height: inherit;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.detail-path-segment-group {
+  display: inline;
+  white-space: normal;
 }
 
 .detail-path-separator {
@@ -2460,6 +2468,7 @@ html[data-workbench-finder-column-resizing="true"] * {
 
 .affairs-detail-summary-toggle,
 .affairs-detail-path-segment {
+  display: inline;
   width: fit-content;
   border: 0;
   background: transparent;
@@ -2468,6 +2477,12 @@ html[data-workbench-finder-column-resizing="true"] * {
   font-weight: 700;
   cursor: pointer;
   padding: 0;
+  white-space: normal;
+}
+
+.affairs-detail-path-segment:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .affairs-detail-summary-toggle:hover,
@@ -11030,6 +11045,10 @@ input[type="range"] {
   .affairs-detail-panel.library-detail .workbench-auxiliary-header {
     display: none;
   }
+}
+
+.affairs-detail-meta-list dd.affairs-detail-path-value {
+  text-align: left;
 }
 
 .library-entry-details-trigger {
