@@ -15,6 +15,13 @@ const { invokeMock, pptxRenderMock, docxRenderMock, pdfRenderMock } = vi.hoisted
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
+vi.mock("@fortune-sheet/react", () => ({
+  Workbook: ({ data }: { data: Array<{ name?: string; celldata?: unknown[] }> }) => (
+    <div data-testid="fortune-sheet-mock" data-cell-count={data[0]?.celldata?.length ?? 0}>
+      {data[0]?.name ?? ""}
+    </div>
+  ),
+}));
 vi.mock("docx-preview", () => ({
   renderAsync: (...args: unknown[]) => {
     docxRenderMock(...args);
@@ -30,6 +37,15 @@ vi.mock("docx-preview", () => ({
     cell.textContent = "North";
     table.appendChild(cell);
     body.appendChild(table);
+    const wrapper = document.createElement("div");
+    wrapper.className = "xfile-docx-wrapper";
+    Object.defineProperty(wrapper, "clientWidth", { configurable: true, value: 400 });
+    const page = document.createElement("section");
+    page.className = "xfile-docx";
+    Object.defineProperty(page, "offsetWidth", { configurable: true, value: 600 });
+    Object.defineProperty(page, "offsetHeight", { configurable: true, value: 800 });
+    wrapper.appendChild(page);
+    body.appendChild(wrapper);
     return Promise.resolve();
   },
 }));
@@ -48,6 +64,7 @@ vi.mock("pdfjs-dist", () => ({
           },
         });
       },
+      destroy: pdfRenderMock.destroy,
     }),
     destroy: pdfRenderMock.destroy,
   })),
@@ -84,6 +101,13 @@ function createXlsxFixture(): Uint8Array {
   XLSX.utils.book_append_sheet(workbook, summary, "Summary");
   XLSX.utils.book_append_sheet(workbook, details, "Details");
   return new Uint8Array(XLSX.write(workbook, { type: "array", bookType: "xlsx" }) as ArrayBuffer);
+}
+
+function createXlsFixture(): Uint8Array {
+  const sheet = XLSX.utils.aoa_to_sheet([["Title", "Total"], ["Legacy", 128]]);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, sheet, "Legacy");
+  return new Uint8Array(XLSX.write(workbook, { type: "array", bookType: "xls" }) as ArrayBuffer);
 }
 
 function createDocxFixture(): Uint8Array {
@@ -138,9 +162,49 @@ describe("OfficePreview", () => {
 
     expect(await screen.findByRole("cell", { name: "FY 2026" })).toBeInTheDocument();
     expect(screen.getByRole("cell", { name: "$420.00" })).toBeInTheDocument();
+    expect(await screen.findByTestId("fortune-sheet-mock")).toHaveAttribute("data-cell-count", "5");
     expect(screen.getByRole("row", { name: /3/ }).querySelector("th[scope='row']")).toHaveTextContent("3");
     fireEvent.click(screen.getByRole("tab", { name: "Details" }));
     expect(await screen.findByRole("cell", { name: "Revenue" })).toBeInTheDocument();
+  });
+
+  it("can render the detail-sidebar Office surface without the toolbar", async () => {
+    vi.mocked(fetch).mockResolvedValue(new Response(Uint8Array.from(createXlsxFixture()).buffer as ArrayBuffer));
+
+    render(
+      <OfficePreview
+        fileName="forecast.xlsx"
+        relativePath="forecast.xlsx"
+        previewUrl="/forecast.xlsx"
+        localFilePath={null}
+        size={1024}
+        hideToolbar
+        className="library-detail-preview-shell"
+      />,
+    );
+
+    expect(await screen.findByRole("cell", { name: "FY 2026" })).toBeInTheDocument();
+    expect(document.querySelector(".office-preview-toolbar")).toBeNull();
+    expect(document.querySelector(".office-preview-shell.library-detail-preview-shell")).toBeInTheDocument();
+  });
+
+  it("opens legacy XLS files with the same read-only spreadsheet renderer", async () => {
+    vi.mocked(fetch).mockResolvedValue(new Response(Uint8Array.from(createXlsFixture()).buffer as ArrayBuffer));
+
+    render(<OfficePreview fileName="legacy.xls" relativePath="legacy.xls" previewUrl="/legacy.xls" localFilePath={null} size={1024} />);
+
+    expect(await screen.findByRole("cell", { name: "Legacy" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Legacy" })).toBeInTheDocument();
+  });
+
+  it("renders CSV content as a literal read-only grid", async () => {
+    const { DelimitedTextPreview } = await import("../office-preview-content");
+
+    render(<DelimitedTextPreview content={'Name,Note\n"Alpha, Inc.","00123"'} delimiter="," />);
+
+    expect(await screen.findByRole("cell", { name: "Alpha, Inc." })).toBeInTheDocument();
+    expect(screen.getByRole("cell", { name: "00123" })).toBeInTheDocument();
+    expect(await screen.findByTestId("fortune-sheet-mock")).toHaveAttribute("data-cell-count", "4");
   });
 
   it("uses the page-layout DOCX renderer for headings, paragraphs, and tables", async () => {
@@ -150,12 +214,45 @@ describe("OfficePreview", () => {
     expect(await screen.findByRole("heading", { name: "Quarterly report" })).toBeInTheDocument();
     expect(screen.getByText("Readable paragraph")).toBeInTheDocument();
     expect(screen.getByRole("cell", { name: "North" })).toBeInTheDocument();
+    const renderedPage = document.querySelector<HTMLElement>("section.xfile-docx");
+    expect(renderedPage?.style.transform).toBe("scale(0.6666666666666666)");
+    expect(renderedPage?.style.marginBottom).toBe("-266.6666666666667px");
     expect(docxRenderMock).toHaveBeenCalledWith(
       expect.any(Uint8Array),
       expect.any(HTMLElement),
       expect.any(HTMLElement),
-      expect.objectContaining({ breakPages: true, renderAltChunks: false }),
+      expect.objectContaining({
+        breakPages: true,
+        ignoreWidth: false,
+        ignoreHeight: false,
+        renderAltChunks: false,
+      }),
     );
+  });
+
+  it("prefers continuous PDF rendering when the optional local converter is installed", async () => {
+    (window as typeof window & { __TAURI_INTERNALS__?: object }).__TAURI_INTERNALS__ = {};
+    const getContext = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      setTransform: vi.fn(),
+    } as unknown as CanvasRenderingContext2D);
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "native_office_converter_status") {
+        return { supported: true, installed: true, busy: false, version: "0.2.3", platform: "darwin-arm64" };
+      }
+      if (command === "native_convert_office_preview") {
+        return { pdfBase64: "JVBERi0x", pageCount: 2, elapsedMs: 100, cached: false, missingFonts: [] };
+      }
+      return undefined;
+    });
+
+    const { unmount } = render(<OfficePreview fileName="report.docx" relativePath="report.docx" previewUrl="/report.docx" localFilePath="/Library/report.docx" size={1024} />);
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("native_convert_office_preview", { relativePath: "report.docx" }));
+    expect(await screen.findByLabelText("report.docx, 1")).toBeInTheDocument();
+    await waitFor(() => expect(pdfRenderMock.render).toHaveBeenCalled());
+    expect(docxRenderMock).not.toHaveBeenCalled();
+    unmount();
+    getContext.mockRestore();
   });
 
   it("renders PDF pages locally with PDF.js and supports page navigation", async () => {
@@ -166,11 +263,14 @@ describe("OfficePreview", () => {
     const { unmount } = render(<LibraryPdfPreview path="manual.pdf" previewUrl="/manual.pdf" />);
 
     expect(await screen.findByLabelText("manual.pdf, 1")).toBeInTheDocument();
-    await waitFor(() => expect(pdfRenderMock.render).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(pdfRenderMock.render).toHaveBeenCalledTimes(2));
+    const renderedCanvases = Array.from(document.querySelectorAll<HTMLCanvasElement>(".file-viewer-pdf-continuous-page canvas"));
+    expect(renderedCanvases.length).toBe(2);
     fireEvent.click(screen.getByRole("button", { name: "下一页" }));
     await waitFor(() => expect(pdfRenderMock.render).toHaveBeenCalledTimes(2));
     expect(screen.getByLabelText("manual.pdf, 2")).toBeInTheDocument();
     unmount();
+    expect(renderedCanvases.every((canvas) => canvas.width === 0 && canvas.height === 0)).toBe(true);
     getContext.mockRestore();
   });
 

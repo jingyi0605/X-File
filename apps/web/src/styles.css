@@ -90,6 +90,9 @@
   --affairs-document-bg: linear-gradient(180deg, #ffffff 0%, #dbe4ef 100%);
   --affairs-document-border: rgba(148, 163, 184, 0.48);
   --affairs-document-shadow: 0 1px 2px rgba(15, 23, 42, 0.14);
+  --document-page-text: #1c1c1e;
+  --document-page-surface: #ffffff;
+  --document-page-muted: #54545a;
   --affairs-document-fold-bg: linear-gradient(
     135deg,
     rgba(255, 255, 255, 1) 0%,
@@ -2360,9 +2363,11 @@ html[data-workbench-finder-column-resizing="true"] * {
 
 .affairs-preview-block {
   display: flex;
-  flex: 1 1 auto;
+  flex: 1 1 0;
   flex-direction: column;
+  min-height: 0;
   margin-bottom: 0;
+  overflow: hidden;
 }
 
 .affairs-detail-hero-block {
@@ -3223,8 +3228,10 @@ mark {
 .library-detail-preview-shell {
   display: flex;
   flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
   flex-direction: column;
+  overflow: hidden;
   border-top: 1px solid color-mix(in srgb, var(--panel-separator) 86%, transparent);
 }
 
@@ -6647,6 +6654,9 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
   height: calc(100vh - 48px);
   max-height: calc(100vh - 48px);
   min-height: calc(100vh - 48px);
+  height: calc(100dvh - 48px);
+  max-height: calc(100dvh - 48px);
+  min-height: calc(100dvh - 48px);
 }
 
 .file-viewer-modal.library-file-viewer-modal.is-resizable {
@@ -8487,6 +8497,15 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
   background: var(--viewer-surface);
 }
 
+.office-preview-renderer {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .office-preview-toolbar {
   display: flex;
   align-items: center;
@@ -8557,6 +8576,14 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
   color: var(--text-primary);
 }
 
+.office-preview-document,
+.office-preview-workbook,
+.office-preview-slides {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
 .office-preview-document {
   justify-items: center;
 }
@@ -8584,12 +8611,17 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
   margin: 0 auto var(--space-4);
   overflow: visible;
   border-radius: var(--radius-control);
-  background: var(--bg-surface);
+  background: var(--document-page-surface);
   box-shadow: var(--glass-panel-shadow);
-  color: var(--text-primary);
+  color: var(--document-page-text) !important;
   font-family: var(--font-sans);
   font-size: 15px;
   line-height: 1.65;
+}
+
+.library-detail-preview-shell .office-preview-docx-body .xfile-docx-wrapper {
+  align-items: flex-start;
+  overflow-x: hidden;
 }
 
 .office-preview-docx-body .xfile-docx-wrapper > section.xfile-docx > article {
@@ -8820,8 +8852,10 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
 
 .library-detached-preview-page {
   display: flex;
+  height: 100dvh;
   min-width: 0;
   min-height: 100vh;
+  max-height: 100dvh;
   flex-direction: column;
   overflow: hidden;
   background: var(--bg-primary);
@@ -10096,16 +10130,67 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
   height: 100%;
 }
 
+.file-viewer-modal-body.library-file-viewer-body > .file-viewer-office-preview {
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.file-viewer-office-preview .office-preview-document,
+.file-viewer-office-preview .office-preview-workbook,
+.file-viewer-office-preview .office-preview-slides {
+  padding: 0;
+}
+
+.file-viewer-office-preview .office-preview-docx-body .xfile-docx-wrapper {
+  padding: 0;
+  background: transparent;
+}
+
 .file-viewer-modal.library-file-viewer-modal.is-office-viewer {
   width: calc(100vw - 48px);
   max-width: calc(100vw - 48px);
   height: calc(100vh - 48px);
   max-height: calc(100vh - 48px);
   min-height: calc(100vh - 48px);
+  height: calc(100dvh - 48px);
+  max-height: calc(100dvh - 48px);
+  min-height: calc(100dvh - 48px);
 }
 
 .file-viewer-modal.library-file-viewer-modal.is-office-viewer .desktop-modal-header {
   padding: 14px 18px 12px;
+}
+
+body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"]
+  .desktop-modal-layer:has(.file-viewer-modal.library-file-viewer-modal) {
+  padding: calc(var(--modal-inset) + var(--desktop-macos-titlebar-height, 28px))
+    var(--modal-inset) var(--modal-inset);
+}
+
+body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"]
+  .file-viewer-modal.library-file-viewer-modal {
+  max-height: calc(
+    100dvh - var(--desktop-macos-titlebar-height, 28px) - 2 * var(--modal-inset)
+  );
+}
+
+body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"]
+  .file-viewer-modal.library-file-viewer-modal.is-office-viewer {
+  height: calc(
+    100dvh - var(--desktop-macos-titlebar-height, 28px) - 2 * var(--modal-inset)
+  );
+  max-height: calc(
+    100dvh - var(--desktop-macos-titlebar-height, 28px) - 2 * var(--modal-inset)
+  );
+  min-height: calc(
+    100dvh - var(--desktop-macos-titlebar-height, 28px) - 2 * var(--modal-inset)
+  );
 }
 
 /* 迁移 CodingNS Markdown 基础美化，供文件查看器 Markdown 查看模式使用。 */
@@ -11391,6 +11476,8 @@ input[type="range"] {
 
 .affairs-preview-block {
   gap: var(--space-3);
+  flex-shrink: 1;
+  min-width: 0;
   min-height: var(--preview-min-height);
 }
 
@@ -11399,11 +11486,35 @@ input[type="range"] {
 .file-viewer-media-shell.library-detail-preview-shell,
 .file-viewer-pdf-shell.library-detail-preview-shell,
 .office-preview-shell.library-detail-preview-shell {
+  min-height: 0;
   padding: var(--space-3);
   border: 1px solid var(--glass-control-border);
   border-radius: var(--radius-control);
   background: var(--glass-control-surface);
   box-shadow: var(--glass-panel-shadow);
+}
+
+.affairs-preview-block > .office-preview-shell.library-detail-preview-shell {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.affairs-preview-block .office-preview-document,
+.affairs-preview-block .office-preview-workbook,
+.affairs-preview-block .office-preview-slides {
+  padding: 0;
+}
+
+.affairs-preview-block .office-preview-docx-body .xfile-docx-wrapper {
+  padding: 0;
+  background: transparent;
 }
 
 .affairs-stage-empty,
