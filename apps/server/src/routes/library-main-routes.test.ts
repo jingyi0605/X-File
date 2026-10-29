@@ -93,6 +93,13 @@ test("文档库主路由、标签路由和 server state 都已注册", async () 
     assert.equal(savedFavorites.statusCode, 200);
     assert.equal(savedFavorites.json().items[0]?.path, "主题/路由设计");
 
+    const backup = await app.inject({ method: "GET", url: "/api/library/backup" });
+    assert.equal(backup.statusCode, 200, backup.body);
+    assert.equal(backup.json().format, "x-file-library-backup");
+    const importedBackup = await app.inject({ method: "POST", url: "/api/library/backup", payload: backup.json() });
+    assert.equal(importedBackup.statusCode, 200, importedBackup.body);
+    assert.equal(importedBackup.json().imported, true);
+
     const deletedTag = await app.inject({ method: "DELETE", url: `/api/library/tags/${tagId}` });
     assert.equal(deletedTag.statusCode, 200);
     assert.equal(deletedTag.json().deletedTagIds[0], tagId);

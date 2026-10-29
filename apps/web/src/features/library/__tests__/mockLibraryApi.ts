@@ -20,6 +20,7 @@ export const libraryApiMock = {
   downloadLibraryFile: vi.fn(),
   getHttpServerState: vi.fn(),
   getLibraryBinding: vi.fn(),
+  getLibraryBackup: vi.fn(),
   getLibraryConfig: vi.fn(),
   getDocumentTagDetails: vi.fn(),
   getFolderTagDetails: vi.fn(),
@@ -34,6 +35,7 @@ export const libraryApiMock = {
   listenLibraryTaskUpdates: vi.fn(),
   operateLibraryFile: vi.fn(),
   requestLibraryRefresh: vi.fn(),
+  restoreLibraryBackup: vi.fn(),
   requestLibraryTagRecompute: vi.fn(),
   saveHttpServerState: vi.fn(),
   saveDocumentTags: vi.fn(),
@@ -53,6 +55,17 @@ export function resetLibraryApiMock(): void {
   libraryApiMock.getLibrarySnapshot.mockResolvedValue(createLibrarySnapshot());
   libraryApiMock.getLibraryBinding.mockResolvedValue(createLibraryBinding());
   libraryApiMock.getLibraryConfig.mockResolvedValue(createLibraryConfig());
+  libraryApiMock.getLibraryBackup.mockResolvedValue({
+    format: "x-file-library-backup", version: 1, createdAt: "2026-10-29T00:00:00.000Z",
+    library: { rootName: "Documents", directories: [] },
+    tags: { tags: [], tagRules: [], documentTags: [], folderTags: [] },
+    favorites: [], index: { catalog: null, activeFileStateSnapshot: null, indexStateSnapshot: null, runtimeStatus: null },
+  });
+  libraryApiMock.restoreLibraryBackup.mockResolvedValue({
+    imported: true, tagCount: 0, documentBindingCount: 0, folderBindingCount: 0, documentCount: 0,
+    refresh: { accepted: true, libraryId: "library-test", reason: "library_backup_imported", targetPath: null,
+      taskId: "task-test", deduped: false, status: createIndexStatus({ state: "queued" }) },
+  });
   libraryApiMock.getHttpServerState.mockResolvedValue({
     enabled: false,
     host: "127.0.0.1",

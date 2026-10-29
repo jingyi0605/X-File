@@ -4,6 +4,8 @@ import path from "node:path";
 
 import type {
   LibraryBinding,
+  LibraryBackup,
+  LibraryBackupImportResult,
   LibraryDownload,
   LibraryDocumentList,
   LibraryFavoriteRecord,
@@ -34,6 +36,7 @@ import { LibraryFavoritesStore } from "../storage/library-favorites-store.js";
 import { TagStore } from "../storage/tag-store.js";
 import { LibraryError } from "./library-errors.js";
 import { LibraryIndexService } from "./index-service.js";
+import { LibraryBackupService } from "./library-backup-service.js";
 import { TaskManager } from "../tasks/task-manager.js";
 
 const DEFAULT_LIBRARY_ID = "default";
@@ -506,6 +509,24 @@ export class LibraryService {
     return {
       items: this.favoritesStore.write(binding.libraryId, binding.rootDir, Array.isArray(input.favorites) ? input.favorites : [])
     };
+  }
+
+  createBackup(): LibraryBackup {
+    return new LibraryBackupService(
+      this.bindingStore,
+      this.tagStore,
+      this.favoritesStore,
+      this.indexService,
+    ).createBackup();
+  }
+
+  importBackup(input: unknown): LibraryBackupImportResult {
+    return new LibraryBackupService(
+      this.bindingStore,
+      this.tagStore,
+      this.favoritesStore,
+      this.indexService,
+    ).importBackup(input);
   }
 
   private readFavorites(binding: LibraryBinding): LibraryFavoriteRecord[] {

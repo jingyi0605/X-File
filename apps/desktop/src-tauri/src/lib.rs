@@ -1594,6 +1594,22 @@ fn run_native_library_worker_mode(
                 target_paths: payload.target_paths,
             };
             let index_result = run_native_index_worker(index_request.clone())?;
+            if reason == "library_backup_imported" {
+                let binding = read_local_library_binding()?
+                    .ok_or_else(|| "文档库绑定不存在，无法重算恢复的标签".to_owned())?;
+                let tag_store = native_core::tag_core::read_local_library_tags_store(&binding)?;
+                let plan = native_core::tag_core::prepare_tag_assignment(
+                    &binding,
+                    &native_core::tag_core::TagAssignmentScope::Full,
+                    false,
+                )?;
+                native_core::tag_core::run_tag_assignment_core(
+                    &binding,
+                    &tag_store,
+                    plan,
+                    "library_backup_imported",
+                )?;
+            }
             task_center::stage("export_snapshot");
             let dirty_scope = index_result["dirtyScope"].clone();
             let export_result = run_native_export_worker(NativeExportRequest {
@@ -1937,6 +1953,29 @@ fn native_get_library_config() -> Result<Value, String> {
 fn native_save_library_config(request: NativeSaveLibraryConfigRequest) -> Result<Value, String> {
     serde_json::to_value(save_local_library_config(request)?)
         .map_err(|error| format!("序列化本地 config 失败：{error}"))
+}
+
+#[tauri::command]
+async fn native_export_library_backup() -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(native_core::backup::export_library_backup)
+        .await
+        .map_err(|error| format!("备份导出任务异常：{error}"))?
+}
+
+#[tauri::command]
+fn native_write_library_backup(path: String, content: String) -> Result<Value, String> {
+    native_core::backup::write_library_backup_file(&path, &content)?;
+    Ok(Value::Bool(true))
+}
+
+#[tauri::command]
+async fn native_import_library_backup(app: AppHandle, backup: Value) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = native_core::backup::import_library_backup(backup, Some(app))?;
+        serde_json::to_value(result).map_err(|error| format!("序列化备份恢复结果失败：{error}"))
+    })
+    .await
+    .map_err(|error| format!("备份导入任务异常：{error}"))?
 }
 
 #[tauri::command]

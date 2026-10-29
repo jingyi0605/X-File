@@ -108,6 +108,17 @@ export class LibraryController {
     reply.send(this.libraryService.updateFavorites(request.body ?? {}));
   };
 
+  readonly exportBackup = async (_request: FastifyRequest, reply: FastifyReply): Promise<void> => {
+    reply.send(this.libraryService.createBackup());
+  };
+
+  readonly importBackup = async (
+    request: FastifyRequest<{ Body: unknown }>,
+    reply: FastifyReply
+  ): Promise<void> => {
+    reply.send(this.libraryService.importBackup(request.body));
+  };
+
   readonly servePublicPreview = async (
     request: FastifyRequest<{ Params: PublicPreviewParams }>,
     reply: FastifyReply

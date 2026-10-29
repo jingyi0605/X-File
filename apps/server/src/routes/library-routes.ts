@@ -30,6 +30,8 @@ export async function registerLibraryRoutes(
   app.post("/api/library/ops", wrap(libraryController.operateFile));
   app.post("/api/library/refresh", wrap(libraryController.requestRefresh));
   app.put("/api/library/favorites", wrap(libraryController.updateFavorites));
+  app.get("/api/library/backup", wrap(libraryController.exportBackup));
+  app.post("/api/library/backup", wrap(libraryController.importBackup));
   app.get("/api/library/preview-file/:token/*", libraryController.servePublicPreview);
   app.get("/preview/library-files/:token/*", libraryController.servePublicPreview);
 }

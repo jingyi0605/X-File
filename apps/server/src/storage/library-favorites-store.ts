@@ -28,6 +28,20 @@ export class LibraryFavoritesStore {
     this.filePath = path.join(resolveDataDir(options.dataDir), STORE_FILE_NAME);
   }
 
+  createCheckpoint(): Buffer | null {
+    return fs.existsSync(this.filePath) ? fs.readFileSync(this.filePath) : null;
+  }
+
+  restoreCheckpoint(checkpoint: Buffer | null): void {
+    if (checkpoint === null) {
+      fs.rmSync(this.filePath, { force: true });
+      return;
+    }
+    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+    fs.writeFileSync(this.filePath, checkpoint);
+  }
+
+
   read(libraryId: string, rootDir: string): LibraryFavoriteRecord[] {
     const all = this.readAll();
     return normalizeFavorites(all[storeKey(libraryId, rootDir)]?.favorites ?? []);

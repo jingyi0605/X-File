@@ -2,6 +2,8 @@ import type {
   HttpServerState,
   HostDirectoryBrowseResult,
   LibraryBinding,
+  LibraryBackup,
+  LibraryBackupImportResult,
   LibraryConfig,
   LibraryDirectoryStatus,
   LibraryDocumentList,
@@ -32,7 +34,9 @@ import {
   browseNativeHostDirectories,
   createNativeLibraryTag,
   deleteNativeLibraryTag,
+  exportNativeLibraryBackup,
   fetchNativeLibrarySnapshot,
+  importNativeLibraryBackup,
   getNativeDocumentTagDetails,
   getNativeFolderTagDetails,
   getNativeLibraryPreview,
@@ -128,6 +132,50 @@ export async function saveLibraryConfig(
     }
   }
   return putJson<LibraryConfig>("/api/library/config", input);
+}
+
+export async function getLibraryBackup(): Promise<LibraryBackup> {
+  if (getRuntimeConfigSnapshot().config.mode === "local") {
+    const native = await exportNativeLibraryBackup();
+    if (native) return native;
+  }
+  return apiRequest<LibraryBackup>("/api/library/backup");
+}
+
+export async function restoreLibraryBackup(input: unknown): Promise<LibraryBackupImportResult> {
+  if (getRuntimeConfigSnapshot().config.mode === "local") {
+    const native = await importNativeLibraryBackup(input as LibraryBackup);
+    if (native) {
+      return {
+        imported: native.imported,
+        tagCount: native.tagCount,
+        documentBindingCount: native.documentBindingCount,
+        folderBindingCount: native.folderBindingCount,
+        documentCount: native.documentCount,
+        refresh: {
+          accepted: native.refreshScheduled,
+          libraryId: "",
+          reason: "library_backup_imported",
+          targetPath: null,
+          taskId: "",
+          deduped: false,
+          status: {
+            state: native.refreshScheduled ? "queued" : "stale",
+            dirtyReasons: ["library_backup_imported"],
+            lastRequestedAt: null,
+            lastStartedAt: null,
+            lastCompletedAt: null,
+            lastFailedAt: null,
+            nextAllowedAt: null,
+            runningTaskId: null,
+            runningStage: null,
+            errorSummary: native.refreshError,
+          },
+        },
+      };
+    }
+  }
+  return postJson<LibraryBackupImportResult>("/api/library/backup", input);
 }
 
 export function getLibrarySnapshot(): Promise<LibrarySnapshot> {

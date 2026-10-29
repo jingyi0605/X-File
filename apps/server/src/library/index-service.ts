@@ -45,7 +45,8 @@ export class LibraryIndexService {
     private readonly taskManager: TaskManager,
     private readonly runtimeStore: IndexRuntimeStore,
     runtimeStatusStore?: LibraryRuntimeStatusStore,
-    private readonly runLibraryIndexOnceOverride?: RunLibraryIndexOnce
+    private readonly runLibraryIndexOnceOverride?: RunLibraryIndexOnce,
+    private readonly afterBackupImportIndex?: (binding: LibraryBinding) => void | Promise<void>
   ) {
     this.runtimeStatusStore = runtimeStatusStore ?? new LibraryRuntimeStatusStore();
     this.registerTasks();
@@ -190,6 +191,9 @@ export class LibraryIndexService {
                 context.setProgress(progress);
               }
             });
+            if (work.reason === "library_backup_imported") {
+              await this.afterBackupImportIndex?.(work.binding);
+            }
             work = this.pending.get(input.binding.rootDir);
           }
 

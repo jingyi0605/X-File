@@ -78,6 +78,38 @@ export interface SaveLibraryConfigInput {
   folderOpenBehavior?: LibraryFolderOpenBehavior;
 }
 
+export interface LibraryBackup {
+  format: "x-file-library-backup";
+  version: 1;
+  createdAt: string;
+  library: {
+    rootName: string;
+    directories: string[];
+  };
+  tags: {
+    tags: unknown[];
+    tagRules: unknown[];
+    documentTags: unknown[];
+    folderTags: unknown[];
+  };
+  favorites: LibraryFavoriteRecord[];
+  index: {
+    catalog: unknown | null;
+    activeFileStateSnapshot: unknown | null;
+    indexStateSnapshot: unknown | null;
+    runtimeStatus: null;
+  };
+}
+
+export interface LibraryBackupImportResult {
+  imported: true;
+  tagCount: number;
+  documentBindingCount: number;
+  folderBindingCount: number;
+  documentCount: number;
+  refresh: LibraryRefreshResult;
+}
+
 export interface LibraryIndexStatus {
   state: LibraryIndexState;
   dirtyReasons: string[];

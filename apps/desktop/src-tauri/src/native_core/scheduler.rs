@@ -41,17 +41,30 @@ impl<T> RootScheduler<T> {
 }
 
 /// 系统文件锁覆盖独立 CLI 进程，进程退出时由操作系统释放。
-pub fn lock_root(root: &str) -> Result<File, String> {
+fn open_root_lock(root: &str) -> Result<File, String> {
     let directory = runtime_dir(root);
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
-    let file = OpenOptions::new()
+    OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
         .open(directory.join("worker.lock"))
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.to_string())
+}
+
+/// 获取根目录锁并等待其他 worker 完成。
+pub fn lock_root(root: &str) -> Result<File, String> {
+    let file = open_root_lock(root)?;
     file.lock().map_err(|error| error.to_string())?;
+    Ok(file)
+}
+
+/// 尝试获取根目录锁；备份等交互式操作不能无限等待 worker。
+pub fn try_lock_root(root: &str) -> Result<File, String> {
+    let file = open_root_lock(root)?;
+    file.try_lock()
+        .map_err(|error| format!("资料库正在执行其他任务，请稍后再试：{error}"))?;
     Ok(file)
 }
 
@@ -87,6 +100,18 @@ mod tests {
         second.lock().unwrap();
         drop(second);
         drop(other);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn 尝试获取已占用的系统锁会立即返回错误() {
+        let root = std::env::temp_dir().join(format!("x-file-try-lock-{}", crate::epoch_millis()));
+        let first = lock_root(root.to_str().unwrap()).unwrap();
+        let error = try_lock_root(root.to_str().unwrap()).unwrap_err();
+        assert!(error.contains("资料库正在执行其他任务"));
+        drop(first);
+        let second = try_lock_root(root.to_str().unwrap()).unwrap();
+        drop(second);
         fs::remove_dir_all(root).unwrap();
     }
 }

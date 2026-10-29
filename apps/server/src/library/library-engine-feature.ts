@@ -36,6 +36,7 @@ export interface LibraryEngineFeature {
   libraryBindingStore: LibraryBindingStore;
   libraryService: LibraryService;
   libraryIndexService: LibraryIndexService;
+  tagService: TagService;
   taskManager: TaskManager;
   httpServerManager: HttpServerManager;
   persistentBackendManager: PersistentBackendManager;
@@ -46,19 +47,20 @@ export function createLibraryEngineFeature(
 ): LibraryEngineFeature {
   const libraryBindingStore = new LibraryBindingStore();
   const taskManager = new TaskManager();
-  const libraryIndexService = new LibraryIndexService(taskManager, new IndexRuntimeStore());
+  const tagService = new TagService(libraryBindingStore, new TagStore(), taskManager);
+  tagService.registerTasks();
+  const libraryIndexService = new LibraryIndexService(
+    taskManager,
+    new IndexRuntimeStore(),
+    undefined,
+    undefined,
+    () => { tagService.requestFullRecompute(); },
+  );
   const libraryService = new LibraryService(
     libraryBindingStore,
     undefined,
     libraryIndexService,
   );
-  const tagService = new TagService(
-    libraryBindingStore,
-    new TagStore(),
-    taskManager,
-  );
-  tagService.registerTasks();
-
   const httpServerManager =
     options.httpServerManager ??
     new HttpServerManager(undefined, options.httpServerRuntimeState);
@@ -67,6 +69,7 @@ export function createLibraryEngineFeature(
     libraryBindingStore,
     libraryService,
     libraryIndexService,
+    tagService,
     taskManager,
     httpServerManager,
     persistentBackendManager,
@@ -91,12 +94,7 @@ export function registerLibraryCoreRoutes(
     feature.libraryService,
     process.env.X_FILE_SIGNING_SECRET?.trim() || DEFAULT_SIGNING_SECRET,
   );
-  const tagService = new TagService(
-    feature.libraryBindingStore,
-    new TagStore(),
-    feature.taskManager,
-  );
-  tagService.registerTasks();
+  const tagService = feature.tagService;
 
   void registerLibraryRoutes(
     server,
@@ -203,6 +201,8 @@ function registerLibraryCoreRoutePlaceholders(server: FastifyInstance): void {
   server.post("/api/library/ops", reject);
   server.post("/api/library/refresh", reject);
   server.put("/api/library/favorites", reject);
+  server.get("/api/library/backup", reject);
+  server.post("/api/library/backup", reject);
   server.get("/api/library/preview-file/:token/*", reject);
   server.get("/preview/library-files/:token/*", reject);
   server.get("/api/library/tags", reject);
