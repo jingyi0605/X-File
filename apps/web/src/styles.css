@@ -12143,7 +12143,7 @@ input[type="range"] {
     display: none;
   }
 
-  .workbench-shell[data-sidebar-open="false"] .workbench-sidebar-edge-trigger,
+  .workbench-shell[data-runtime-platform="desktop"][data-sidebar-open="false"] .workbench-sidebar-edge-trigger,
   .workbench-shell[data-details-open="false"] .workbench-inspector-edge-trigger-right {
     display: inline-flex;
   }

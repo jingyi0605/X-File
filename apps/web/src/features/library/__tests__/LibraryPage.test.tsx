@@ -76,6 +76,22 @@ describe("LibraryPage 高风险交互", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "详情" })).not.toBeInTheDocument());
   });
 
+  it("Web 桌面端侧栏保持常驻，不因鼠标离开或点击侧栏按钮收起", async () => {
+    const onOpenSettings = vi.fn();
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={onOpenSettings} platformData={platformData} />);
+
+    const sidebar = document.querySelector(".affairs-layout-sidebar") as HTMLElement;
+    await waitFor(() => expect(sidebar).toHaveAttribute("data-open", "true"));
+
+    fireEvent.mouseLeave(sidebar);
+    expect(sidebar).toHaveAttribute("data-open", "true");
+
+    await userEvent.click(within(sidebar).getByRole("button", { name: "设置" }));
+    expect(onOpenSettings).toHaveBeenCalledTimes(1);
+    expect(sidebar).toHaveAttribute("data-open", "true");
+  });
+
   it("移动端从左缘右滑打开导航抽屉，并可向左滑关闭", async () => {
     mockMobileViewport();
     const { LibraryPage } = await import("../LibraryPage");

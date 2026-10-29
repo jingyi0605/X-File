@@ -503,6 +503,8 @@ export function LibraryPage({
   const [isMobileViewport, setIsMobileViewport] = useState(
     isLibraryMobileViewport,
   );
+  const sidebarAutoHideEnabled = platformData.runtimePlatform === "desktop"
+    || isMobileViewport;
   const mobileTouchStartRef = useRef<{ x: number; y: number } | null>(null);
   const detailsTriggerRef = useRef<HTMLElement | null>(null);
   const detailsCloseRef = useRef<HTMLButtonElement | null>(null);
@@ -541,14 +543,18 @@ export function LibraryPage({
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setSidebarOpen(false);
+        if (sidebarAutoHideEnabled) {
+          setSidebarOpen(false);
+        }
         setLibraryDetailsOpen(false);
-        window.dispatchEvent(new CustomEvent("x-file-close-mobile-sidebar"));
+        if (sidebarAutoHideEnabled) {
+          window.dispatchEvent(new CustomEvent("x-file-close-mobile-sidebar"));
+        }
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  }, [sidebarAutoHideEnabled]);
 
   const handleWorkbenchTouchStart = useCallback((event: ReactTouchEvent<HTMLElement>): void => {
     if (!isMobileViewport) {
@@ -626,7 +632,11 @@ export function LibraryPage({
 
   useEffect(() => {
     const openSidebar = () => setSidebarOpen(true);
-    const closeSidebar = () => setSidebarOpen(false);
+    const closeSidebar = () => {
+      if (sidebarAutoHideEnabled) {
+        setSidebarOpen(false);
+      }
+    };
     const openDetails = (event: Event) => {
       const entry = (event as CustomEvent<LibraryEntry>).detail;
       handleOpenLibraryDetails(entry);
@@ -639,7 +649,7 @@ export function LibraryPage({
       window.removeEventListener("x-file-close-mobile-sidebar", closeSidebar);
       window.removeEventListener("x-file-open-library-details", openDetails);
     };
-  }, [handleOpenLibraryDetails]);
+  }, [handleOpenLibraryDetails, sidebarAutoHideEnabled]);
 
   // 子视图会在 effect 中继续预加载，必须先同步分页回调使用的最新状态。
   useLayoutEffect(() => {
@@ -1401,6 +1411,7 @@ export function LibraryPage({
           onCancelSearch={handleCancelSearch}
           searchClearToken={searchClearToken}
           sidebarOpen={sidebarOpen}
+          sidebarAutoHideEnabled={sidebarAutoHideEnabled}
           onCloseMobileSidebar={() => window.dispatchEvent(new CustomEvent("x-file-close-mobile-sidebar"))}
           onOpenSettings={onOpenSettings}
           onOpenTagManager={handleOpenTagManager}
@@ -1611,6 +1622,7 @@ function LibraryDesktopSidebar({
   onCancelSearch,
   searchClearToken,
   sidebarOpen,
+  sidebarAutoHideEnabled,
   onCloseMobileSidebar,
   onOpenSettings,
   onOpenTagManager,
@@ -1626,6 +1638,7 @@ function LibraryDesktopSidebar({
   onCancelSearch: () => void;
   searchClearToken: number;
   sidebarOpen: boolean;
+  sidebarAutoHideEnabled: boolean;
   onCloseMobileSidebar: () => void;
   onOpenSettings: () => void;
   onOpenTagManager: () => void;
@@ -1760,12 +1773,19 @@ function LibraryDesktopSidebar({
       className="workbench-sidebar affairs-layout-sidebar"
       data-open={sidebarOpen}
       onMouseLeave={() => {
-        if (window.matchMedia?.("(hover: hover) and (min-width: 641px)").matches) {
+        if (
+          sidebarAutoHideEnabled
+          && window.matchMedia?.("(hover: hover) and (min-width: 641px)").matches
+        ) {
           window.dispatchEvent(new CustomEvent("x-file-close-mobile-sidebar"));
         }
       }}
       onClickCapture={(event) => {
-        if (event.target instanceof Element && event.target.closest("button")) {
+        if (
+          sidebarAutoHideEnabled
+          && event.target instanceof Element
+          && event.target.closest("button")
+        ) {
           window.dispatchEvent(new CustomEvent("x-file-close-mobile-sidebar"));
         }
       }}
