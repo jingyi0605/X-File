@@ -11,7 +11,9 @@ description: 通过 X-File 的原生 CLI 或 MCP 工具查询资料库、检索�
 
 请用户先在资料库主机的桌面端「设置 → 集成服务 → 外部 Agent 接入」配置 API Key 并启用接入。CLI/MCP 通过 `X_FILE_AGENT_API_KEY` 环境变量读取密钥；不将密钥放入命令行参数、工具参数、资料文件或对话记录。应用只保存摘要，无法从已有配置恢复明文。配置页提供当前可执行文件、状态目录和只读 MCP 示例。
 
-关闭接入或撤销密钥后停止调用；换钥需要更新客户端环境并重新启动 MCP 子进程。已有进程的后续工具调用也会重新校验。`cli list/schema/skill/help` 是无需密钥的公开说明，不能据此判断业务接入已启用。这是本机 stdio/CLI 接入，不提供远程 MCP HTTP；镜像端应在主机配置和运行工具。
+关闭接入或撤销密钥后停止调用；换钥需要更新客户端环境。已有 CLI/MCP 进程和远程 HTTP 后续请求都会重新校验。`cli list/schema/skill/help` 是无需密钥的公开说明，不能据此判断业务接入已启用。
+
+本机首选 MCP stdio 或 CLI。远程 Agent 使用现有 HTTP 服务的 Streamable HTTP 端点 `/api/mcp`，每个请求通过 `Authorization: Bearer <X_FILE_AGENT_API_KEY>` 鉴权；不要把密钥放进 URL、工具参数或资料文件。远程部署必须使用 HTTPS 反向代理。远程端点拒绝浏览器 Origin 请求且不分配 MCP 会话 ID。
 
 ## 发现入口与参数
 
@@ -36,13 +38,15 @@ x-file-desktop cli call xfile_file_operation --input-file /path/to/request.json
 
 `cli --data-dir <绝对路径> ...` 或 `mcp --data-dir <绝对路径>` 选择应用状态目录；未指定时使用现有 `X_FILE_DATA_DIR` 或当前用户的默认状态目录。一个 MCP 进程始终使用同一状态目录。测试时使用独立临时目录，不把真实资料库当测试夹具。
 
-MCP stdio 启动命令为 `<可执行文件> mcp`。需要只读能力时加入 `--read-only`，它会隐藏写工具并拒绝直接调用写工具。`cli skill` 或 MCP 资源 `xfile://skills/x-file` 可以重新读取本说明。
+MCP stdio 启动命令为 `<可执行文件> mcp`。CLI 的 `--read-only` 只会进一步收紧访问；设置中的服务端访问策略才是实际权限真源，不能通过省略参数绕过。远程 MCP 使用 `POST https://<library-host>/api/mcp`，`Accept` 必须同时包含 `application/json, text/event-stream`。当前端点返回 JSON，不提供 GET SSE 和 MCP session。
+
+`cli skill` 或 MCP 资源 `xfile://skills/x-file` 可以重新读取本说明。
 
 ## 选择和检索资料
 
 先调用 `xfile_status` / `xfile_binding_get` 确认当前资料库。没有绑定时，向用户确认目标资料库；只有任务明确包含选择或切换资料库时才调用 `xfile_binding_set`，不要为了检索自动切换用户当前绑定。
 
-使用 `xfile_snapshot` 查看索引概况、标签和收藏。`xfile_documents_list` 的 `keyword` 检索现有标题、摘要和路径；`browseMode:"tag"` 可跨资料库检索，`browseMode:"folder"` 配合 `selectedFolderPath` 查询当前目录。通过 `offset` / `limit` 分页，避免一次返回全部资料。`xfile_files_list` 查看真实目录。
+使用 `xfile_snapshot` 查看索引概况、标签和收藏。`xfile_documents_list` 的 `keyword` 检索现有标题、摘要和路径；`searchMode` 可选 `all`、`name` 或 `content`，`searchScope` 可选 `current_results`、`current_directory` 或 `all`。多个 `selectedTagPaths` 按 AND 组合，父级标签包含其子路径；还可组合收藏、目录和关键词。`browseMode:"tag"` 默认跨资料库检索，`browseMode:"folder"` 配合 `selectedFolderPath` 查询目录。通过 `offset` / `limit` 分页。`xfile_files_list` 查看真实目录。
 
 索引尚未建立或文件在外部修改后，使用 `xfile_index_refresh`。刷新为同步操作；可以通过 `targetPaths` 指定相对路径。不要把尚未完成的索引当成“文件不存在”。
 
@@ -68,7 +72,7 @@ MCP stdio 启动命令为 `<可执行文件> mcp`。需要只读能力时加入 
 
 通过 `xfile_tags_list` / `xfile_tags_get` 读取定义与规则；`xfile_tags_ensure` 幂等确保一个层级标签路径存在。创建或更新规则前先读取当前定义并遵循实际 Schema。
 
-`xfile_document_tags_set` 和 `xfile_folder_tags_set` 设置的是完整手工标签集合。先查询当前关系，合并用户要求后再保存，避免覆盖无关标签；也可以用 `createTagPaths` 同时创建并分配新标签。标签保存会同步更新原生导出；批量状态通过标签重算工具检查。
+`xfile_document_tags_set` 和 `xfile_folder_tags_set` 设置的是完整手工标签集合。批量操作优先用 `xfile_documents_tags_batch`：按文档 ID、相对目录或 `xfile_documents_list` 同款组合查询选择目标，先 `dryRun:true` 检查匹配数、预计变化数、跳过数、验证错误和冻结后的 `targetDocumentIds`。确认后对冻结 ID 使用 `dryRun:false`，提供新的稳定 `idempotencyKey`；可用 add/remove/replace 和 `createTagPaths`。正式调用后通过返回的 `taskId` 使用 `xfile_task_get` 查询结果，或用 `xfile_tasks_list` 查看当前资料库中的任务。重复幂等键不会重复执行；同一键不可用于不同请求。
 
 `xfile_favorites_set` 同样替换完整收藏集合，先读后合并。
 
