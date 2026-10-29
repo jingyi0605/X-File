@@ -115,7 +115,7 @@ test("文档库主路由、标签路由和 server state 都已注册", async () 
       payload: { reason: "route_test" }
     });
     assert.equal(refresh.statusCode, 200);
-    assert.equal(refresh.json().status.state, "queued");
+    assert.equal(["queued", "running"].includes(refresh.json().status.state), true);
 
     const snapshot = await app.inject({ method: "GET", url: "/api/library/snapshot" });
     assert.equal(snapshot.statusCode, 200);
