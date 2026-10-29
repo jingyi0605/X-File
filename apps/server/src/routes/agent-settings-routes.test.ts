@@ -14,7 +14,7 @@ import { createServer } from "../app.js";
 
 const url = "/api/integration/agent/settings";
 const settings = {
-  enabled: false, apiKeyConfigured: false, updatedAt: null,
+  enabled: false, apiKeyConfigured: false, accessMode: "read_only" as const, updatedAt: null,
   executablePath: "/host/x-file", dataDir: "/host/.x-file", platform: "linux",
 };
 
@@ -58,7 +58,7 @@ test("本机设置无需局域网认证，敏感响应禁用缓存，输入与�
   assert.equal(initial.headers["cache-control"], "no-store");
   const saved = await app.inject({ method: "PUT", url, payload: { generateApiKey: true } });
   assert.equal(saved.statusCode, 200);
-  for (const payload of [null, [], { enabled: "true" }, { apiKey: "short" }, { dataDir: "/other" }]) {
+  for (const payload of [null, [], { enabled: "true" }, { apiKey: "short" }, { dataDir: "/other" }, { accessMode: "admin" }]) {
     const invalid = await app.inject({ method: "PUT", url, payload: JSON.stringify(payload), headers: { "content-type": "application/json" } });
     assert.equal(invalid.statusCode, 400);
   }

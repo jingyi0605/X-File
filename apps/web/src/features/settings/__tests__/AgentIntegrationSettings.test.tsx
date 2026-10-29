@@ -17,6 +17,7 @@ vi.mock("../../../api/agent-integration", async (importOriginal) => ({
 const initial: Settings = {
   enabled: false,
   apiKeyConfigured: false,
+  accessMode: "read_only",
   updatedAt: null,
   executablePath: "/Applications/X-File.app/Contents/MacOS/x-file-desktop",
   dataDir: "/Users/example/.x-file",
@@ -233,7 +234,7 @@ describe("外部 Agent 接入设置", () => {
     }
     expect(screen.queryByRole("heading", { name: "SKILL 安装说明" })).not.toBeInTheDocument();
     expect(screen.queryByText("默认关闭。请先配置 API Key；关闭后，已有连接的后续工具调用也会被拒绝。")).not.toBeInTheDocument();
-    expect(screen.queryByText("推荐使用本机 MCP stdio，将下方对象合并到 Agent 客户端配置。把占位符替换为密钥，优先使用客户端的密钥或环境变量管理。CLI 适用于脚本调用；未提供远程 HTTP MCP 服务。")).not.toBeInTheDocument();
+    expect(screen.queryByText("配置对象适用于本机 stdio。远程 MCP 使用现有 HTTP 服务的 /api/mcp 端点。")).not.toBeInTheDocument();
     expect(screen.queryByText("设置新的 API Key（32 至 512 位，无空白 ASCII 字符）")).not.toBeInTheDocument();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "查看配置方式" }));
@@ -248,8 +249,8 @@ describe("外部 Agent 接入设置", () => {
     expect(screen.getByRole("heading", { name: "SKILL 安装说明" })).toBeVisible();
     expect(screen.getByText(/下方命令将内嵌 SKILL 导出到/)).toBeVisible();
     expect(screen.queryByRole("list", { name: "MCP 能力" })).not.toBeInTheDocument();
-    await user.selectOptions(screen.getByLabelText("配置示例的访问权限"), "write");
-    expect(screen.getByLabelText("MCP 客户端配置（JSON）")).not.toHaveTextContent("--read-only");
+    expect(screen.getByLabelText("MCP 客户端配置（JSON）")).toHaveTextContent("--read-only");
+    expect(screen.getByLabelText("远程 MCP HTTP")).toHaveTextContent("Authorization: Bearer");
     const clipboard = vi.spyOn(navigator.clipboard, "writeText");
     await user.click(within(modal).getAllByRole("button", { name: "复制" })[0]!);
     expect(clipboard).toHaveBeenCalledWith(expect.stringContaining('"mcpServers"'));
@@ -278,7 +279,7 @@ describe("外部 Agent 接入设置", () => {
     expect(screen.getByText("可能有破坏性")).toBeVisible();
     expect(screen.queryByLabelText("MCP 客户端配置（JSON）")).not.toBeInTheDocument();
     await user.click(configurationTab);
-    await user.click(within(modal).getAllByRole("button", { name: "复制" })[2]!);
+    await user.click(within(modal).getAllByRole("button", { name: "复制" })[3]!);
     expect(clipboard).toHaveBeenCalledWith(expect.stringContaining("cli skill"));
     await user.click(modal.querySelector(".desktop-modal-footer button")!);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
@@ -325,5 +326,16 @@ describe("外部 Agent 接入设置", () => {
     expect(examples.skill).toContain("[System.Text.UTF8Encoding]::new($false)");
     expect(JSON.parse(examples.mcp).mcpServers["x-file"].command).toBe(settings.executablePath);
     expect(examples.cli).toContain("$env:X_FILE_AGENT_API_KEY");
+  });
+
+  it("访问策略持久化为服务端策略而非仅切换配置示例", async () => {
+    const user = userEvent.setup();
+    vi.mocked(saveAgentIntegrationSettings).mockResolvedValue({
+      settings: { ...initial, apiKeyConfigured: true, accessMode: "read_write" },
+    });
+    render(<AgentIntegrationSettings />);
+    const policy = await screen.findByLabelText("访问模式");
+    await user.selectOptions(policy, "read_write");
+    expect(saveAgentIntegrationSettings).toHaveBeenCalledWith({ accessMode: "read_write" });
   });
 });

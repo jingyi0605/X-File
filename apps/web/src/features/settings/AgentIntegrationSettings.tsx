@@ -29,7 +29,8 @@ export function buildAgentExamples(settings: Settings, readOnly: boolean) {
   const executable = quote(settings.executablePath, windows);
   const dataDir = quote(settings.dataDir, windows);
   const prefix = windows ? "& " : "";
-  const args = ["mcp", "--data-dir", settings.dataDir, ...(readOnly ? ["--read-only"] : [])];
+  const args = ["mcp", "--data-dir", settings.dataDir,
+    ...(readOnly || settings.accessMode === "read_only" ? ["--read-only"] : [])];
   return {
     mcp: JSON.stringify({
       mcpServers: {
@@ -40,11 +41,17 @@ export function buildAgentExamples(settings: Settings, readOnly: boolean) {
         },
       },
     }, null, 2),
+    remoteMcp: [
+      "Transport: Streamable HTTP (stateless)",
+      "Endpoint: https://<library-host>/api/mcp",
+      "Header: Authorization: Bearer <X_FILE_AGENT_API_KEY>",
+      "Accept: application/json, text/event-stream",
+    ].join("\n"),
     cli: [
       windows
         ? "$env:X_FILE_AGENT_API_KEY = '<X_FILE_AGENT_API_KEY>'"
         : "export X_FILE_AGENT_API_KEY='<X_FILE_AGENT_API_KEY>'",
-      `${prefix}${executable} cli --data-dir ${dataDir}${readOnly ? " --read-only" : ""} call xfile_status`,
+      `${prefix}${executable} cli --data-dir ${dataDir}${readOnly || settings.accessMode === "read_only" ? " --read-only" : ""} call xfile_status`,
     ].join("\n"),
     skill: windows
       ? [
@@ -75,7 +82,6 @@ function AgentIntegrationForm({ mirrorMode }: { mirrorMode: boolean }) {
   const [keyInput, setKeyInput] = useState<ApiKeyInputState>({ value: "", mode: "draft" });
   const keyInputRef = useRef<HTMLInputElement>(null);
   const keyInputId = useId();
-  const [readOnly, setReadOnly] = useState(true);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [retryKey, setRetryKey] = useState(0);
@@ -145,7 +151,7 @@ function AgentIntegrationForm({ mirrorMode }: { mirrorMode: boolean }) {
     ));
   }
 
-  const examples = settings ? buildAgentExamples(settings, readOnly) : null;
+  const examples = settings ? buildAgentExamples(settings, settings.accessMode === "read_only") : null;
   const canSaveKey = !busy && keyInput.mode === "draft" && keyInput.value.length >= 32;
   const canCopyKey = keyInput.mode !== "draft" && keyInput.value.length > 0;
   return (
@@ -213,15 +219,34 @@ function AgentIntegrationForm({ mirrorMode }: { mirrorMode: boolean }) {
                   ) : null}
                 </div>
               </div>
-              <div className="button-row">
-                <button type="submit" className="primary-button" disabled={!canSaveKey}>{t("agentSaveKey")}</button>
+              <div className="button-row settings-action-row">
                 <button type="button" className="secondary-button" disabled={busy}
                   onClick={() => void save({ generateApiKey: true })}>{t(settings.apiKeyConfigured ? "agentRotateKey" : "agentGenerateKey")}</button>
                 <button type="button" className="danger-button" disabled={busy || !settings.apiKeyConfigured}
                   onClick={() => void save({ clearApiKey: true })}>{t("agentRevokeKey")}</button>
+                <button type="submit" className="primary-button settings-save-button" disabled={!canSaveKey}>{t("agentSaveKey")}</button>
               </div>
             </form>
             <p className="settings-helper-text">{t("agentKeyHint")}</p>
+          </section>
+          <section className="settings-module-group" aria-label={t("agentPolicyTitle")}>
+            <div className="settings-heading-row">
+              <div>
+                <h4 className="settings-module-title">{t("agentPolicyTitle")}</h4>
+                <p className="settings-helper-text">{t("agentPolicyDescription")}</p>
+              </div>
+              <label className="settings-agent-access-field">
+                <span>{t("agentPolicyMode")}</span>
+                <select
+                  value={settings.accessMode}
+                  disabled={busy}
+                  onChange={(event) => void save({ accessMode: event.target.value as Settings["accessMode"] })}
+                >
+                  <option value="read_only">{t("agentReadOnly")}</option>
+                  <option value="read_write">{t("agentReadWrite")}</option>
+                </select>
+              </label>
+            </div>
           </section>
           <section className="settings-module-group" aria-label={t("agentConfiguration")}>
             <div className="settings-heading-row">
@@ -241,8 +266,6 @@ function AgentIntegrationForm({ mirrorMode }: { mirrorMode: boolean }) {
           open={configurationOpen}
           settings={settings}
           examples={examples}
-          readOnly={readOnly}
-          onReadOnlyChange={setReadOnly}
           onCopy={copy}
           onClose={() => setConfigurationOpen(false)}
         />
@@ -255,16 +278,12 @@ function AgentConfigurationModal({
   open,
   settings,
   examples,
-  readOnly,
-  onReadOnlyChange,
   onCopy,
   onClose,
 }: {
   open: boolean;
   settings: Settings;
   examples: ReturnType<typeof buildAgentExamples>;
-  readOnly: boolean;
-  onReadOnlyChange: (value: boolean) => void;
   onCopy: (text: string) => Promise<void>;
   onClose: () => void;
 }) {
@@ -332,14 +351,18 @@ function AgentConfigurationModal({
               </button>
             )}
           >
-            <label className="settings-agent-access-field">
-              <span>{t("agentAccessMode")}</span>
-              <select value={readOnly ? "read" : "write"} onChange={(event) => onReadOnlyChange(event.target.value === "read")}>
-                <option value="read">{t("agentReadOnly")}</option>
-                <option value="write">{t("agentReadWrite")}</option>
-              </select>
-            </label>
             <pre className="settings-code-block" aria-label={t("agentMcpExample")}><code>{examples.mcp}</code></pre>
+          </ModalSection>
+          <ModalSection
+            heading={t("agentRemoteMcpExample")}
+            description={t("agentRemoteMcpDescription")}
+            actions={(
+              <button type="button" className="secondary-button" onClick={() => void onCopy(examples.remoteMcp)}>
+                {t("agentCopy")}
+              </button>
+            )}
+          >
+            <pre className="settings-code-block" aria-label={t("agentRemoteMcpExample")}><code>{examples.remoteMcp}</code></pre>
           </ModalSection>
           <ModalSection
             heading={t("agentCliExample")}
@@ -390,6 +413,7 @@ function AgentConfigurationModal({
                         <td>
                           <span className="settings-agent-capability-tags">
                             <span className="settings-agent-capability-tag">{capability.readOnly ? t("agentCapabilityReadOnly") : t("agentCapabilityWrite")}</span>
+                            {capability.available === false ? <span className="settings-agent-capability-tag" data-tone="danger">{t("agentCapabilityPolicyDenied")}</span> : null}
                             {capability.requiresBinding ? <span className="settings-agent-capability-tag">{t("agentCapabilityRequiresLibrary")}</span> : null}
                             {capability.destructive ? <span className="settings-agent-capability-tag" data-tone="danger">{t("agentCapabilityDestructive")}</span> : null}
                           </span>

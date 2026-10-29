@@ -49,5 +49,7 @@ function isSettingsInput(value: unknown): value is SaveAgentIntegrationSettingsI
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   return Object.entries(value).every(([key, field]) => key === "apiKey"
     ? typeof field === "string" && /^[\x21-\x7e]{32,512}$/.test(field)
-    : ["enabled", "generateApiKey", "clearApiKey"].includes(key) && typeof field === "boolean");
+    : key === "accessMode"
+      ? field === "read_only" || field === "read_write"
+      : ["enabled", "generateApiKey", "clearApiKey"].includes(key) && typeof field === "boolean");
 }

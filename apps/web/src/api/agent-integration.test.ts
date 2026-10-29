@@ -7,7 +7,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
 describe("Agent 设置运行环境路由", () => {
   const fetchMock = vi.fn();
-  const settings = { enabled: false, apiKeyConfigured: false };
+  const settings = { enabled: false, apiKeyConfigured: false, accessMode: "read_only" as const };
   const input = { generateApiKey: true };
   const saved = { settings, apiKey: "xf_generated-key" };
 

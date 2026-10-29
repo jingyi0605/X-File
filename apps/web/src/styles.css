@@ -131,6 +131,13 @@
   --app-button-primary-border: rgba(0, 0, 0, 0.03);
   --app-button-primary-border-hover: rgba(0, 0, 0, 0.06);
   --app-button-primary-color: #ffffff;
+  --settings-save-button-bg: #0a84ff;
+  --settings-save-button-bg-hover: #0077ed;
+  --settings-save-button-border: #0a84ff;
+  --settings-save-button-border-hover: #0077ed;
+  --settings-save-button-color: #ffffff;
+  --settings-save-button-shadow: 0 4px 16px rgba(10, 132, 255, 0.2);
+  --settings-save-button-shadow-hover: 0 7px 20px rgba(10, 132, 255, 0.28);
   --app-button-danger-bg: rgba(239, 68, 68, 0.04);
   --app-button-danger-bg-hover: rgba(239, 68, 68, 0.08);
   --app-button-danger-border: rgba(239, 68, 68, 0.04);
@@ -9359,8 +9366,24 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
   padding: var(--space-3) var(--settings-module-padding);
 }
 
-.settings-module-form > .primary-button {
-  justify-self: start;
+.settings-action-row {
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+}
+
+.settings-module .settings-save-button {
+  border-color: var(--settings-save-button-border);
+  background: var(--settings-save-button-bg);
+  color: var(--settings-save-button-color);
+  box-shadow: var(--settings-save-button-shadow);
+}
+
+.settings-module .settings-save-button:hover:not(:disabled) {
+  border-color: var(--settings-save-button-border-hover);
+  background: var(--settings-save-button-bg-hover);
+  color: var(--settings-save-button-color);
+  box-shadow: var(--settings-save-button-shadow-hover);
 }
 
 .settings-module .settings-heading-row {

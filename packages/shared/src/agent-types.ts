@@ -1,6 +1,7 @@
 export interface AgentCapability {
   name: string;
   description: string;
+  available?: boolean;
   readOnly: boolean;
   destructive: boolean;
   requiresBinding: boolean;
@@ -18,6 +19,7 @@ export interface AgentCapabilityParameter {
 export interface AgentIntegrationSettings {
   enabled: boolean;
   apiKeyConfigured: boolean;
+  accessMode: "read_only" | "read_write";
   updatedAt: string | null;
   executablePath: string;
   dataDir: string;
@@ -27,6 +29,7 @@ export interface AgentIntegrationSettings {
 
 export interface SaveAgentIntegrationSettingsInput {
   enabled?: boolean;
+  accessMode?: "read_only" | "read_write";
   apiKey?: string;
   generateApiKey?: boolean;
   clearApiKey?: boolean;
