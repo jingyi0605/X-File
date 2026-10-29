@@ -72,7 +72,7 @@ function bind(f) {
 test("CLI 工具发现、输入格式、只读模式与内嵌 SKILL", t => {
   const f = fixture(t);
   const list = JSON.parse(cli(f, ["list"]).stdout);
-  assert.equal(list.tools.length, 28);
+  assert.equal(list.tools.length, 31);
   assert.equal(new Set(list.tools.map(tool => tool.name)).size, list.tools.length);
   const schema = JSON.parse(cli(f, ["schema", "xfile_file_operation"]).stdout);
   assert.equal(schema.inputSchema.additionalProperties, false);
@@ -96,6 +96,27 @@ test("CLI 工具发现、输入格式、只读模式与内嵌 SKILL", t => {
   invoke(f, "xfile_file_operation", { opType: "write", srcPath: "a.md" }, "INVALID_ARGUMENT");
   invoke(f, "xfile_unknown", {}, "TOOL_NOT_FOUND");
   invoke(f, "xfile_documents_list", {}, "NOT_BOUND");
+});
+
+test("服务端只读策略隐藏并拒绝写工具，不能省略客户端只读参数绕过", t => {
+  const f = fixture(t);
+  bind(f);
+  const settingsPath = path.join(f.data, "agent-integration.json");
+  const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+  settings.accessMode = "read_only";
+  fs.writeFileSync(settingsPath, JSON.stringify(settings));
+  const list = JSON.parse(cli(f, ["list"]).stdout);
+  assert.ok(list.tools.every(tool => tool.annotations.readOnlyHint));
+  invoke(f, "xfile_file_operation", {
+    opType: "create_file", dstPath: "must-not-exist.md", content: "blocked",
+  }, "ACCESS_POLICY_DENIED");
+  assert.equal(fs.existsSync(path.join(f.library, "must-not-exist.md")), false);
+  assert.equal(invoke(f, "xfile_status").accessMode, "read_only");
+
+  settings.accessMode = "read_write";
+  fs.writeFileSync(settingsPath, JSON.stringify(settings));
+  const writable = JSON.parse(cli(f, ["list"]).stdout);
+  assert.ok(writable.tools.some(tool => tool.name === "xfile_file_operation"));
 });
 
 test("真实 CLI 完成资料库、文件、标签、收藏与索引流程", t => {
@@ -126,6 +147,34 @@ test("真实 CLI 完成资料库、文件、标签、收藏与索引流程", t =
   const documents = invoke(f, "xfile_documents_list", { keyword: "alpha" });
   assert.equal(documents.items.length, 1);
   const documentId = documents.items[0].documentId;
+  const dryBatch = invoke(f, "xfile_documents_tags_batch", {
+    documentIds: [documentId], operation: "add", tagPaths: ["Agent/批量"],
+    createTagPaths: ["Agent/批量"], dryRun: true,
+  });
+  assert.equal(dryBatch.matchedCount, 1);
+  assert.equal(dryBatch.changedCount, 1);
+  assert.deepEqual(dryBatch.targetDocumentIds, [documentId]);
+  assert.ok(!invoke(f, "xfile_tags_list").items.some(tag => tag.path === "Agent/批量"));
+  const appliedBatch = invoke(f, "xfile_documents_tags_batch", {
+    documentIds: dryBatch.targetDocumentIds, operation: "add", tagPaths: ["Agent/批量"],
+    createTagPaths: ["Agent/批量"], dryRun: false, idempotencyKey: "batch-add-doc-001",
+  });
+  assert.equal(appliedBatch.state, "completed");
+  assert.equal(appliedBatch.changedCount, 1);
+  assert.equal(invoke(f, "xfile_document_tags_get", { documentId }).manualTagIds.length, 1);
+  const retriedBatch = invoke(f, "xfile_documents_tags_batch", {
+    documentIds: dryBatch.targetDocumentIds, operation: "add", tagPaths: ["Agent/批量"],
+    createTagPaths: ["Agent/批量"], dryRun: false, idempotencyKey: "batch-add-doc-001",
+  });
+  assert.equal(retriedBatch.deduped, true);
+  assert.equal(invoke(f, "xfile_task_get", { taskId: appliedBatch.taskId }).state, "completed");
+  assert.ok(invoke(f, "xfile_tasks_list").items.some(task => task.taskId === appliedBatch.taskId));
+  const removedBatch = invoke(f, "xfile_documents_tags_batch", {
+    documentIds: [documentId], operation: "remove", tagPaths: ["Agent/批量"], dryRun: false,
+    idempotencyKey: "batch-remove-doc-001",
+  });
+  assert.equal(removedBatch.changedCount, 1);
+  assert.deepEqual(invoke(f, "xfile_document_tags_get", { documentId }).manualTagIds, []);
   assert.equal(invoke(f, "xfile_files_list", { path: "docs" }).items[0].name, "合同.md");
 
   const topic = invoke(f, "xfile_tags_ensure", { path: "主题/合同" });
@@ -137,6 +186,19 @@ test("真实 CLI 完成资料库、文件、标签、收藏与索引流程", t =
   assert.deepEqual(invoke(f, "xfile_document_tags_get", { documentId }).manualTagIds, [topic.id]);
   invoke(f, "xfile_folder_tags_set", { folderPath: "docs", tagIds: [], createTagPaths: ["部门/法务"] });
   assert.equal(invoke(f, "xfile_folder_tags_get", { folderPath: "docs" }).bindingTagIds.length, 1);
+  const dryFolderBatch = invoke(f, "xfile_documents_tags_batch", {
+    targetKind: "folders", folderPaths: ["docs"], operation: "add",
+    tagPaths: ["Agent/目录"], createTagPaths: ["Agent/目录"], dryRun: true,
+  });
+  assert.deepEqual(dryFolderBatch.targetFolderPaths, ["docs"]);
+  assert.equal(dryFolderBatch.changedCount, 1);
+  const folderBatch = invoke(f, "xfile_documents_tags_batch", {
+    targetKind: "folders", folderPaths: ["docs"], operation: "add",
+    tagPaths: ["Agent/目录"], createTagPaths: ["Agent/目录"], dryRun: false,
+    idempotencyKey: "batch-folder-add-001",
+  });
+  assert.equal(folderBatch.state, "completed");
+  assert.equal(invoke(f, "xfile_folder_tags_get", { folderPath: "docs" }).bindings.length, 2);
   const automatic = invoke(f, "xfile_tags_create", {
     name: "自动合同", description: "智能规则", smartRules: [
       { ruleType: "file_content_contains", matcher: { keyword: "alpha" }, relation: "and", enabled: true },
@@ -350,7 +412,7 @@ test("真实 MCP stdio 握手、发现、读写、资源、错误恢复与正常
   assert.ok(info.capabilities.tools);
   assert.ok(info.capabilities.resources);
   const list = await client.request("tools/list");
-  assert.equal(list.result.tools.length, 28);
+  assert.equal(list.result.tools.length, 31);
   const call = async (name, args = {}) => {
     const response = await client.request("tools/call", { name, arguments: args });
     assert.ok(response.result, JSON.stringify(response));
@@ -377,7 +439,24 @@ test("真实 MCP stdio 握手、发现、读写、资源、错误恢复与正常
   const resource = await client.request("resources/read", { uri: "xfile://skills/x-file" });
   assert.equal(resource.result.contents[0].text, skill);
   assert.equal((await client.request("resources/read", { uri: "xfile://unknown" })).error.code, -32002);
-  assert.equal((await call("xfile_documents_list", { keyword: "MCP" })).structuredContent.result.items.length, 1);
+  const search = await call("xfile_documents_list", {
+    keyword: "MCP", searchScope: "all", searchMode: "content", limit: 20,
+  });
+  assert.equal(search.structuredContent.result.items.length, 1);
+  const documentId = search.structuredContent.result.items[0].documentId;
+  const preview = await call("xfile_documents_tags_batch", {
+    documentIds: [documentId], operation: "add", tagPaths: ["MCP/Reviewed"],
+    createTagPaths: ["MCP/Reviewed"], dryRun: true,
+  });
+  assert.equal(preview.structuredContent.result.changedCount, 1);
+  const applied = await call("xfile_documents_tags_batch", {
+    documentIds: preview.structuredContent.result.targetDocumentIds,
+    operation: "add", tagPaths: ["MCP/Reviewed"], createTagPaths: ["MCP/Reviewed"],
+    dryRun: false, idempotencyKey: "stdio-mcp-batch-001",
+  });
+  assert.equal(applied.structuredContent.result.state, "completed");
+  const task = await call("xfile_task_get", { taskId: applied.structuredContent.result.taskId });
+  assert.equal(task.structuredContent.result.state, "completed");
 });
 
 test("MCP 只读模式同时限制工具发现和实际写调用", async t => {
@@ -432,7 +511,7 @@ test("开关、缺失或错误密钥及已连接 MCP 的换钥和撤销", async 
   assert.equal(denied.stdout, "");
   assert.match(denied.stderr, /AGENT_DISABLED/);
   assert.ok(!denied.stderr.includes(f.key));
-  assert.equal(JSON.parse(cli(f, ["list"]).stdout).tools.length, 28);
+  assert.equal(JSON.parse(cli(f, ["list"]).stdout).tools.length, 31);
   assert.equal(cli(f, ["skill"]).stdout, skill);
   fs.unlinkSync(path.join(f.data, "agent-integration.json"));
   invoke(f, "xfile_status", {}, "AGENT_DISABLED");

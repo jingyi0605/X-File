@@ -161,4 +161,38 @@ describe("native-library-bridge 契约", () => {
       },
     });
   });
+
+  it("native 文档列表透传组合检索范围和匹配模式", async () => {
+    Object.defineProperty(globalThis, "window", {
+      value: { __TAURI_INTERNALS__: {} },
+      configurable: true,
+      writable: true,
+    });
+    vi.doMock("@tauri-apps/api/core", () => ({
+      invoke: invokeMock.mockResolvedValue({ total: 0, items: [] }),
+    }));
+
+    const bridge = await import("./native-library-bridge");
+    await bridge.listNativeLibraryDocuments({
+      browseMode: "tag",
+      selectedTagPaths: ["部门/法务", "类型/合同"],
+      keyword: "保密",
+      searchScope: "all",
+      searchMode: "content",
+      offset: 0,
+      limit: 25,
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith("native_list_library_documents", {
+      request: {
+        browseMode: "tag",
+        selectedTagPaths: ["部门/法务", "类型/合同"],
+        keyword: "保密",
+        searchScope: "all",
+        searchMode: "content",
+        offset: 0,
+        limit: 25,
+      },
+    });
+  });
 });

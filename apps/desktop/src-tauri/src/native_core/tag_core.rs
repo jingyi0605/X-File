@@ -53,6 +53,14 @@ pub enum TagAssignmentScope {
         #[serde(rename = "folderPath")]
         folder_path: String,
     },
+    FolderPaths {
+        #[serde(rename = "folderPaths")]
+        folder_paths: Vec<String>,
+    },
+    DocumentIds {
+        #[serde(rename = "documentIds")]
+        document_ids: Vec<String>,
+    },
 }
 
 impl TagAssignmentScope {
@@ -66,6 +74,13 @@ impl TagAssignmentScope {
                 let folder = normalize_folder_path(folder_path);
                 folder == "." || path.starts_with(&format!("{folder}/"))
             }
+            Self::FolderPaths { folder_paths } => folder_paths.iter().any(|folder| {
+                let folder = normalize_folder_path(folder);
+                folder == "." || path.starts_with(&format!("{folder}/"))
+            }),
+            Self::DocumentIds { document_ids } => document_ids
+                .iter()
+                .any(|id| document.document_id == id.trim()),
         }
     }
 }
@@ -74,6 +89,14 @@ pub struct TagAssignmentPlan {
     snapshot: LocalRuntimeExportCatalogSnapshot,
     targets: Vec<usize>,
     emit_progress: bool,
+}
+
+impl TagAssignmentPlan {
+    pub fn target_document_ids(&self) -> Vec<String> {
+        self.targets.iter()
+            .map(|index| self.snapshot.documents[*index].document_id.clone())
+            .collect()
+    }
 }
 
 fn report_tag_progress(stage: &str, processed: usize, total: Option<usize>, emit: bool) {
@@ -238,9 +261,306 @@ pub fn save_native_document_tags(request: NativeSaveDocumentTagsRequest) -> Resu
         .map_err(|error| format!("序列化本地 document tags 失败：{error}"))
 }
 
+pub fn apply_agent_document_tag_batch(
+    binding: &LocalLibraryBinding,
+    document_ids: &[String],
+    operation: &str,
+    tag_paths: &[String],
+    create_tag_paths: &[String],
+    dry_run: bool,
+    mut on_progress: impl FnMut(&str, usize, Option<usize>),
+) -> Result<Value, String> {
+    let plan = prepare_tag_assignment(binding, &TagAssignmentScope::DocumentIds {
+        document_ids: document_ids.to_vec(),
+    }, false)?;
+    let mut store = read_local_library_tags_store(binding)?;
+    let target_document_ids = plan.target_document_ids();
+    let targets = plan.targets.iter().cloned().collect::<Vec<_>>();
+    if targets.len() > 10_000 {
+        return Err("批量标签最多处理 10000 个文档".into());
+    }
+    if targets.len() != document_ids.iter().collect::<HashSet<_>>().len() {
+        return Err("部分文档 ID 不存在或已不在当前资料库".into());
+    }
+
+    let mut selected_tag_ids = Vec::new();
+    let mut validation_errors = Vec::new();
+    if !matches!(operation, "add" | "remove" | "replace") {
+        validation_errors.push("批量标签操作无效".into());
+    }
+    let mut effective_paths = tag_paths.iter().collect::<Vec<_>>();
+    effective_paths.extend(create_tag_paths.iter().filter(|create| {
+        !tag_paths.iter().any(|path| normalize_tag_segment(path) == normalize_tag_segment(create))
+    }));
+    if operation == "remove" && !create_tag_paths.is_empty() {
+        validation_errors.push("remove 操作不能创建标签".into());
+    }
+    for tag_path in effective_paths {
+        let normalized = normalize_tag_segment(tag_path);
+        if normalized.is_empty() {
+            validation_errors.push(format!("标签路径不能为空: {tag_path}"));
+            continue;
+        }
+        if let Some(tag) = store.tags.iter().find(|tag| {
+            tag.path == normalized && (operation == "remove" || tag.status == "active")
+        }) {
+            selected_tag_ids.push(tag.id.clone());
+        } else if create_tag_paths.iter().any(|create| normalize_tag_segment(create) == normalized) {
+            if store.tags.iter().any(|tag| tag.path == normalized && tag.status != "active") {
+                validation_errors.push(format!("标签已停用: {normalized}"));
+            } else {
+                let id = ensure_local_tag_path(&mut store, &normalized)?;
+                selected_tag_ids.push(id);
+            }
+        } else {
+            validation_errors.push(format!("标签不存在或未启用: {normalized}"));
+        }
+    }
+    for tag_path in create_tag_paths {
+        let normalized = normalize_tag_segment(tag_path);
+        if normalized.is_empty() {
+            validation_errors.push(format!("标签路径不能为空: {tag_path}"));
+        }
+    }
+    if operation != "remove" {
+        for tag_path in tag_paths {
+            let normalized = normalize_tag_segment(tag_path);
+            if store.tags.iter().any(|tag| tag.path == normalized && tag.status != "active") {
+                validation_errors.push(format!("标签已停用: {normalized}"));
+            }
+        }
+    }
+    if !validation_errors.is_empty() {
+        return Ok(json!({
+            "matchedCount": targets.len(),
+            "changedCount": 0,
+            "skippedCount": targets.len(),
+            "validationErrors": validation_errors,
+            "targetDocumentIds": target_document_ids,
+        }));
+    }
+
+    selected_tag_ids.sort();
+    selected_tag_ids.dedup();
+    let mut changed_count = 0usize;
+    if !dry_run {
+        on_progress("save_tags", 0, Some(targets.len()));
+        for document_index in &targets {
+            let document = &plan.snapshot.documents[*document_index];
+            let current = store.document_tags.iter()
+                .find(|item| item.document_id == document.document_id)
+                .map(|item| item.manual_tag_ids.clone())
+                .unwrap_or_default();
+            let next = match operation {
+                "add" => current.iter().cloned().chain(selected_tag_ids.iter().cloned()).collect::<HashSet<_>>(),
+                "remove" => current.iter().filter(|id| !selected_tag_ids.contains(id)).cloned().collect::<HashSet<_>>(),
+                "replace" => selected_tag_ids.iter().cloned().collect::<HashSet<_>>(),
+                _ => return Err("批量标签操作无效".into()),
+            };
+            let mut next = next.into_iter().collect::<Vec<_>>();
+            next.sort();
+            if next != current {
+                validate_single_child_tag_ids(&store, &next)?;
+                changed_count += 1;
+                let binding_record = store.document_tags.iter_mut()
+                    .find(|item| item.document_id == document.document_id);
+                if let Some(record) = binding_record {
+                    record.manual_tag_ids = next;
+                    record.updated_at = iso_now();
+                } else {
+                    store.document_tags.push(LocalStoredDocumentTagBinding {
+                        document_id: document.document_id.clone(),
+                        path: normalize_document_path(&document.path),
+                        title: document.title.clone(),
+                        manual_tag_ids: next,
+                        updated_at: iso_now(),
+                    });
+                }
+            }
+            on_progress("save_tags", changed_count, Some(targets.len()));
+        }
+        on_progress("save_tags", changed_count, Some(targets.len()));
+    } else {
+        for document_index in &targets {
+            let document = &plan.snapshot.documents[*document_index];
+            let current = store.document_tags.iter()
+                .find(|item| item.document_id == document.document_id)
+                .map(|item| item.manual_tag_ids.clone())
+                .unwrap_or_default();
+            let changes = match operation {
+                "add" => selected_tag_ids.iter().any(|id| !current.contains(id)),
+                "remove" => selected_tag_ids.iter().any(|id| current.contains(id)),
+                "replace" => {
+                    let mut current = current.clone();
+                    current.sort();
+                    current != selected_tag_ids
+                }
+                _ => return Err("批量标签操作无效".into()),
+            };
+            let mut prospective = match operation {
+                "add" => current.iter().cloned().chain(selected_tag_ids.iter().cloned()).collect::<HashSet<_>>(),
+                "remove" => current.iter().filter(|id| !selected_tag_ids.contains(id)).cloned().collect::<HashSet<_>>(),
+                "replace" => selected_tag_ids.iter().cloned().collect::<HashSet<_>>(),
+                _ => HashSet::new(),
+            }.into_iter().collect::<Vec<_>>();
+            prospective.sort();
+            if let Err(error) = validate_single_child_tag_ids(&store, &prospective) {
+                validation_errors.push(error);
+            }
+            changed_count += usize::from(changes);
+        }
+    }
+
+    if !validation_errors.is_empty() {
+        return Ok(json!({
+            "matchedCount": targets.len(),
+            "changedCount": 0,
+            "skippedCount": targets.len(),
+            "validationErrors": validation_errors,
+            "targetDocumentIds": target_document_ids,
+        }));
+    }
+
+    if !dry_run && changed_count > 0 {
+        on_progress("export_tags", 0, None);
+        store.updated_at = iso_now();
+        write_local_library_tags_store(binding, &store)?;
+        sync_local_tag_exports_plan_core_with_progress(
+            binding,
+            "external_agent_batch_tags",
+            &store,
+            plan,
+            &mut on_progress,
+        )?;
+    }
+    Ok(json!({
+        "matchedCount": target_document_ids.len(),
+        "changedCount": changed_count,
+        "skippedCount": target_document_ids.len().saturating_sub(changed_count),
+        "validationErrors": [],
+        "targetDocumentIds": target_document_ids,
+    }))
+}
+
 pub fn get_native_folder_tag_details(folder_path: &str) -> Result<Value, String> {
     serde_json::to_value(read_local_folder_tag_details(folder_path)?)
         .map_err(|error| format!("序列化本地 folder tag details 失败：{error}"))
+}
+
+pub fn apply_agent_folder_tag_batch(
+    binding: &LocalLibraryBinding,
+    folder_paths: &[String],
+    operation: &str,
+    tag_paths: &[String],
+    create_tag_paths: &[String],
+    dry_run: bool,
+    mut on_progress: impl FnMut(&str, usize, Option<usize>),
+) -> Result<Value, String> {
+    let folder_paths = folder_paths.iter().map(|path| normalize_folder_path(path))
+        .collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>();
+    let mut store = read_local_library_tags_store(binding)?;
+    let mut validation_errors = Vec::new();
+    if folder_paths.is_empty() || folder_paths.len() > 10_000 {
+        validation_errors.push("目录数量必须为 1 到 10000".to_owned());
+    }
+    if !matches!(operation, "add" | "remove" | "replace") {
+        validation_errors.push("批量标签操作无效".to_owned());
+    }
+    if operation == "remove" && !create_tag_paths.is_empty() {
+        validation_errors.push("remove 操作不能创建标签".to_owned());
+    }
+
+    let mut effective_paths = tag_paths.iter().collect::<Vec<_>>();
+    effective_paths.extend(create_tag_paths.iter().filter(|create| {
+        !tag_paths.iter().any(|path| normalize_tag_segment(path) == normalize_tag_segment(create))
+    }));
+    let mut selected_tag_ids = Vec::new();
+    for path in effective_paths {
+        let normalized = normalize_tag_segment(path);
+        if normalized.is_empty() {
+            validation_errors.push("标签路径不能为空".to_owned());
+        } else if let Some(tag) = store.tags.iter().find(|tag| {
+            tag.path == normalized && (operation == "remove" || tag.status == "active")
+        }) {
+            selected_tag_ids.push(tag.id.clone());
+        } else if create_tag_paths.iter().any(|create| normalize_tag_segment(create) == normalized) {
+            if store.tags.iter().any(|tag| tag.path == normalized && tag.status != "active") {
+                validation_errors.push(format!("标签已停用: {normalized}"));
+            } else {
+                selected_tag_ids.push(ensure_local_tag_path(&mut store, &normalized)?);
+            }
+        } else {
+            validation_errors.push(format!("标签不存在或未启用: {normalized}"));
+        }
+    }
+    let plans = folder_paths.iter().map(|folder_path| {
+        let current = store.folder_tags.iter()
+            .find(|item| normalize_folder_path(&item.folder_path) == *folder_path)
+            .map(|item| item.binding_tag_ids.clone())
+            .unwrap_or_default();
+        let mut next = match operation {
+            "add" => current.iter().cloned().chain(selected_tag_ids.iter().cloned()).collect::<HashSet<_>>(),
+            "remove" => current.iter().filter(|id| !selected_tag_ids.contains(id)).cloned().collect::<HashSet<_>>(),
+            "replace" => selected_tag_ids.iter().cloned().collect::<HashSet<_>>(),
+            _ => HashSet::new(),
+        }.into_iter().collect::<Vec<_>>();
+        next.sort();
+        (folder_path.clone(), current, next)
+    }).collect::<Vec<_>>();
+    let mut changed_count = 0usize;
+    for (folder_path, current, next) in &plans {
+        if !current.is_empty() {
+            if let Err(error) = prepare_tag_assignment(binding, &TagAssignmentScope::Folder {
+                folder_path: folder_path.clone(),
+            }, false) {
+                validation_errors.push(error);
+            }
+        }
+        if current != next {
+            changed_count += 1;
+            if let Err(error) = validate_single_child_tag_ids(&store, next) {
+                validation_errors.push(error);
+            }
+        }
+    }
+    if !validation_errors.is_empty() {
+        return Ok(json!({
+            "matchedCount": folder_paths.len(), "changedCount": 0,
+            "skippedCount": folder_paths.len(), "validationErrors": validation_errors,
+            "targetFolderPaths": folder_paths,
+        }));
+    }
+    if !dry_run && changed_count > 0 {
+        on_progress("save_tags", 0, Some(folder_paths.len()));
+        for (index, (folder_path, current, next)) in plans.into_iter().enumerate() {
+            if current == next { continue; }
+            store.folder_tags.retain(|item| normalize_folder_path(&item.folder_path) != folder_path);
+            if !next.is_empty() {
+                store.folder_tags.push(LocalStoredFolderTagBinding {
+                    folder_path, binding_tag_ids: next, updated_at: iso_now(),
+                });
+            }
+            on_progress("save_tags", index + 1, Some(folder_paths.len()));
+        }
+        store.updated_at = iso_now();
+        write_local_library_tags_store(binding, &store)?;
+        let plan = prepare_tag_assignment(binding, &TagAssignmentScope::FolderPaths {
+            folder_paths: folder_paths.clone(),
+        }, false)?;
+        on_progress("export_tags", 0, None);
+        sync_local_tag_exports_plan_core_with_progress(
+            binding,
+            "external_agent_batch_folder_tags",
+            &store,
+            plan,
+            &mut on_progress,
+        )?;
+    }
+    Ok(json!({
+        "matchedCount": folder_paths.len(), "changedCount": changed_count,
+        "skippedCount": folder_paths.len().saturating_sub(changed_count),
+        "validationErrors": [], "targetFolderPaths": folder_paths,
+    }))
 }
 
 pub fn save_native_folder_tags(request: NativeSaveFolderTagsRequest) -> Result<Value, String> {
@@ -1916,8 +2236,18 @@ fn resolve_exclusive_tag_candidates(
 pub fn run_tag_assignment_core(
     binding: &LocalLibraryBinding,
     store: &LocalStoredLibraryTags,
+    plan: TagAssignmentPlan,
+    reason: &str,
+) -> Result<Value, String> {
+    run_tag_assignment_core_with_progress(binding, store, plan, reason, |_, _, _| {})
+}
+
+fn run_tag_assignment_core_with_progress(
+    binding: &LocalLibraryBinding,
+    store: &LocalStoredLibraryTags,
     mut plan: TagAssignmentPlan,
     reason: &str,
+    mut progress_callback: impl FnMut(&str, usize, Option<usize>),
 ) -> Result<Value, String> {
     let emit = plan.emit_progress;
     let mut last_progress = std::time::Instant::now();
@@ -1952,6 +2282,7 @@ pub fn run_tag_assignment_core(
     }, &mut |stage, processed, total| {
         if last_stage != stage || Some(processed) == total || last_export_progress.elapsed().as_millis() >= 100 {
             task_center::stage_progress(stage, processed, total);
+            progress_callback(stage, processed, total);
             if emit {
                 eprintln!("[x-file-tag-progress] {}", json!({
                     "stage": stage, "processedCount": count, "totalCount": count,
@@ -1968,6 +2299,58 @@ pub fn run_tag_assignment_core(
         "derivedAssignedCount": plan.snapshot.documents.iter().map(|doc| doc.derived_tags.len()).sum::<usize>(),
         "exportedAt": export["exportedAt"],
     }))
+}
+
+fn sync_local_tag_exports_plan_core_with_progress(
+    binding: &LocalLibraryBinding,
+    reason: &str,
+    store: &LocalStoredLibraryTags,
+    plan: TagAssignmentPlan,
+    progress_callback: &mut impl FnMut(&str, usize, Option<usize>),
+) -> Result<LocalLibraryTagRecomputeTask, String> {
+    let task_id = format!(
+        "library.tag_recompute:{}",
+        sha256_hex(format!("{}:{}:{}", binding.library_id, binding.root_dir, iso_now()).as_bytes())
+    );
+    let mut task = LocalLibraryTagRecomputeTask {
+        task_id,
+        task_type: "library.tag_recompute".into(),
+        key: binding.root_dir.clone(),
+        state: "queued".into(),
+        source: reason.into(),
+        queued_at: iso_now(),
+        started_at: None,
+        completed_at: None,
+        failed_at: None,
+        error_summary: None,
+        running_stage: None,
+        deduped: Some(false),
+    };
+    write_local_tag_recompute_task_core(binding, &task)?;
+    task.state = "running".into();
+    task.started_at = Some(iso_now());
+    task.running_stage = Some("write_snapshot".into());
+    write_local_tag_recompute_task_core(binding, &task)?;
+
+    let result = run_tag_assignment_core_with_progress(binding, store, plan, reason, |stage, processed, total| {
+        progress_callback(stage, processed, total);
+        task.running_stage = Some(stage.into());
+        let _ = write_local_tag_recompute_task_core(binding, &task);
+    });
+    if let Err(error) = result {
+        task.state = "failed".into();
+        task.failed_at = Some(iso_now());
+        task.error_summary = Some(error.clone());
+        task.running_stage = None;
+        write_local_tag_recompute_task_core(binding, &task)?;
+        return Err(error);
+    }
+    task.state = "fresh".into();
+    task.completed_at = Some(iso_now());
+    task.running_stage = None;
+    task.error_summary = None;
+    write_local_tag_recompute_task_core(binding, &task)?;
+    Ok(task)
 }
 
 fn matches_tag_rule(document: &LocalRuntimeSnapshotDocument, rule: &LocalStoredTagRule) -> bool {

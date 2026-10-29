@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use rmcp::{
     model::{
         CallToolRequestParams, CallToolResponse, CallToolResult, Implementation,
@@ -11,14 +9,12 @@ use rmcp::{
     ErrorData, RoleServer, ServerHandler, ServiceExt,
 };
 use serde_json::Value;
-use tokio::sync::Mutex;
 
 use super::{call, catalog, envelope, list_tools, ToolError, MAX_INPUT_BYTES, SKILL, SKILL_URI};
 
 #[derive(Clone)]
 struct XFileServer {
     read_only: bool,
-    serial: Arc<Mutex<()>>,
 }
 
 impl ServerHandler for XFileServer {
@@ -34,7 +30,9 @@ impl ServerHandler for XFileServer {
         _: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         reject_cursor(request)?;
-        Ok(ListToolsResult::with_all_items(list_tools(self.read_only)))
+        let access_mode = super::settings::authorize()
+            .map_err(|error| ErrorData::invalid_request(error.message, None))?;
+        Ok(ListToolsResult::with_all_items(list_tools(self.read_only, access_mode)))
     }
 
     async fn call_tool(
@@ -50,7 +48,6 @@ impl ServerHandler for XFileServer {
         if input.to_string().len() as u64 > MAX_INPUT_BYTES {
             return Err(ErrorData::invalid_params("参数不能超过 2 MiB", None));
         }
-        let _guard = self.serial.lock().await;
         let read_only = self.read_only;
         let task_name = name.clone();
         let result = tokio::task::spawn_blocking(move || call(&task_name, input, read_only))
@@ -117,7 +114,6 @@ pub async fn serve(read_only: bool) -> Result<(), ToolError> {
     // SDK 独占 stdout；底层原生预览日志只写 stderr。
     let server = XFileServer {
         read_only,
-        serial: Arc::new(Mutex::new(())),
     };
     let running = server
         .serve(rmcp::transport::stdio())

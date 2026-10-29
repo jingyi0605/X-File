@@ -16,7 +16,16 @@ const DIGEST_CONTEXT: &[u8] = b"X-File agent credential v1";
 struct SettingsRecord {
     enabled: bool,
     api_key_digest: Option<Vec<u8>>,
+    access_mode: Option<AccessMode>,
     updated_at: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AccessMode {
+    #[default]
+    ReadOnly,
+    ReadWrite,
 }
 
 #[derive(Default, Deserialize)]
@@ -24,6 +33,7 @@ struct SettingsRecord {
 pub(crate) struct SettingsInput {
     enabled: Option<bool>,
     api_key: Option<String>,
+    access_mode: Option<AccessMode>,
     #[serde(default)]
     generate_api_key: bool,
     #[serde(default)]
@@ -35,6 +45,7 @@ pub(crate) struct SettingsInput {
 pub(crate) struct SettingsView {
     enabled: bool,
     api_key_configured: bool,
+    access_mode: AccessMode,
     updated_at: Option<String>,
     executable_path: String,
     data_dir: String,
@@ -47,6 +58,7 @@ pub(crate) struct SettingsView {
 struct AgentCapability {
     name: String,
     description: String,
+    available: bool,
     read_only: bool,
     destructive: bool,
     requires_binding: bool,
@@ -121,9 +133,11 @@ fn read_record(directory: &Path) -> Result<SettingsRecord, ToolError> {
 }
 
 fn view(directory: &Path, record: SettingsRecord) -> Result<SettingsView, ToolError> {
+    let access_mode = effective_access_mode(&record);
     Ok(SettingsView {
         enabled: record.enabled,
         api_key_configured: record.api_key_digest.is_some(),
+        access_mode,
         updated_at: record.updated_at,
         executable_path: std::env::current_exe()?.to_string_lossy().into_owned(),
         data_dir: std::path::absolute(directory)?.to_string_lossy().into_owned(),
@@ -133,6 +147,8 @@ fn view(directory: &Path, record: SettingsRecord) -> Result<SettingsView, ToolEr
             .map(|definition| AgentCapability {
                 name: definition.tool.name.to_string(),
                 description: definition.tool.description.as_deref().unwrap_or("").to_owned(),
+                available: access_mode == AccessMode::ReadWrite
+                    || super::is_read_only(&definition.tool),
                 read_only: super::is_read_only(&definition.tool),
                 destructive: definition.tool.annotations.as_ref()
                     .and_then(|annotations| annotations.destructive_hint)
@@ -158,6 +174,18 @@ pub(crate) fn get_settings() -> Result<SettingsView, String> {
 
 pub(crate) fn save_settings(input: SettingsInput) -> Result<SettingsSaved, String> {
     save_in(&crate::x_file_data_dir(), input).map_err(|error| error.message)
+}
+
+pub(crate) fn configured_access_mode() -> Result<AccessMode, ToolError> {
+    Ok(effective_access_mode(&read_record(&crate::x_file_data_dir())?))
+}
+
+fn effective_access_mode(record: &SettingsRecord) -> AccessMode {
+    record.access_mode.unwrap_or(if record.api_key_digest.is_some() {
+        AccessMode::ReadWrite
+    } else {
+        AccessMode::ReadOnly
+    })
 }
 
 #[derive(Deserialize)]
@@ -235,9 +263,15 @@ fn save_in(directory: &Path, input: SettingsInput) -> Result<SettingsSaved, Tool
             ));
         }
         record.api_key_digest = Some(digest(key).finalize().into_bytes().to_vec());
+        if record.access_mode.is_none() {
+            record.access_mode = Some(AccessMode::ReadOnly);
+        }
     }
     if let Some(enabled) = input.enabled {
         record.enabled = enabled;
+    }
+    if let Some(access_mode) = input.access_mode {
+        record.access_mode = Some(access_mode);
     }
     if input.clear_api_key {
         record.api_key_digest = None;
@@ -308,10 +342,11 @@ fn verify(record: &SettingsRecord, key: Option<&str>) -> Result<(), ToolError> {
     Ok(())
 }
 
-pub(super) fn authorize() -> Result<(), ToolError> {
+pub(super) fn authorize() -> Result<AccessMode, ToolError> {
     let record = read_record(&crate::x_file_data_dir())?;
     let key = std::env::var("X_FILE_AGENT_API_KEY").ok();
     verify(&record, key.as_deref())
+        .map(|()| effective_access_mode(&record))
 }
 
 #[cfg(test)]
@@ -399,6 +434,7 @@ mod tests {
                 },
             )?;
             let key = saved.api_key.unwrap();
+            assert_eq!(saved.settings.access_mode, AccessMode::ReadOnly);
             assert_eq!(key.len(), 67);
             assert!(!fs::read_to_string(directory.join(SETTINGS_FILE))?.contains(&key));
             #[cfg(unix)]

@@ -3111,6 +3111,10 @@ fn read_local_library_documents(
     request: NativeListDocumentsRequest,
 ) -> Result<LocalLibraryDocumentList, String> {
     let binding = read_local_library_binding()?.ok_or_else(|| "当前未绑定文档库".to_string())?;
+    for path in request.selected_folder_path.iter().filter(|path| !path.trim().is_empty()) {
+        crate::agent_tools::files::resolve(&binding, path, false, true)
+            .map_err(|error| error.message)?;
+    }
     let runtime_status = read_local_runtime_status(&binding.root_dir)?;
     let favorites = read_local_library_favorites(&binding)?;
     record_native_directory_priority_hint(
@@ -3133,9 +3137,11 @@ fn read_local_library_documents(
         }
     };
     let search_scope = match request.search_scope.as_deref() {
-        Some("all") => "all",
-        Some("current_directory") => "current_directory",
-        _ => "current_results",
+        Some("all") | Some("current_directory") | Some("current_results") => {
+            request.search_scope.as_deref().unwrap_or("current_results")
+        }
+        Some(_) => return Err("searchScope 参数无效".into()),
+        None => "current_results",
     };
     let documents = if search_scope == "all" {
         export_payload.documents.iter().collect::<Vec<_>>()
@@ -3154,9 +3160,9 @@ fn read_local_library_documents(
     };
     let keyword = request.keyword.unwrap_or_default().trim().to_lowercase();
     let search_mode = match request.search_mode.as_deref() {
-        Some("name") => "name",
-        Some("content") => "content",
-        _ => "all",
+        Some("all") | Some("name") | Some("content") => request.search_mode.as_deref().unwrap_or("all"),
+        Some(_) => return Err("searchMode 参数无效".into()),
+        None => "all",
     };
     let offset = request.offset.unwrap_or(0);
     let limit = request.limit.unwrap_or(50);
@@ -3224,11 +3230,15 @@ fn read_local_library_documents(
 
         if !keyword.is_empty() {
             let haystack = match search_mode {
-                "name" => Path::new(&normalized_path)
-                    .file_name()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or("")
-                    .to_lowercase(),
+                "name" => format!(
+                    "{}\n{}",
+                    title.to_lowercase(),
+                    Path::new(&normalized_path)
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or("")
+                        .to_lowercase(),
+                ),
                 "content" => summary.to_lowercase(),
                 _ => format!(
                     "{}\n{}\n{}",

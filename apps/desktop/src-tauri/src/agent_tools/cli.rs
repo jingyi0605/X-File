@@ -5,7 +5,7 @@ use std::path::Path;
 use serde_json::{json, Value};
 
 use super::{
-    call, catalog, envelope, is_read_only, list_tools, mcp, ToolError, MAX_INPUT_BYTES, SKILL,
+    call, catalog, envelope, list_tools, mcp, ToolError, MAX_INPUT_BYTES, SKILL,
 };
 
 const HELP: &str = "\
@@ -77,13 +77,17 @@ fn run(args: &[String]) -> Result<i32, ToolError> {
         "list" if rest.len() == 1 => println!(
             "{}",
             json!({
-                "schemaVersion": 1, "readOnly": read_only, "tools": list_tools(read_only)
+                "schemaVersion": 1, "readOnly": read_only,
+                "tools": list_tools(read_only, super::settings::configured_access_mode()?)
             })
         ),
         "schema" if rest.len() == 2 => {
+            let access_mode = super::settings::configured_access_mode()?;
+            let available = list_tools(read_only, access_mode);
             let definition = catalog()
                 .iter()
-                .find(|d| d.tool.name == rest[1] && (!read_only || is_read_only(&d.tool)))
+                .find(|d| d.tool.name == rest[1]
+                    && available.iter().any(|tool| tool.name == d.tool.name))
                 .ok_or_else(|| ToolError::new("TOOL_NOT_FOUND", "当前模式下未找到工具"))?;
             println!("{}", serde_json::to_string(&definition.tool)?);
         }

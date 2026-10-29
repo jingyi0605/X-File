@@ -500,6 +500,8 @@ async function listLibraryDocumentsWithNative(
     selectedTagPaths: query.selectedTagPaths,
     selectedFavoriteId: query.selectedFavoriteId,
     keyword: query.keyword,
+    searchScope: query.searchScope,
+    searchMode: query.searchMode,
     updatedAtOrder: query.updatedAtOrder,
     offset: query.offset,
     limit: query.limit,

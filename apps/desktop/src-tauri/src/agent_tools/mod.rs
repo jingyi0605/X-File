@@ -1,8 +1,9 @@
 pub(crate) mod cli;
-mod files;
+pub(crate) mod files;
 mod mcp;
 pub(crate) mod settings;
 
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -17,7 +18,7 @@ pub const SKILL: &str = include_str!("../../../../../skills/x-file/SKILL.md");
 pub const SKILL_URI: &str = "xfile://skills/x-file";
 pub const MAX_INPUT_BYTES: u64 = 2 * 1024 * 1024;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ToolError {
     pub code: &'static str,
     pub message: String,
@@ -101,10 +102,13 @@ pub fn is_read_only(tool: &Tool) -> bool {
         .unwrap_or(false)
 }
 
-pub fn list_tools(read_only: bool) -> Vec<Tool> {
+pub fn list_tools(read_only: bool, access_mode: settings::AccessMode) -> Vec<Tool> {
     catalog()
         .iter()
-        .filter(|item| !read_only || is_read_only(&item.tool))
+        .filter(|item| {
+            (!read_only && access_mode == settings::AccessMode::ReadWrite)
+                || is_read_only(&item.tool)
+        })
         .map(|item| item.tool.clone())
         .collect()
 }
@@ -126,13 +130,18 @@ fn execute(name: &str, args: Value, read_only: bool) -> Result<Value, ToolError>
         .find(|item| item.tool.name == name)
         .ok_or_else(|| ToolError::new("TOOL_NOT_FOUND", format!("未知工具：{name}")))?;
     if read_only && !is_read_only(&definition.tool) {
-        return Err(ToolError::new("READ_ONLY", "当前进程启用了只读模式"));
+        return Err(ToolError::new("READ_ONLY", "当前客户端请求启用了只读模式"));
     }
     if let Some(error) = definition.validator.iter_errors(&args).next() {
         return Err(ToolError::new("INVALID_ARGUMENT", error.to_string())
             .field(error.instance_path().to_string()));
     }
-    settings::authorize()?;
+    let access_mode = settings::authorize()?;
+    if !is_read_only(&definition.tool)
+        && (read_only || access_mode == settings::AccessMode::ReadOnly)
+    {
+        return Err(ToolError::new("ACCESS_POLICY_DENIED", "当前 Agent 策略禁止写入操作"));
+    }
     if definition
         .tool
         .meta
@@ -149,7 +158,12 @@ fn execute(name: &str, args: Value, read_only: bool) -> Result<Value, ToolError>
     } else {
         Some(lock_state()?)
     };
-    settings::authorize()?;
+    let access_mode = settings::authorize()?;
+    if !is_read_only(&definition.tool)
+        && (read_only || access_mode == settings::AccessMode::ReadOnly)
+    {
+        return Err(ToolError::new("ACCESS_POLICY_DENIED", "当前 Agent 策略禁止写入操作"));
+    }
     dispatch(name, args)
 }
 
@@ -177,7 +191,8 @@ fn dispatch(name: &str, mut args: Value) -> Result<Value, ToolError> {
             "app": "X-File", "version": env!("CARGO_PKG_VERSION"), "schemaVersion": 1,
             "transport": "native", "binding": native(read_local_library_binding())?,
             "dataDir": x_file_data_dir(), "skillUri": SKILL_URI,
-            "toolCount": catalog().len()
+            "accessMode": settings::configured_access_mode()?,
+            "toolCount": list_tools(false, settings::configured_access_mode()?).len()
         })),
         "xfile_binding_get" => value(native(read_local_library_binding())?),
         "xfile_binding_set" => {
@@ -213,6 +228,9 @@ fn dispatch(name: &str, mut args: Value) -> Result<Value, ToolError> {
                 serde_json::from_value(args)?,
             ))?)
         }
+        "xfile_documents_tags_batch" => batch_document_tags(&args),
+        "xfile_tasks_list" => list_agent_tasks(),
+        "xfile_task_get" => get_agent_task(args["taskId"].as_str().unwrap_or_default()),
         "xfile_files_list" => {
             let path = args["path"].as_str().unwrap_or(".");
             files::resolve(&binding()?, path, false, true)?;
@@ -289,6 +307,568 @@ fn dispatch(name: &str, mut args: Value) -> Result<Value, ToolError> {
         ))?),
         _ => Err(ToolError::new("TOOL_NOT_FOUND", "工具尚未实现")),
     }
+}
+
+#[derive(Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentBatchTask {
+    task_id: String,
+    request_digest: String,
+    library_key: String,
+    state: String,
+    stage: Option<String>,
+    processed_count: usize,
+    total_count: Option<usize>,
+    changed_count: usize,
+    heartbeat_at: String,
+    queued_at: String,
+    completed_at: Option<String>,
+    result: Option<Value>,
+    error: Option<ToolErrorRecord>,
+}
+
+#[derive(Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolErrorRecord {
+    code: String,
+    message: String,
+}
+
+fn agent_tasks_path() -> std::path::PathBuf {
+    x_file_data_dir().join("agent-batch-tasks.json")
+}
+
+fn read_agent_tasks() -> Result<HashMap<String, AgentBatchTask>, ToolError> {
+    let path = agent_tasks_path();
+    if !path.is_file() {
+        return Ok(HashMap::new());
+    }
+    let raw = fs::read_to_string(path)?;
+    let mut tasks: HashMap<String, AgentBatchTask> = serde_json::from_str(&raw)
+        .map_err(|_| ToolError::new("TASK_STORE_ERROR", "Agent task history is invalid."))?;
+    let stale_before = chrono::Utc::now() - chrono::Duration::minutes(10);
+    for task in tasks.values_mut().filter(|task| {
+        task.state == "running"
+            && chrono::DateTime::parse_from_rfc3339(&task.heartbeat_at)
+                .is_ok_and(|heartbeat| heartbeat.with_timezone(&chrono::Utc) < stale_before)
+    }) {
+        task.state = "failed".into();
+        task.stage = None;
+        task.completed_at = Some(iso_now());
+        task.error = Some(ToolErrorRecord {
+            code: "TASK_INTERRUPTED".into(),
+            message: "任务超过十分钟没有进度更新，可能在进程退出时中断。确认状态后使用新的幂等键重试。".into(),
+        });
+        task.result = Some(json!({
+            "matchedCount": task.total_count.unwrap_or(0),
+            "changedCount": task.changed_count,
+            "skippedCount": task.total_count.unwrap_or(0).saturating_sub(task.changed_count),
+            "failedCount": 0,
+            "error": task.error,
+        }));
+    }
+    let mut completed = tasks.values().filter(|task| task.completed_at.is_some())
+        .map(|task| (task.completed_at.clone().unwrap_or_default(), task.task_id.clone()))
+        .collect::<Vec<_>>();
+    completed.sort_by(|left, right| right.0.cmp(&left.0));
+    for (_, task_id) in completed.into_iter().skip(100) {
+        tasks.remove(&task_id);
+    }
+    Ok(tasks)
+}
+
+fn write_agent_tasks(tasks: &HashMap<String, AgentBatchTask>) -> Result<(), ToolError> {
+    let path = agent_tasks_path();
+    native(write_json_file(&path, tasks))
+}
+
+fn persist_batch_progress(task: &mut AgentBatchTask, stage: &str, processed: usize, total: Option<usize>) {
+    static LAST_WRITE: OnceLock<std::sync::Mutex<std::time::Instant>> = OnceLock::new();
+    let last_write = LAST_WRITE.get_or_init(|| std::sync::Mutex::new(std::time::Instant::now()));
+    let Ok(mut last_write) = last_write.lock() else { return };
+    if processed != 0 && Some(processed) != total && last_write.elapsed().as_millis() < 100 {
+        return;
+    }
+    task.stage = Some(stage.to_owned());
+    task.processed_count = processed;
+    task.total_count = total;
+    if stage == "save_tags" {
+        task.changed_count = processed;
+    }
+    task.heartbeat_at = iso_now();
+    if let Ok(mut tasks) = read_agent_tasks() {
+        tasks.insert(task.task_id.clone(), task.clone());
+        let _ = write_agent_tasks(&tasks);
+    }
+    *last_write = std::time::Instant::now();
+}
+
+fn list_agent_tasks() -> Result<Value, ToolError> {
+    let binding = binding()?;
+    let key = sha256_hex(format!("{}:{}", binding.library_id, binding.root_dir).as_bytes());
+    let mut tasks = read_agent_tasks()?.into_values()
+        .filter(|task| task.library_key == key)
+        .map(|task| json!(task))
+        .collect::<Vec<_>>();
+    tasks.extend(native_core::task_center::list(&binding.root_dir).into_iter().map(|task| json!(task)));
+    tasks.sort_by(|left, right| right["queuedAt"].as_str().cmp(&left["queuedAt"].as_str()));
+    Ok(json!({"items": tasks}))
+}
+
+fn get_agent_task(task_id: &str) -> Result<Value, ToolError> {
+    let binding = binding()?;
+    let key = sha256_hex(format!("{}:{}", binding.library_id, binding.root_dir).as_bytes());
+    let tasks = read_agent_tasks()?;
+    if let Some(task) = tasks.get(task_id).filter(|task| task.library_key == key) {
+        return value(task);
+    }
+    let task = native_core::task_center::list(&binding.root_dir).into_iter()
+        .find(|task| task.task_id == task_id)
+        .ok_or_else(|| ToolError::new("TASK_NOT_FOUND", "当前资料库中未找到此任务。"))?;
+    value(task)
+}
+
+fn batch_document_tags(args: &Value) -> Result<Value, ToolError> {
+    let bound = binding()?;
+    let _root_lock = native(native_core::scheduler::lock_root(&bound.root_dir))?;
+    let operation = args["operation"].as_str().unwrap_or_default();
+    let tag_paths = args["tagPaths"].as_array().into_iter().flatten()
+        .filter_map(Value::as_str).map(str::to_owned).collect::<Vec<_>>();
+    let create_tag_paths = args["createTagPaths"].as_array().into_iter().flatten()
+        .filter_map(Value::as_str).map(str::to_owned).collect::<Vec<_>>();
+    let dry_run = args["dryRun"].as_bool().unwrap_or(true);
+    let idempotency_key = args["idempotencyKey"].as_str().unwrap_or_default();
+    let mut normalized_request = args.clone();
+    if let Some(object) = normalized_request.as_object_mut() {
+        object.remove("idempotencyKey");
+    }
+    let request_digest = sha256_hex(&serde_json::to_vec(&normalized_request)?);
+    let library_key = sha256_hex(format!("{}:{}", bound.library_id, bound.root_dir).as_bytes());
+    let task_id = format!("agent-batch:{}", sha256_hex(format!("{library_key}:{idempotency_key}").as_bytes()));
+
+    if args.get("folderPath").is_some() || args.get("folderPaths").is_some()
+        || (args["targetKind"] == "folders" && args.get("documentIds").is_some())
+        || (args["targetKind"] == "folders" && args.get("query").is_some())
+    {
+        if dry_run {
+            return batch_folder_tags(&bound, args, idempotency_key, &request_digest);
+        }
+        let mut tasks = read_agent_tasks()?;
+        if let Some(existing) = tasks.get(&task_id) {
+            if existing.request_digest != request_digest {
+                return Err(ToolError::new("IDEMPOTENCY_CONFLICT", "该幂等键已用于其他请求。"));
+            }
+            if existing.state == "completed" {
+                let mut result = existing.result.clone().unwrap_or_else(|| json!({}));
+                if let Some(object) = result.as_object_mut() { object.insert("deduped".into(), json!(true)); }
+                return Ok(result);
+            }
+            if existing.state == "running" {
+                return Ok(json!({"taskId": task_id, "state": "running", "stage": existing.stage,
+                    "processedCount": existing.processed_count, "totalCount": existing.total_count,
+                    "changedCount": existing.changed_count, "deduped": true}));
+            }
+            if existing.state == "failed" {
+                let (code, message) = existing.error.as_ref()
+                    .map(|error| (error.code.clone(), error.message.clone()))
+                    .unwrap_or_else(|| ("BATCH_TAG_FAILED".into(), "上一次批量操作失败。".into()));
+                return Err(ToolError::new(
+                    "BATCH_TAG_FAILED",
+                    format!("{}: {message}", code),
+                ));
+            }
+        }
+        let mut task = AgentBatchTask {
+            task_id: task_id.clone(), request_digest: request_digest.clone(),
+            library_key, state: "running".into(), stage: Some("save_tags".into()), processed_count: 0,
+            total_count: args["folderPaths"].as_array().map(Vec::len).or(Some(1)), changed_count: 0,
+            heartbeat_at: iso_now(), queued_at: iso_now(), completed_at: None, result: None, error: None,
+        };
+        tasks.insert(task_id.clone(), task.clone());
+        write_agent_tasks(&tasks)?;
+        let result = batch_folder_tags(&bound, args, idempotency_key, &request_digest);
+        match result {
+            Ok(mut result) => {
+                if result["validationErrors"].as_array().is_some_and(|errors| !errors.is_empty()) {
+                    let message = result["validationErrors"][0].as_str()
+                        .unwrap_or("批量目录标签校验失败。")
+                        .to_owned();
+                    task.state = "failed".into();
+                    task.stage = None;
+                    task.completed_at = Some(iso_now());
+                    task.error = Some(ToolErrorRecord { code: "BATCH_VALIDATION_FAILED".into(), message });
+                    task.result = Some(result);
+                    tasks.insert(task_id, task);
+                    write_agent_tasks(&tasks)?;
+                    return Err(ToolError::new("BATCH_VALIDATION_FAILED", "批量目录标签校验失败，未应用任何修改。"));
+                }
+                task.changed_count = result["changedCount"].as_u64().unwrap_or(0) as usize;
+                task.processed_count = result["matchedCount"].as_u64().unwrap_or(0) as usize;
+                task.total_count = Some(task.processed_count);
+                task.state = "completed".into(); task.stage = None; task.completed_at = Some(iso_now());
+                if let Some(object) = result.as_object_mut() {
+                    object.insert("taskId".into(), json!(task_id));
+                    object.insert("state".into(), json!("completed"));
+                    object.insert("deduped".into(), json!(false));
+                }
+                task.result = Some(result.clone()); tasks.insert(task_id, task); write_agent_tasks(&tasks)?;
+                return Ok(result);
+            }
+            Err(error) => {
+                task.state = "failed".into(); task.stage = None; task.completed_at = Some(iso_now());
+                task.error = Some(ToolErrorRecord { code: error.code.into(), message: error.message.clone() });
+                task.result = Some(json!({
+                    "matchedCount": task.total_count.unwrap_or(0),
+                    "changedCount": task.changed_count,
+                    "skippedCount": task.total_count.unwrap_or(0).saturating_sub(task.changed_count),
+                    "failedCount": 0,
+                    "error": task.error,
+                }));
+                tasks.insert(task_id, task); write_agent_tasks(&tasks)?;
+                return Err(error);
+            }
+        }
+    }
+
+    if !dry_run {
+        let tasks = read_agent_tasks()?;
+        if let Some(existing) = tasks.get(&task_id) {
+            if existing.request_digest != request_digest {
+                return Err(ToolError::new("IDEMPOTENCY_CONFLICT", "该幂等键已用于其他请求。"));
+            }
+            if existing.state == "running" {
+                return Ok(json!({
+                    "taskId": task_id,
+                    "state": existing.state,
+                    "stage": existing.stage,
+                    "processedCount": existing.processed_count,
+                    "totalCount": existing.total_count,
+                    "matchedCount": existing.total_count.unwrap_or(0),
+                    "changedCount": 0,
+                    "skippedCount": 0,
+                    "deduped": true,
+                }));
+            }
+            if existing.state == "failed" {
+                let (code, message) = existing.error.as_ref()
+                    .map(|error| (error.code.clone(), error.message.clone()))
+                    .unwrap_or_else(|| ("BATCH_TAG_FAILED".into(), "上一次批量操作失败。".into()));
+                return Err(ToolError::new(
+                    "BATCH_TAG_FAILED",
+                    format!("{}: {message}", code),
+                ));
+            }
+            let mut result = existing.result.clone().unwrap_or_else(|| json!({}));
+            if let Some(object) = result.as_object_mut() {
+                object.insert("taskId".into(), json!(task_id));
+                object.insert("deduped".into(), json!(true));
+                object.insert("state".into(), json!(existing.state));
+            }
+            return Ok(result);
+        }
+    }
+
+    let document_ids = resolve_batch_document_ids(args, &bound)?;
+    if dry_run {
+        let mut result = native(native_core::tag_core::apply_agent_document_tag_batch(
+            &bound, &document_ids, operation, &tag_paths, &create_tag_paths, true,
+            |_, _, _| {},
+        ))?;
+        if let Some(object) = result.as_object_mut() {
+            object.insert("requestDigest".into(), json!(request_digest));
+        }
+        return Ok(result);
+    }
+
+    let mut tasks = read_agent_tasks()?;
+    if let Some(existing) = tasks.get(&task_id) {
+        if existing.request_digest != request_digest {
+            return Err(ToolError::new("IDEMPOTENCY_CONFLICT", "This idempotency key was already used for a different request."));
+        }
+        if existing.state == "running" {
+            let mut result = json!({
+                "taskId": task_id,
+                "state": "running",
+                "stage": existing.stage,
+                "processedCount": existing.processed_count,
+                "totalCount": existing.total_count,
+                "deduped": true
+            });
+            if let Some(object) = result.as_object_mut() {
+                object.insert("matchedCount".into(), json!(existing.total_count.unwrap_or(0)));
+                object.insert("changedCount".into(), json!(0));
+                object.insert("skippedCount".into(), json!(0));
+            }
+            return Ok(result);
+        }
+        let mut result = existing.result.clone().unwrap_or_else(|| json!({}));
+        if let Some(object) = result.as_object_mut() {
+            object.insert("taskId".into(), json!(task_id));
+            object.insert("deduped".into(), json!(true));
+            object.insert("state".into(), json!(existing.state));
+        }
+        return Ok(result);
+    }
+
+    let mut task = AgentBatchTask {
+        task_id: task_id.clone(),
+        request_digest,
+        library_key,
+        state: "running".into(),
+        stage: Some("prepare".into()),
+        processed_count: 0,
+        total_count: Some(document_ids.len()),
+        changed_count: 0,
+        heartbeat_at: iso_now(),
+        queued_at: iso_now(),
+        completed_at: None,
+        result: None,
+        error: None,
+    };
+    tasks.insert(task_id.clone(), task.clone());
+    write_agent_tasks(&tasks)?;
+
+    let result = native_core::tag_core::apply_agent_document_tag_batch(
+        &bound, &document_ids, operation, &tag_paths, &create_tag_paths, false,
+        |stage, processed, total| persist_batch_progress(&mut task, stage, processed, total),
+    ).map_err(|message| ToolError::new("BATCH_TAG_FAILED", message));
+    match result {
+        Ok(mut result) => {
+            if result["validationErrors"].as_array().is_some_and(|errors| !errors.is_empty()) {
+                let message = result["validationErrors"][0].as_str().unwrap_or("Batch validation failed.").to_owned();
+                task.state = "failed".into();
+                task.stage = None;
+                task.completed_at = Some(iso_now());
+                task.error = Some(ToolErrorRecord { code: "BATCH_VALIDATION_FAILED".into(), message });
+                tasks.insert(task_id, task);
+                write_agent_tasks(&tasks)?;
+                return Err(ToolError::new("BATCH_VALIDATION_FAILED", "Batch validation failed; no changes were applied."));
+            }
+            task.state = "completed".into();
+            task.stage = None;
+            task.completed_at = Some(iso_now());
+            if let Some(object) = result.as_object_mut() {
+                object.insert("taskId".into(), json!(task_id));
+                object.insert("deduped".into(), json!(false));
+                object.insert("state".into(), json!("completed"));
+            }
+            task.result = Some(result.clone());
+            tasks.insert(task_id, task);
+            write_agent_tasks(&tasks)?;
+            Ok(result)
+        }
+        Err(error) => {
+            task.state = "failed".into();
+            task.stage = None;
+            task.completed_at = Some(iso_now());
+            task.error = Some(ToolErrorRecord { code: error.code.into(), message: error.message.clone() });
+            task.result = Some(json!({
+                "matchedCount": document_ids.len(),
+                "changedCount": task.changed_count,
+                "skippedCount": document_ids.len().saturating_sub(task.changed_count),
+                "failedCount": 0,
+                "targetDocumentIds": document_ids,
+                "error": task.error,
+            }));
+            tasks.insert(task_id, task);
+            write_agent_tasks(&tasks)?;
+            Err(error)
+        }
+    }
+}
+
+fn batch_folder_tags(
+    binding: &LocalLibraryBinding,
+    args: &Value,
+    idempotency_key: &str,
+    request_digest: &str,
+) -> Result<Value, ToolError> {
+    let mut folder_paths = if let Some(folders) = args["folderPaths"].as_array() {
+        folders.iter().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<_>>()
+    } else if let Some(folder) = args["folderPath"].as_str() {
+        vec![folder.to_owned()]
+    } else if args["targetKind"] == "folders" && args["documentIds"].is_array() {
+        resolve_document_folder_paths(binding, &args["documentIds"])?
+    } else if args["targetKind"] == "folders" && args.get("query").is_some() {
+        resolve_query_folder_paths(binding, &args["query"])?
+    } else if args.get("folderPaths").is_none()
+        && args.get("folderPath").is_none()
+        && args.get("documentIds").is_none()
+        && args.get("query").is_some() {
+        resolve_query_folder_paths(binding, &args["query"])?
+    } else {
+        return Err(ToolError::new("INVALID_ARGUMENT", "A folder selection is required."));
+    };
+    folder_paths.sort();
+    folder_paths.dedup();
+    if folder_paths.is_empty() || folder_paths.len() > 10_000 {
+        return Err(ToolError::new("BATCH_LIMIT_EXCEEDED", "目录目标必须为 1 到 10000 个。"));
+    }
+    for folder in &folder_paths {
+        let path = files::resolve(binding, folder, false, true)?;
+        if !path.is_dir() {
+            return Err(ToolError::new("PATH_NOT_DIRECTORY", "Folder tag targets must be directories."));
+        }
+    }
+    let operation = args["operation"].as_str().unwrap_or_default();
+    let tag_paths = args["tagPaths"].as_array().into_iter().flatten()
+        .filter_map(Value::as_str).map(str::to_owned).collect::<Vec<_>>();
+    let create_paths = args["createTagPaths"].as_array().into_iter().flatten()
+        .filter_map(Value::as_str).map(str::to_owned).collect::<Vec<_>>();
+    let mut task = if args["dryRun"].as_bool().unwrap_or(true) { None } else {
+        let tasks = read_agent_tasks()?;
+        let key = sha256_hex(format!("{}:{}", binding.library_id, binding.root_dir).as_bytes());
+        let task_id = format!("agent-batch:{}", sha256_hex(format!("{key}:{idempotency_key}").as_bytes()));
+        Some(tasks.get(&task_id).filter(|task| task.request_digest == request_digest).cloned()
+            .ok_or_else(|| ToolError::new("TASK_NOT_FOUND", "目录标签任务尚未登记。"))?)
+    };
+    let result = native(native_core::tag_core::apply_agent_folder_tag_batch(
+        binding,
+        &folder_paths,
+        operation,
+        &tag_paths,
+        &create_paths,
+        args["dryRun"].as_bool().unwrap_or(true),
+        |stage, processed, total| {
+            if let Some(task) = task.as_mut() {
+                persist_batch_progress(task, stage, processed, total);
+            }
+        },
+    ))?;
+    if let Some(task) = task.as_mut() {
+        task.changed_count = result["changedCount"].as_u64().unwrap_or(0) as usize;
+        task.processed_count = result["matchedCount"].as_u64().unwrap_or(0) as usize;
+        task.total_count = Some(task.processed_count);
+        task.heartbeat_at = iso_now();
+        if let Ok(mut tasks) = read_agent_tasks() {
+            tasks.insert(task.task_id.clone(), task.clone());
+            let _ = write_agent_tasks(&tasks);
+        }
+    }
+    if !args["dryRun"].as_bool().unwrap_or(true)
+        && result["validationErrors"].as_array().is_some_and(|errors| !errors.is_empty())
+    {
+        return Err(ToolError::new("BATCH_VALIDATION_FAILED", "Folder batch validation failed; no changes were applied."));
+    }
+    let mut result = result;
+    if !args["dryRun"].as_bool().unwrap_or(true) {
+        let task_id = format!("agent-batch:{}", sha256_hex(format!("{}:{idempotency_key}", sha256_hex(format!("{}:{}", binding.library_id, binding.root_dir).as_bytes())).as_bytes()));
+        if let Some(object) = result.as_object_mut() {
+            object.insert("taskId".into(), json!(task_id));
+            object.insert("state".into(), json!("completed"));
+            object.insert("deduped".into(), json!(false));
+        }
+    }
+    Ok(result)
+}
+
+fn resolve_document_folder_paths(
+    binding: &LocalLibraryBinding,
+    ids: &Value,
+) -> Result<Vec<String>, ToolError> {
+    let snapshot = native(native_core::tag_core::read_runtime_export_catalog_snapshot_core(&binding.root_dir))?
+        .ok_or_else(|| ToolError::new("INDEX_NOT_READY", "The library index snapshot is not ready."))?;
+    let by_id = snapshot.documents.iter()
+        .map(|document| (document.document_id.as_str(), document.path.as_str()))
+        .collect::<HashMap<_, _>>();
+    let mut folders = Vec::new();
+    for id in ids.as_array().into_iter().flatten().filter_map(Value::as_str) {
+        let path = by_id.get(id)
+            .ok_or_else(|| ToolError::new("DOCUMENT_NOT_FOUND", "文档 ID 不属于当前资料库。"))?;
+        folders.push(PathBuf::from(path).parent()
+            .map(|parent| parent.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|| ".".into()));
+    }
+    folders.sort();
+    folders.dedup();
+    Ok(folders)
+}
+
+fn resolve_query_folder_paths(
+    binding: &LocalLibraryBinding,
+    input: &Value,
+) -> Result<Vec<String>, ToolError> {
+    if let Some(folder) = input.get("selectedFolderPath").and_then(Value::as_str) {
+        files::resolve(binding, folder, false, true)?;
+    }
+    let mut query = input.clone();
+    query["offset"] = json!(0);
+    query["limit"] = json!(10_001);
+    let request: NativeListDocumentsRequest = serde_json::from_value(query)
+        .map_err(|_| ToolError::new("INVALID_ARGUMENT", "The folder query is invalid."))?;
+    let result = native(crate::read_local_library_documents(request))?;
+    if result.total > 10_000 {
+        return Err(ToolError::new("BATCH_LIMIT_EXCEEDED", "目录批量最多选择 10000 个文档结果。"));
+    }
+    Ok(result.items.iter()
+        .map(|item| PathBuf::from(&item.path).parent()
+            .map(|parent| parent.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|| ".".into()))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter().collect())
+}
+
+fn resolve_batch_document_ids(
+    args: &Value,
+    bound: &LocalLibraryBinding,
+) -> Result<Vec<String>, ToolError> {
+    if let Some(ids) = args["documentIds"].as_array() {
+        let ids = ids.iter().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<_>>();
+        if ids.is_empty() {
+            return Err(ToolError::new("INVALID_ARGUMENT", "At least one document ID is required."));
+        }
+        let current_snapshot = native(native_core::tag_core::read_runtime_export_catalog_snapshot_core(&bound.root_dir))?
+            .ok_or_else(|| ToolError::new("INDEX_NOT_READY", "The library index snapshot is not ready."))?;
+        let indexed_ids = current_snapshot.documents.iter()
+            .map(|document| document.document_id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        if ids.iter().any(|id| !indexed_ids.contains(id.as_str())) {
+            return Err(ToolError::new("DOCUMENT_NOT_FOUND", "One or more document IDs are not in the current library."));
+        }
+        let plan = native(native_core::tag_core::prepare_tag_assignment(
+            bound,
+            &native_core::tag_core::TagAssignmentScope::DocumentIds { document_ids: ids.clone() },
+            false,
+        ))?;
+        let found = plan.target_document_ids();
+        if found.len() != ids.iter().collect::<std::collections::HashSet<_>>().len() {
+            return Err(ToolError::new("DOCUMENT_NOT_FOUND", "One or more document IDs are not in the current library."));
+        }
+        return Ok(found);
+    }
+    if let Some(folder) = args["folderPath"].as_str() {
+        files::resolve(bound, folder, false, true)?;
+        let plan = native(native_core::tag_core::prepare_tag_assignment(
+            bound,
+            &native_core::tag_core::TagAssignmentScope::Folder { folder_path: folder.to_owned() },
+            false,
+        ))?;
+        return Ok(plan.target_document_ids());
+    }
+
+    let query = args.get("query").cloned().unwrap_or_else(|| json!({}));
+    if let Some(folder) = query.get("selectedFolderPath").and_then(Value::as_str) {
+        files::resolve(bound, folder, false, true)?;
+    }
+    let mut ids = Vec::new();
+    let total = loop {
+        let mut query = query;
+        query["browseMode"] = query.get("browseMode").cloned().unwrap_or(json!("tag"));
+        query["offset"] = json!(0);
+        query["limit"] = json!(10_001);
+        let request: NativeListDocumentsRequest = serde_json::from_value(query)
+            .map_err(|_| ToolError::new("INVALID_ARGUMENT", "The batch query is invalid."))?;
+        let result = native(crate::read_local_library_documents(request))?;
+        if result.total > 10_000 {
+            return Err(ToolError::new("BATCH_LIMIT_EXCEEDED", "A batch may target at most 10,000 documents."));
+        }
+        ids.extend(result.items.into_iter().map(|item| item.document_id));
+        break result.total;
+    };
+    if ids.len() != total {
+        return Err(ToolError::new("SNAPSHOT_CHANGED", "The search result changed while target IDs were being frozen; retry the dry-run."));
+    }
+    Ok(ids)
 }
 
 fn merge_fields(args: &mut Value, current: &Value, fields: &[&str]) {
@@ -420,7 +1000,10 @@ mod tests {
             true,
         );
         assert_eq!(result["error"]["code"], "READ_ONLY");
-        assert!(list_tools(true).iter().all(is_read_only));
+        assert!(list_tools(true, settings::AccessMode::ReadWrite)
+            .iter().all(is_read_only));
+        assert!(list_tools(false, settings::AccessMode::ReadOnly)
+            .iter().all(is_read_only));
         assert_eq!(
             call("unknown", json!({}), false)["error"]["code"],
             "TOOL_NOT_FOUND"
@@ -441,5 +1024,7 @@ mod tests {
         let names: std::collections::HashSet<_> =
             catalog().iter().map(|d| d.tool.name.clone()).collect();
         assert_eq!(names.len(), catalog().len());
+        assert!(catalog().iter().any(|item| item.tool.name == "xfile_documents_tags_batch"));
+        assert!(catalog().iter().any(|item| item.tool.name == "xfile_tasks_list"));
     }
 }

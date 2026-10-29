@@ -167,7 +167,7 @@
   },
   {
     "name": "xfile_documents_list",
-    "description": "分页检索索引中的文档；keyword 匹配标题、摘要和路径。默认 tag 模式跨目录检索。",
+    "description": "分页检索索引中的文档；支持目录、标签 AND、收藏、关键词范围与匹配模式。默认 tag 模式跨目录检索。",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -185,7 +185,9 @@
           "description": "绑定资料库内的相对路径，不允许上级路径或内部状态目录"
         },
         "selectedTagPath": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
         },
         "selectedTagPaths": {
           "type": "array",
@@ -197,11 +199,29 @@
           "maxItems": 1000
         },
         "selectedFavoriteId": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
         },
         "keyword": {
           "type": "string",
           "maxLength": 4096
+        },
+        "searchScope": {
+          "type": "string",
+          "enum": [
+            "current_results",
+            "current_directory",
+            "all"
+          ]
+        },
+        "searchMode": {
+          "type": "string",
+          "enum": [
+            "all",
+            "name",
+            "content"
+          ]
         },
         "updatedAtOrder": {
           "type": "string",
@@ -1192,6 +1212,129 @@
     "_meta": {
       "requiresBinding": true
     }
+  },
+  {
+    "name": "xfile_documents_tags_batch",
+    "description": "按固定文档 ID、目录或组合检索结果批量加/移除/替换标签；targetKind 可指定目录目标。dry-run 返回固定目标，正式写入需提供幂等键。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "documentIds": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 4096 },
+          "minItems": 1,
+          "maxItems": 10000
+        },
+        "folderPath": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "绑定资料库内的目录相对路径"
+        },
+        "folderPaths": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 4096 },
+          "minItems": 1,
+          "maxItems": 10000,
+          "description": "固定的资料库相对目录集合"
+        },
+        "query": {
+          "type": "object",
+          "properties": {
+            "browseMode": { "type": "string", "enum": ["folder", "tag"] },
+            "selectedFolderPath": { "type": "string", "minLength": 1, "maxLength": 4096 },
+            "selectedTagPath": { "type": "string", "minLength": 1, "maxLength": 4096 },
+            "selectedTagPaths": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1, "maxLength": 4096 },
+              "maxItems": 100
+            },
+            "selectedFavoriteId": { "type": "string", "minLength": 1, "maxLength": 4096 },
+            "keyword": { "type": "string", "maxLength": 4096 },
+            "offset": { "type": "integer", "minimum": 0, "maximum": 10000000 },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 10000 },
+            "searchScope": { "type": "string", "enum": ["current_results", "current_directory", "all"] },
+            "searchMode": { "type": "string", "enum": ["all", "name", "content"] },
+            "updatedAtOrder": { "type": "string", "enum": ["asc", "desc"] }
+          },
+          "additionalProperties": false
+        },
+        "targetKind": { "type": "string", "enum": ["documents", "folders"] },
+        "operation": { "type": "string", "enum": ["add", "remove", "replace"] },
+        "tagPaths": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 4096 },
+          "minItems": 1,
+          "maxItems": 1000
+        },
+        "createTagPaths": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 4096 },
+          "maxItems": 1000
+        },
+        "dryRun": { "type": "boolean" },
+        "idempotencyKey": { "type": "string", "minLength": 8, "maxLength": 256 }
+      },
+      "required": ["operation", "tagPaths", "dryRun"],
+      "oneOf": [
+        { "required": ["documentIds"], "not": { "anyOf": [{ "required": ["folderPath"] }, { "required": ["folderPaths"] }, { "required": ["query"] }] } },
+        { "required": ["folderPath"], "not": { "anyOf": [{ "required": ["documentIds"] }, { "required": ["folderPaths"] }, { "required": ["query"] }] } },
+        { "required": ["folderPaths"], "not": { "anyOf": [{ "required": ["documentIds"] }, { "required": ["folderPath"] }, { "required": ["query"] }] } },
+        { "required": ["query"], "not": { "anyOf": [{ "required": ["documentIds"] }, { "required": ["folderPath"] }, { "required": ["folderPaths"] }] } }
+      ],
+      "allOf": [
+        {
+          "if": { "properties": { "dryRun": { "const": false } } },
+          "then": { "required": ["idempotencyKey"] }
+        },
+        {
+          "if": { "properties": { "operation": { "const": "remove" } } },
+          "then": { "properties": { "createTagPaths": { "maxItems": 0 } } }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": { "requiresBinding": true }
+  },
+  {
+    "name": "xfile_tasks_list",
+    "description": "列出当前资料库的任务中心任务和外部 Agent 批量标签持久任务。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": { "requiresBinding": true }
+  },
+  {
+    "name": "xfile_task_get",
+    "description": "按任务 ID 查询批量标签任务的阶段、进度、结果和错误。",
+    "inputSchema": {
+      "type": "object",
+      "properties": { "taskId": { "type": "string", "minLength": 1, "maxLength": 512 } },
+      "required": ["taskId"],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": { "requiresBinding": true }
   },
   {
     "name": "xfile_folder_tags_get",
