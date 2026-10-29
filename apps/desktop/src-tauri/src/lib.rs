@@ -73,9 +73,6 @@ const MACOS_NATIVE_RIGHT_SIDEBAR_WIDTH: f64 = 340.0;
 const MACOS_NATIVE_SIDEBAR_MIN_VISIBLE_WIDTH: f64 = 1.0;
 
 #[cfg(target_os = "macos")]
-const MACOS_NATIVE_RIGHT_SIDEBAR_OVERSCAN_WIDTH: f64 = 240.0;
-
-#[cfg(target_os = "macos")]
 const MACOS_NATIVE_LEFT_SIDEBAR_AUTOREZING_MASK: NSAutoresizingMaskOptions =
     NSAutoresizingMaskOptions::ViewMaxXMargin.union(NSAutoresizingMaskOptions::ViewHeightSizable);
 
@@ -6533,9 +6530,7 @@ unsafe fn apply_macos_native_sidebar_layout(
         .min(content_width)
         .max(0.0);
     let right_effect_width = if right_visible {
-        (right_width + MACOS_NATIVE_RIGHT_SIDEBAR_OVERSCAN_WIDTH)
-            .min(content_width)
-            .max(0.0)
+        right_width
     } else {
         0.0
     };
