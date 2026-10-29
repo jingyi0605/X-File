@@ -2,6 +2,8 @@ mod native_core;
 mod agent_tools;
 mod native_export;
 mod native_index;
+mod office_converter;
+mod preview_capabilities;
 mod updater;
 
 pub use agent_tools::cli::run_agent_cli_from_args;
@@ -2135,12 +2137,14 @@ fn native_read_preview_resource(path: String) -> Result<String, String> {
         .extension()
         .map(|value| value.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default();
-    if !matches!(extension.as_str(), "docx" | "xlsx" | "pptx" | "pdf") {
-        return Err("只允许读取 PDF、DOCX、XLSX 或 PPTX 文件".to_string());
+    let allow_native_bytes = preview_capabilities::format_for_extension(&extension)
+        .is_some_and(|format| format.native_bytes == Some(true));
+    if !allow_native_bytes {
+        return Err("该文件类型不允许通过原生资源接口读取".to_string());
     }
     let metadata = fs::metadata(&absolute_path)
         .map_err(|error| format!("读取预览文件失败：{error}"))?;
-    if metadata.len() > 20 * 1024 * 1024 {
+    if metadata.len() > preview_capabilities::budgets().resource_max_bytes {
         return Err("预览文件超过 20 MiB 限制".to_string());
     }
     let bytes = fs::read(&absolute_path)
@@ -3840,9 +3844,26 @@ fn read_local_library_preview(
         .unwrap_or_default();
     let size = metadata.len();
     let updated_at = metadata.modified().ok().map(system_time_to_rfc3339);
-    let kind = detect_local_preview_kind(&extension);
+    let format = preview_capabilities::format_for_extension(&extension);
+    let kind = format
+        .as_ref()
+        .map(|definition| definition.preview_kind.clone())
+        .unwrap_or_else(|| "text".to_string());
+    let is_resource = format
+        .as_ref()
+        .is_some_and(|definition| definition.resource_class == "resource");
 
-    if matches!(kind.as_str(), "image" | "pdf" | "office") && size > 20 * 1024 * 1024 {
+    if format.as_ref().is_some_and(|definition| !definition.previewable) {
+        return Ok(unsupported_preview(
+            &binding.library_id,
+            &relative_path,
+            size,
+            updated_at,
+            "当前文件类型已识别，但没有启用内置预览器",
+        ));
+    }
+
+    if is_resource && size > preview_capabilities::budgets().resource_max_bytes {
         return Ok(unsupported_preview(
             &binding.library_id,
             &relative_path,
@@ -3851,7 +3872,7 @@ fn read_local_library_preview(
             "文件过大，当前内置资源预览暂不处理这么大的文件",
         ));
     }
-    if !matches!(kind.as_str(), "image" | "pdf" | "office") && size > 512 * 1024 {
+    if !is_resource && size > preview_capabilities::budgets().text_max_bytes {
         return Ok(unsupported_preview(
             &binding.library_id,
             &relative_path,
@@ -3883,8 +3904,10 @@ fn read_local_library_preview(
     }
 
     eprintln!(
-        "[x-file native] preview.resolve kind={} transport=native path={}",
-        kind, relative_path
+        "[x-file native] preview.resolve kind={} family={} transport=native path={}",
+        kind,
+        format.as_ref().map(|definition| definition.adapter_family.as_str()).unwrap_or("text-code"),
+        relative_path
     );
 
     if kind == "image" || kind == "pdf" {
@@ -3930,7 +3953,9 @@ fn read_local_library_preview(
 
     let content =
         String::from_utf8(buffer.clone()).map_err(|error| format!("读取文本预览失败：{error}"))?;
-    let version = if size <= 256 * 1024 && matches!(kind.as_str(), "text" | "markdown" | "html") {
+    let can_edit = format.as_ref().is_some_and(|definition| definition.editable)
+        && size <= preview_capabilities::budgets().edit_max_bytes;
+    let version = if can_edit {
         Some(sha256_hex(&buffer))
     } else {
         None
@@ -3957,7 +3982,7 @@ fn read_local_library_preview(
         preview_path: None,
         preview_url,
         capabilities: build_local_preview_capabilities(
-            matches!(kind.as_str(), "text" | "markdown" | "html") && size <= 256 * 1024,
+            can_edit,
             true,
             true,
             false,
@@ -4645,17 +4670,6 @@ fn parse_rfc3339_to_unix_ms(value: &str) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(value)
         .ok()
         .map(|item| item.timestamp_millis())
-}
-
-fn detect_local_preview_kind(extension: &str) -> String {
-    match extension {
-        "md" | "markdown" | "mdown" | "mkd" => "markdown".to_string(),
-        "html" | "htm" => "html".to_string(),
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "ico" => "image".to_string(),
-        "pdf" => "pdf".to_string(),
-        "docx" | "xlsx" | "pptx" => "office".to_string(),
-        _ => "text".to_string(),
-    }
 }
 
 fn build_local_preview_capabilities(
@@ -5509,14 +5523,33 @@ fn clear_native_application_data(
 
     let data_dir = x_file_data_dir();
     let app_data_dir = app.path().app_data_dir().ok();
+    let office_converter_dir = app_data_dir.as_ref().map(|path| path.join("office-converter"));
+    let office_converter_backup = app_data_dir.as_ref().map(|path| {
+        path.with_file_name(format!("office-converter-preserved-{}", std::process::id()))
+    });
     let server_state_path = resolve_local_http_server_state_path();
 
     remove_path_if_exists(&data_dir)?;
     if server_state_path != data_dir.join("http-server-state.json") {
         remove_path_if_exists(&server_state_path)?;
     }
+    if let (Some(source), Some(backup)) = (office_converter_dir.as_ref(), office_converter_backup.as_ref()) {
+        if source.exists() {
+            fs::rename(source, backup)
+                .map_err(|error| format!("暂存可选 Office 转换器目录失败：{error}"))?;
+        }
+    }
     if let Some(path) = app_data_dir.as_ref() {
-        remove_path_if_exists(path)?;
+        let result = remove_path_if_exists(path);
+        if let (Some(source), Some(backup)) = (office_converter_dir.as_ref(), office_converter_backup.as_ref()) {
+            if backup.exists() {
+                fs::create_dir_all(source.parent().ok_or_else(|| "应用数据目录无效".to_owned())?)
+                    .map_err(|error| format!("恢复可选 Office 转换器目录失败：{error}"))?;
+                fs::rename(backup, source)
+                    .map_err(|error| format!("恢复可选 Office 转换器目录失败：{error}"))?;
+            }
+        }
+        result?;
     }
 
     Ok(NativeResetApplicationDataResult {
@@ -7065,6 +7098,11 @@ pub fn run() {
             native_list_library_files,
             native_get_library_preview,
             native_read_preview_resource,
+            office_converter::native_office_converter_status,
+            office_converter::native_office_converter_install,
+            office_converter::native_office_converter_cancel,
+            office_converter::native_office_converter_uninstall,
+            office_converter::native_convert_office_preview,
             native_fetch_library_health,
             native_get_agent_integration_settings,
             native_save_agent_integration_settings,

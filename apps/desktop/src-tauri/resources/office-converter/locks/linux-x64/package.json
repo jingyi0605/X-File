@@ -1,0 +1,8 @@
+{
+  "name": "x-file-optional-office-converter-linux-x64",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "@deepseek-ai/libreoffice-kit": "0.2.3"
+  }
+}

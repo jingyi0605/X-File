@@ -30,6 +30,7 @@ mime_guess = "2"
 serde_urlencoded = "0.7"
 urlencoding = "2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+tar = "0.4"
 flate2 = "1"
 regex = "1"
 rmcp = { version = "3.7.0", default-features = false, features = ["server", "transport-io"] }
