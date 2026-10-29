@@ -2,7 +2,7 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <link rel="icon" type="image/png" href="/x-file-logo-light.png" />
     <title>X-File</title>
     <style>
@@ -122,7 +122,11 @@
       @media (max-width: 640px) {
         .startup-shell-window {
           grid-template-columns: minmax(0, 1fr);
-          grid-template-rows: 160px 1fr 160px;
+          grid-template-rows: minmax(0, 1fr);
+        }
+        .startup-shell-sidebar,
+        .startup-shell-detail {
+          display: none;
         }
       }
     </style>
