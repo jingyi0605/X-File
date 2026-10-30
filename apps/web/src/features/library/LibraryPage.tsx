@@ -61,6 +61,8 @@ import {
 import { toApiErrorMessage } from "../../api/http";
 import { t } from "../../i18n";
 import { normalizeBaseUrl } from "../../runtime/runtime-config";
+import { loadMirrorCache } from "../../runtime/mirror-cache";
+import { getMirrorSnapshot } from "../../runtime/mirror-api";
 import {
   notifyWindowReadyForNativeSidebar,
   getNativeLibraryPreview,
@@ -131,6 +133,65 @@ export interface WorkbenchPlatformData {
   runtimePlatform: "desktop" | "web";
   osFamily: "macos" | "windows" | "web";
   overlayTitlebar: boolean;
+}
+
+function MirrorStatusNotice({
+  remoteApiBaseUrl,
+  onAvailable,
+}: {
+  remoteApiBaseUrl: string;
+  onAvailable?: () => void;
+}) {
+  const onAvailableRef = useRef(onAvailable);
+  onAvailableRef.current = onAvailable;
+  const observedRevisionRef = useRef<string | null>(null);
+  const [state, setState] = useState<{ hasSnapshot: boolean; pendingCount: number; conflictCount: number; lastError: string | null }>({
+    hasSnapshot: false,
+    pendingCount: 0,
+    conflictCount: 0,
+    lastError: null,
+  });
+
+  useEffect(() => {
+    let active = true;
+    const refresh = () => {
+      void getMirrorSnapshot()
+        .then((snapshot) => {
+          if (!active || observedRevisionRef.current === snapshot.revision) return;
+          observedRevisionRef.current = snapshot.revision;
+          onAvailableRef.current?.();
+        })
+        .catch(() => null)
+        .then(() => loadMirrorCache(remoteApiBaseUrl.trim().replace(/\/+$/g, "")))
+        .then((cache) => {
+          if (active) {
+            setState({
+              hasSnapshot: cache.snapshot !== null,
+              pendingCount: cache.pendingMutations.length,
+              conflictCount: cache.syncResults.filter((result) => result.status === "conflict").length,
+              lastError: cache.lastError,
+            });
+          }
+        });
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 8000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [remoteApiBaseUrl]);
+
+  if (state.pendingCount > 0) {
+    return <div className="inline-note mirror-status-notice" role="status">{t("mirrorPendingNotice", { count: state.pendingCount })}</div>;
+  }
+  if (state.conflictCount > 0) {
+    return <div className="inline-note mirror-status-notice" role="status">{t("mirrorConflictNotice", { count: state.conflictCount })}</div>;
+  }
+  if (state.lastError && state.hasSnapshot) {
+    return <div className="inline-note mirror-status-notice" role="status">{t("mirrorOfflineNotice")}</div>;
+  }
+  return null;
 }
 
 interface LibraryPageProps {
@@ -1320,6 +1381,23 @@ export function LibraryPage({
     );
   }
 
+  if (!hasLoadedLibraryState && runtimeConfig.mode === "mirror") {
+    return (
+      <main className="app-shell xfile-secondary-shell xfile-secondary-page">
+        <section className="settings-section">
+          <div className="section-header">
+            <h2>{t("mirrorFirstSyncTitle")}</h2>
+            <button type="button" className="secondary-button" onClick={() => void library.reload()}>
+              {t("httpAuthRetry")}
+            </button>
+          </div>
+          <p className="inline-note">{library.error || t("mirrorFirstSyncDescription")}</p>
+          <MirrorStatusNotice remoteApiBaseUrl={runtimeConfig.remoteApiBaseUrl} onAvailable={() => void library.reload()} />
+        </section>
+      </main>
+    );
+  }
+
   if (shouldShowDisabled) {
     return (
       <LibraryDisabledPanel
@@ -1344,6 +1422,7 @@ export function LibraryPage({
       onTouchStart={handleWorkbenchTouchStart}
       onTouchEnd={handleWorkbenchTouchEnd}
     >
+      {runtimeConfig.mode === "mirror" ? <MirrorStatusNotice remoteApiBaseUrl={runtimeConfig.remoteApiBaseUrl} onAvailable={() => void library.reload()} /> : null}
       <section
         className="workbench-window xfile-workbench-window workbench-window-resizable"
         data-overlay-titlebar={String(platformData.overlayTitlebar)}
@@ -1639,6 +1718,7 @@ function LibraryDesktopSidebar({
   // library.tags 已由 useLibraryState.mergeTagSources 合并了快照标签（含内置标签）与 API 标签（含自定义标签），
   // 直接使用即可，不再做有条件的切换，避免自定义标签存在时内置标签丢失。
   const tags = library.tags;
+  const [favoritesExpanded, setFavoritesExpanded] = useState(true);
   const [tagSearchOpen, setTagSearchOpen] = useState(false);
   const [tagSearchQuery, setTagSearchQuery] = useState("");
   const [quickFindQuery, setQuickFindQuery] = useState("");
@@ -1867,26 +1947,31 @@ function LibraryDesktopSidebar({
             <div className="affairs-sidebar-groups affairs-library-sidebar-groups">
               {(snapshot?.favorites.length ?? 0) > 0 ? (
                 <div className="affairs-sidebar-group affairs-sidebar-group-plain affairs-favorites-panel">
-                  <div className="affairs-sidebar-group-header">
+                  <button
+                    type="button"
+                    className="affairs-sidebar-group-header affairs-favorites-toggle"
+                    aria-expanded={favoritesExpanded}
+                    onClick={() => setFavoritesExpanded((expanded) => !expanded)}
+                  >
                     <span>{t("libraryFavorites")}</span>
-                    <span className="affairs-sidebar-block-count">
-                      {snapshot?.favorites.length ?? 0}
-                    </span>
-                  </div>
-                  <div className="affairs-sidebar-list affairs-sidebar-list-plain">
-                    {snapshot?.favorites.map((favorite) => (
-                      <SidebarPlainItem
-                        key={`${favorite.kind}:${favorite.path}`}
-                        active={library.viewState.selectedFavoriteId === favorite.path}
-                        title={favorite.label || favorite.path || t("libraryRootFolder")}
-                        hoverTitle={resolveFavoriteHoverTitle(favorite)}
-                        hoverTags={resolveFavoriteHoverTags(favorite)}
-                        icon={favorite.kind === "folder" ? "folder" : "tag"}
-                        onClick={() => library.selectFavorite(favorite)}
-                        onRemoveFavorite={() => void library.toggleFavorite(favorite)}
-                      />
-                    ))}
-                  </div>
+                    {renderTagTreeChevronIcon(favoritesExpanded)}
+                  </button>
+                  {favoritesExpanded ? (
+                    <div className="affairs-sidebar-list affairs-sidebar-list-plain">
+                      {snapshot?.favorites.map((favorite) => (
+                        <SidebarPlainItem
+                          key={`${favorite.kind}:${favorite.path}`}
+                          active={library.viewState.selectedFavoriteId === favorite.path}
+                          title={favorite.label || favorite.path || t("libraryRootFolder")}
+                          hoverTitle={resolveFavoriteHoverTitle(favorite)}
+                          hoverTags={resolveFavoriteHoverTags(favorite)}
+                          icon={favorite.kind === "folder" ? "folder" : "tag"}
+                          onClick={() => library.selectFavorite(favorite)}
+                          onRemoveFavorite={() => void library.toggleFavorite(favorite)}
+                        />
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
 

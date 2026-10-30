@@ -31,6 +31,21 @@ import type {
 import { apiRequest, postJson, putJson } from "./http";
 import { getRuntimeConfigSnapshot } from "../runtime/runtime-config-store";
 import {
+  getMirrorDocumentTagDetails,
+  getMirrorFolderTagDetails,
+  getMirrorSnapshot,
+  isMirrorRuntime,
+  listMirrorDocuments,
+  listMirrorFiles,
+  listMirrorTagDetails,
+  listMirrorTags,
+  MirrorUnavailableError,
+  requestMirrorTagRecompute,
+  saveMirrorDocumentTags,
+  saveMirrorFolderTags,
+  saveMirrorTagDefinition,
+} from "../runtime/mirror-api";
+import {
   browseNativeHostDirectories,
   createNativeLibraryTag,
   deleteNativeLibraryTag,
@@ -74,6 +89,13 @@ export interface ListDocumentsQuery {
 }
 
 export async function getLibraryBinding(): Promise<LibraryBinding | null> {
+  if (isMirrorRuntime()) {
+    try {
+      return (await getMirrorSnapshot()).snapshot.binding;
+    } catch {
+      return null;
+    }
+  }
   if (getRuntimeConfigSnapshot().config.mode === "local") {
     const native = await getNativeLibraryBinding();
     if (native !== null) {
@@ -86,6 +108,9 @@ export async function getLibraryBinding(): Promise<LibraryBinding | null> {
 export async function saveLibraryBinding(
   input: SaveLibraryBindingInput,
 ): Promise<LibraryBinding> {
+  if (isMirrorRuntime()) {
+    throw new MirrorUnavailableError("镜像端不能修改主端库绑定配置，请连接主端操作");
+  }
   if (getRuntimeConfigSnapshot().config.mode === "local") {
     const native = await saveNativeLibraryBinding(input);
     if (native) {
@@ -113,6 +138,9 @@ export async function browseHostDirectories(
 }
 
 export async function getLibraryConfig(): Promise<LibraryConfig> {
+  if (isMirrorRuntime()) {
+    return (await getMirrorSnapshot()).config;
+  }
   if (getRuntimeConfigSnapshot().config.mode === "local") {
     const native = await getNativeLibraryConfig();
     if (native) {
@@ -125,6 +153,9 @@ export async function getLibraryConfig(): Promise<LibraryConfig> {
 export async function saveLibraryConfig(
   input: SaveLibraryConfigInput,
 ): Promise<LibraryConfig> {
+  if (isMirrorRuntime()) {
+    throw new MirrorUnavailableError("镜像端不能修改主端资料库配置，请连接主端操作");
+  }
   if (getRuntimeConfigSnapshot().config.mode === "local") {
     const native = await saveNativeLibraryConfig(input);
     if (native) {
@@ -143,6 +174,9 @@ export async function getLibraryBackup(): Promise<LibraryBackup> {
 }
 
 export async function restoreLibraryBackup(input: unknown): Promise<LibraryBackupImportResult> {
+  if (isMirrorRuntime()) {
+    throw new MirrorUnavailableError("镜像端不能导入资料库备份，请连接主端操作");
+  }
   if (getRuntimeConfigSnapshot().config.mode === "local") {
     const native = await importNativeLibraryBackup(input as LibraryBackup);
     if (native) {
@@ -179,6 +213,9 @@ export async function restoreLibraryBackup(input: unknown): Promise<LibraryBacku
 }
 
 export function getLibrarySnapshot(): Promise<LibrarySnapshot> {
+  if (isMirrorRuntime()) {
+    return getMirrorSnapshot().then((result) => result.snapshot);
+  }
   if (shouldUseNativeLibraryBridge()) {
     return getLibrarySnapshotWithNative();
   }
@@ -188,6 +225,9 @@ export function getLibrarySnapshot(): Promise<LibrarySnapshot> {
 export function listLibraryDocuments(
   query: ListDocumentsQuery,
 ): Promise<LibraryDocumentList> {
+  if (isMirrorRuntime()) {
+    return listMirrorDocuments(query);
+  }
   if (shouldUseNativeLibraryBridge()) {
     return listLibraryDocumentsWithNative(query);
   }
@@ -220,6 +260,9 @@ export function listLibraryFiles(
   path: string | null,
   limit = 200,
 ): Promise<LibraryFileList> {
+  if (isMirrorRuntime()) {
+    return listMirrorFiles(path, limit);
+  }
   if (shouldUseNativeLibraryBridge()) {
     return listLibraryFilesWithNative(path, limit);
   }
@@ -233,6 +276,30 @@ export function getLibraryPreview(
   path: string,
   displayMode?: "default" | "reading",
 ): Promise<LibraryPreview> {
+  if (isMirrorRuntime()) {
+    return apiRequest<LibraryPreview>(
+      `/api/library/preview?path=${encodeURIComponent(path)}${displayMode ? `&displayMode=${encodeURIComponent(displayMode)}` : ""}`,
+    ).catch(() => ({
+      libraryId: "default",
+      path,
+      supported: false,
+      kind: "unsupported",
+      reason: "主端已离线，镜像快照只保存文件模型，正文预览需要重新连接主端",
+      content: null,
+      version: null,
+      size: 0,
+      updatedAt: null,
+      previewPath: null,
+      previewUrl: null,
+      capabilities: {
+        canEdit: false,
+        canRefresh: false,
+        canResize: false,
+        canZoom: false,
+        canPaginate: false,
+      },
+    }));
+  }
   if (shouldUseNativeLibraryBridge()) {
     return getLibraryPreviewWithNative(path, displayMode);
   }
@@ -257,12 +324,18 @@ export function downloadLibraryFile(path: string): Promise<LibraryDownload> {
 export function operateLibraryFile(
   input: LibraryOperationInput,
 ): Promise<LibraryOperationResult> {
+  if (isMirrorRuntime()) {
+    return Promise.reject(new MirrorUnavailableError("镜像端不能修改文件，请连接主端操作"));
+  }
   return postJson<LibraryOperationResult>("/api/library/ops", input);
 }
 
 export function requestLibraryRefresh(
   input: RequestLibraryRefreshInput,
 ): Promise<LibraryRefreshResult> {
+  if (isMirrorRuntime()) {
+    return Promise.reject(new MirrorUnavailableError("镜像端不能刷新索引，请连接主端操作"));
+  }
   if (shouldUseNativeLibraryBridge()) {
     return requestLibraryRefreshWithNative(input);
   }
@@ -272,10 +345,16 @@ export function requestLibraryRefresh(
 export function updateLibraryFavorites(
   input: UpdateLibraryFavoritesInput,
 ): Promise<LibraryFavoritesResult> {
+  if (isMirrorRuntime()) {
+    return Promise.reject(new MirrorUnavailableError("镜像端不能修改收藏配置，请连接主端操作"));
+  }
   return putJson<LibraryFavoritesResult>("/api/library/favorites", input);
 }
 
 export async function listLibraryTags(): Promise<LibraryTagNode[]> {
+  if (isMirrorRuntime()) {
+    return listMirrorTags();
+  }
   if (shouldUseNativeLibraryBridge()) {
     const native = await listNativeLibraryTagDetails(false);
     if (native) {
@@ -301,6 +380,9 @@ export async function listLibraryTags(): Promise<LibraryTagNode[]> {
 export async function listLibraryTagDetails(
   includeDisabled = true,
 ): Promise<LibraryTagDetailWithRules[]> {
+  if (isMirrorRuntime()) {
+    return listMirrorTagDetails();
+  }
   if (shouldUseNativeLibraryBridge()) {
     const native = await listNativeLibraryTagDetails(includeDisabled);
     if (native) {
@@ -320,6 +402,9 @@ export async function listLibraryTagDetails(
 export function getDocumentTagDetails(
   documentId: string,
 ): Promise<LibraryDocumentTagDetails> {
+  if (isMirrorRuntime()) {
+    return getMirrorDocumentTagDetails(documentId);
+  }
   if (shouldUseNativeLibraryBridge()) {
     return getDocumentTagDetailsWithNative(documentId);
   }
@@ -332,6 +417,9 @@ export function saveDocumentTags(
   documentId: string,
   input: SaveLibraryTagsInput,
 ): Promise<LibraryDocumentTagDetails> {
+  if (isMirrorRuntime()) {
+    return saveMirrorDocumentTags(documentId, input);
+  }
   if (shouldUseNativeLibraryBridge()) {
     return saveDocumentTagsWithNative(documentId, input);
   }
@@ -344,6 +432,9 @@ export function saveDocumentTags(
 export function getFolderTagDetails(
   folderPath: string,
 ): Promise<LibraryFolderTagDetails> {
+  if (isMirrorRuntime()) {
+    return getMirrorFolderTagDetails(folderPath);
+  }
   if (shouldUseNativeLibraryBridge()) {
     return getFolderTagDetailsWithNative(folderPath);
   }
@@ -357,6 +448,9 @@ export function getFolderTagDetails(
 export function saveFolderTags(
   input: SaveLibraryFolderTagsInput,
 ): Promise<LibraryFolderTagDetails> {
+  if (isMirrorRuntime()) {
+    return saveMirrorFolderTags(input);
+  }
   if (shouldUseNativeLibraryBridge()) {
     return saveFolderTagsWithNative(input);
   }
@@ -366,6 +460,13 @@ export function saveFolderTags(
 export function getLibraryTagDetail(
   tagId: string,
 ): Promise<LibraryTagDetailWithRules> {
+  if (isMirrorRuntime()) {
+    return listMirrorTagDetails().then((items) => {
+      const tag = items.find((item) => item.id === tagId);
+      if (!tag) throw new MirrorUnavailableError("镜像快照中没有该标签");
+      return tag;
+    });
+  }
   if (shouldUseNativeLibraryBridge()) {
     return getLibraryTagDetailWithNative(tagId);
   }
@@ -377,6 +478,9 @@ export function getLibraryTagDetail(
 export function createLibraryTag(
   input: SaveLibraryTagDefinitionInput,
 ): Promise<LibraryTagDetailWithRules> {
+  if (isMirrorRuntime()) {
+    return saveMirrorTagDefinition("create", null, input) as Promise<LibraryTagDetailWithRules>;
+  }
   if (shouldUseNativeLibraryBridge()) {
     return createLibraryTagWithNative(input);
   }
@@ -387,6 +491,9 @@ export function updateLibraryTag(
   tagId: string,
   input: SaveLibraryTagDefinitionInput,
 ): Promise<LibraryTagDetailWithRules> {
+  if (isMirrorRuntime()) {
+    return saveMirrorTagDefinition("update", tagId, input) as Promise<LibraryTagDetailWithRules>;
+  }
   if (shouldUseNativeLibraryBridge()) {
     return updateLibraryTagWithNative(tagId, input);
   }
@@ -399,6 +506,9 @@ export function updateLibraryTag(
 export function deleteLibraryTag(
   tagId: string,
 ): Promise<{ deletedTagIds: string[] }> {
+  if (isMirrorRuntime()) {
+    return saveMirrorTagDefinition("delete", tagId, {}) as Promise<{ deletedTagIds: string[] }>;
+  }
   if (shouldUseNativeLibraryBridge()) {
     return deleteLibraryTagWithNative(tagId);
   }
@@ -411,6 +521,9 @@ export function deleteLibraryTag(
 }
 
 export function requestLibraryTagRecompute(): Promise<LibraryTagRecomputeRequestResult> {
+  if (isMirrorRuntime()) {
+    return requestMirrorTagRecompute();
+  }
   if (shouldUseNativeLibraryBridge()) {
     return requestLibraryTagRecomputeWithNative();
   }
@@ -443,6 +556,9 @@ export async function getHttpServerState(): Promise<HttpServerState> {
 export async function saveHttpServerState(
   input: SaveHttpServerStateInput,
 ): Promise<HttpServerState> {
+  if (isMirrorRuntime()) {
+    throw new MirrorUnavailableError("镜像端不能修改主端 HTTP 服务配置");
+  }
   if (shouldUseNativeLibraryBridge()) {
     const native = await saveNativeHttpServerState(input);
     if (native) {

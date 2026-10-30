@@ -156,6 +156,10 @@ export class LibraryService {
     return this.exportReader.readSnapshot(binding, status, binding ? this.readFavorites(binding) : []);
   }
 
+  getAllDocuments(): ReturnType<LibraryExportReader["readAllDocuments"]> {
+    return this.exportReader.readAllDocuments(this.bindingStore.read());
+  }
+
   listDocuments(input: ListLibraryDocumentsInput): LibraryDocumentList {
     const binding = this.bindingStore.read();
     const selectedTagPaths = input.selectedTagPaths?.length

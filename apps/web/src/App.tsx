@@ -2,7 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 
 import { getHttpAuthStatus, loginHttpAuth } from "./api/auth";
 import { fetchHealthWithTransport, type HealthResponse } from "./api/health";
-import { toApiErrorMessage } from "./api/http";
+import { ApiClientError, toApiErrorMessage } from "./api/http";
 import { LibraryPage, type WorkbenchPlatformData } from "./features/library/LibraryPage";
 import { DetachedPreviewPage } from "./features/library/DetachedPreviewPage";
 import { SettingsPage } from "./features/settings/SettingsPage";
@@ -14,6 +14,7 @@ import {
 } from "./runtime/native-library-bridge";
 import { isRuntimeConfigured } from "./runtime/runtime-config";
 import { useRuntimeConfigSelector } from "./runtime/runtime-config-store";
+import { loadMirrorCache } from "./runtime/mirror-cache";
 import { formatDateTime } from "./shared/format";
 import "./styles.css";
 import "./features/library/LibraryV3Interactions.css";
@@ -84,10 +85,16 @@ export function App() {
           ? { status: "required", configured: result.configured }
           : { status: "authenticated" });
       })
-      .catch((error) => {
-        if (active) {
-          setHttpAuth({ status: "failed", error: toApiErrorMessage(error) });
+      .catch(async (error) => {
+        if (!active) return;
+        if (runtimeConfig.mode === "mirror" && error instanceof ApiClientError && error.status === 0) {
+          const cache = await loadMirrorCache(runtimeConfig.remoteApiBaseUrl);
+          if (active && cache.snapshot) {
+            setHttpAuth({ status: "authenticated" });
+            return;
+          }
         }
+        if (active) setHttpAuth({ status: "failed", error: toApiErrorMessage(error) });
       });
     return () => {
       active = false;

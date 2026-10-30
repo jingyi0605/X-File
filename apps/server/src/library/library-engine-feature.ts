@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import type { LibraryIndexProgress, LibraryTask } from "@x-file/shared";
+import type { LibraryIndexProgress, LibraryMirrorMutation, LibraryTask } from "@x-file/shared";
 
 import { HttpServerManager, type HttpServerRuntimeState } from "../http-server-manager.js";
 import { PersistentBackendManager } from "../lifecycle/persistent-backend-manager.js";
@@ -18,7 +18,9 @@ import { LibraryIndexService } from "./index-service.js";
 import { LibraryConfigService } from "./library-config-service.js";
 import { LibraryController } from "./library-controller.js";
 import { LibraryError } from "./library-errors.js";
+import { toLibraryErrorResponse } from "./library-errors.js";
 import { LibraryService } from "./library-service.js";
+import { LibraryMirrorService } from "./library-mirror-service.js";
 import { LibraryPreviewLinkService } from "./preview-link-service.js";
 import { TagController } from "./tag-controller.js";
 import { TagService } from "./tag-service.js";
@@ -37,6 +39,7 @@ export interface LibraryEngineFeature {
   libraryService: LibraryService;
   libraryIndexService: LibraryIndexService;
   tagService: TagService;
+  libraryMirrorService: LibraryMirrorService;
   taskManager: TaskManager;
   httpServerManager: HttpServerManager;
   persistentBackendManager: PersistentBackendManager;
@@ -61,6 +64,7 @@ export function createLibraryEngineFeature(
     undefined,
     libraryIndexService,
   );
+  const libraryMirrorService = new LibraryMirrorService(libraryService, tagService);
   const httpServerManager =
     options.httpServerManager ??
     new HttpServerManager(undefined, options.httpServerRuntimeState);
@@ -70,6 +74,7 @@ export function createLibraryEngineFeature(
     libraryService,
     libraryIndexService,
     tagService,
+    libraryMirrorService,
     taskManager,
     httpServerManager,
     persistentBackendManager,
@@ -108,6 +113,23 @@ export function registerLibraryCoreRoutes(
     ),
   );
   void registerTagRoutes(server, new TagController(tagService));
+  server.get("/api/library/mirror/snapshot", async (_request, reply) => {
+    reply.send(feature.libraryMirrorService.getSnapshot());
+  });
+  server.post("/api/library/mirror/mutations", async (request, reply) => {
+    try {
+      const body = request.body as { mutations?: unknown } | undefined;
+      const mutations = Array.isArray(body?.mutations) ? body.mutations : [];
+      reply.send(feature.libraryMirrorService.applyMutations(mutations as LibraryMirrorMutation[]));
+    } catch (error) {
+      const response = toLibraryErrorResponse(
+        error instanceof LibraryError
+          ? error
+          : new LibraryError(400, "INVALID_INPUT", error instanceof Error ? error.message : "镜像同步失败"),
+      );
+      reply.code(response.statusCode).send(response.body);
+    }
+  });
   server.get("/api/library/tasks", async (): Promise<LibraryTask[]> => {
     const binding = feature.libraryBindingStore.read();
     if (!binding) return [];
@@ -220,6 +242,8 @@ function registerLibraryCoreRoutePlaceholders(server: FastifyInstance): void {
   server.put("/api/library/documents/:documentId/tags", reject);
   server.get("/api/library/folders/tag-details", reject);
   server.put("/api/library/folders/tags", reject);
+  server.get("/api/library/mirror/snapshot", reject);
+  server.post("/api/library/mirror/mutations", reject);
   server.get("/api/host/directories", reject);
 }
 

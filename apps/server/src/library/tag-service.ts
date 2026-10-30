@@ -5,6 +5,10 @@ import { readCatalogSnapshot, runNativeLibraryWorker } from "@x-file/indexer";
 import type {
   LibraryDocumentTagDetails,
   LibraryFolderTagDetails,
+  LibraryMirrorMutation,
+  LibraryMirrorMutationResult,
+  LibraryMirrorDocumentTagBinding,
+  LibraryMirrorFolderTagBinding,
   LibraryResolvedTagSource,
   LibraryTagDetailWithRules,
   LibraryTagNodeDetail,
@@ -155,7 +159,7 @@ export class TagService {
     };
   }
 
-  createTag(input: CreateTagInput): LibraryTagDetailWithRules {
+  createTag(input: CreateTagInput, mutationUpdatedAt?: string): LibraryTagDetailWithRules {
     const name = normalizeTagSegment(input.name ?? "");
     if (!name) {
       throw new LibraryError(400, "INVALID_INPUT", "标签名称不能为空", "name");
@@ -174,7 +178,12 @@ export class TagService {
       : normalizeChildTagSelectionMode(input.childTagSelectionMode);
 
     const tagPath = parent ? `${parent.path}/${name}` : name;
-    const tag = this.ensureTagInStore(data, tagPath, input.description ?? null);
+    const tag = this.ensureTagInStore(
+      data,
+      tagPath,
+      input.description ?? null,
+      normalizeMutationUpdatedAt(mutationUpdatedAt),
+    );
     if (childTagSelectionMode) {
       tag.childTagSelectionMode = childTagSelectionMode;
     } else {
@@ -219,7 +228,11 @@ export class TagService {
     return this.toTagDetail(tag, data);
   }
 
-  updateTag(tagId: string, input: UpdateTagInput): LibraryTagDetailWithRules {
+  updateTag(
+    tagId: string,
+    input: UpdateTagInput,
+    mutationUpdatedAt?: string,
+  ): LibraryTagDetailWithRules {
     const binding = this.requireCurrentBinding();
     const data = this.readStoreForBinding(binding);
     const tag = this.requireTag(data, tagId);
@@ -266,7 +279,7 @@ export class TagService {
       throw new LibraryError(409, "INVALID_INPUT", "同级标签已存在", "name");
     }
 
-    const now = new Date().toISOString();
+    const now = normalizeMutationUpdatedAt(mutationUpdatedAt);
     tag.name = name;
     tag.path = nextPath;
     tag.rootType = nextPath.split("/")[0] ?? name;
@@ -302,7 +315,7 @@ export class TagService {
     return this.toTagDetail(tag, data);
   }
 
-  deleteTag(tagId: string): { deletedTagIds: string[] } {
+  deleteTag(tagId: string, mutationUpdatedAt?: string): { deletedTagIds: string[] } {
     const binding = this.requireCurrentBinding();
     const data = this.readStoreForBinding(binding);
     const tag = this.requireTag(data, tagId);
@@ -311,6 +324,15 @@ export class TagService {
       ...collectDescendantTags(data.tags, tag.id).map((item) => item.id),
     ];
     const deleted = new Set(deletedTagIds);
+    const deletedAt = normalizeMutationUpdatedAt(mutationUpdatedAt);
+    data.deletedTags = [
+      ...(data.deletedTags ?? []).filter((item) => !deleted.has(item.id)),
+      ...data.tags.filter((item) => deleted.has(item.id)).map((item) => ({
+        id: item.id,
+        path: item.path,
+        updatedAt: deletedAt,
+      })),
+    ];
     data.tags = data.tags.filter((item) => !deleted.has(item.id));
     data.tagRules = data.tagRules.filter((rule) => !deleted.has(rule.tagId));
     data.documentTags = data.documentTags.map((binding) => ({
@@ -402,6 +424,7 @@ export class TagService {
   saveDocumentTags(
     documentId: string,
     input: SaveDocumentTagsInput,
+    mutationUpdatedAt?: string,
   ): LibraryDocumentTagDetails {
     const binding = this.requireCurrentBinding();
     const data = this.readStoreForBinding(binding);
@@ -422,7 +445,7 @@ export class TagService {
         existing?.title ??
         (path.basename(normalizedDocumentId) || normalizedDocumentId),
       manualTagIds,
-      updatedAt: new Date().toISOString(),
+      updatedAt: normalizeMutationUpdatedAt(mutationUpdatedAt),
     };
 
     data.documentTags = [
@@ -478,7 +501,10 @@ export class TagService {
     };
   }
 
-  saveFolderTags(input: SaveFolderTagsInput): LibraryFolderTagDetails {
+  saveFolderTags(
+    input: SaveFolderTagsInput,
+    mutationUpdatedAt?: string,
+  ): LibraryFolderTagDetails {
     const binding = this.requireCurrentBinding();
     const data = this.readStoreForBinding(binding);
     const folderPath = normalizeFolderPath(input.folderPath ?? "");
@@ -494,7 +520,7 @@ export class TagService {
       {
         folderPath,
         bindingTagIds,
-        updatedAt: new Date().toISOString(),
+        updatedAt: normalizeMutationUpdatedAt(mutationUpdatedAt),
       },
     ];
     this.writeCurrentStore(data);
@@ -520,6 +546,80 @@ export class TagService {
       deduped: task?.deduped === true,
       status: "queued",
     };
+  }
+
+  getMirrorState(): {
+    tagDetails: LibraryTagDetailWithRules[];
+    documentTagBindings: LibraryMirrorDocumentTagBinding[];
+    folderTagBindings: LibraryMirrorFolderTagBinding[];
+  } {
+    const binding = this.requireCurrentBinding();
+    const data = this.readStoreForBinding(binding);
+    return {
+      tagDetails: data.tags.map((tag) => this.toTagDetail(tag, data)),
+      documentTagBindings: data.documentTags.map((item) => ({ ...item, manualTagIds: [...item.manualTagIds] })),
+      folderTagBindings: data.folderTags.map((item) => ({ ...item, bindingTagIds: [...item.bindingTagIds] })),
+    };
+  }
+
+  applyMirrorMutation(mutation: LibraryMirrorMutation): LibraryMirrorMutationResult {
+    const binding = this.requireCurrentBinding();
+    const data = this.readStoreForBinding(binding);
+    const updatedAt = normalizeMutationUpdatedAt(mutation.updatedAt);
+    const payload = asRecord(mutation.payload);
+
+    if (mutation.kind === "document_tags") {
+      const documentId = typeof payload.documentId === "string" ? payload.documentId : "";
+      const input = asRecord(payload.input) as SaveDocumentTagsInput;
+      const current = data.documentTags.find((item) => item.documentId === documentId);
+      if (current && current.updatedAt > updatedAt) {
+        return mirrorConflict(mutation, current.updatedAt);
+      }
+      this.saveDocumentTags(documentId, input, updatedAt);
+      return mirrorSynced(mutation, updatedAt);
+    }
+
+    if (mutation.kind === "folder_tags") {
+      const input = asRecord(payload.input) as SaveFolderTagsInput;
+      const folderPath = typeof input.folderPath === "string" ? input.folderPath : "";
+      const current = data.folderTags.find((item) => item.folderPath === folderPath);
+      if (current && current.updatedAt > updatedAt) {
+        return mirrorConflict(mutation, current.updatedAt);
+      }
+      this.saveFolderTags(input, updatedAt);
+      return mirrorSynced(mutation, updatedAt);
+    }
+
+    const operation = payload.operation;
+    const tagId = typeof payload.tagId === "string" ? payload.tagId : "";
+    const current = tagId ? data.tags.find((item) => item.id === tagId) : null;
+    const tombstone = tagId ? data.deletedTags?.find((item) => item.id === tagId) : null;
+    if (tombstone && tombstone.updatedAt > updatedAt) {
+      return mirrorConflict(mutation, tombstone.updatedAt);
+    }
+    if (current && current.updatedAt > updatedAt) {
+      return mirrorConflict(mutation, current.updatedAt);
+    }
+    if (operation === "create") {
+      const input = asRecord(payload.input) as CreateTagInput;
+      const parent = input.parentId ? data.tags.find((item) => item.id === input.parentId) : null;
+      const targetPath = parent ? `${parent.path}/${normalizeTagSegment(input.name ?? "")}` : normalizeTagSegment(input.name ?? "");
+      const existing = data.tags.find((item) => item.path === targetPath);
+      if (existing && existing.updatedAt > updatedAt) {
+        return mirrorConflict(mutation, existing.updatedAt);
+      }
+      this.createTag(input, updatedAt);
+      return mirrorSynced(mutation, updatedAt);
+    }
+    if (operation === "update" && tagId) {
+      this.updateTag(tagId, asRecord(payload.input) as UpdateTagInput, updatedAt);
+      return mirrorSynced(mutation, updatedAt);
+    }
+    if (operation === "delete" && tagId) {
+      this.deleteTag(tagId, updatedAt);
+      return mirrorSynced(mutation, updatedAt);
+    }
+    throw new LibraryError(400, "INVALID_INPUT", "镜像标签操作无效");
   }
 
   getRecomputeTask(): TaskSummary | null {
@@ -583,18 +683,20 @@ export class TagService {
     data: StoredLibraryTags,
     tagPath: string,
     description: string | null,
+    mutationUpdatedAt = new Date().toISOString(),
   ): StoredTagDefinition {
     if (!tagPath) {
       throw new LibraryError(400, "INVALID_INPUT", "标签路径不能为空", "path");
     }
 
     const definitionsByPath = new Map(data.tags.map((tag) => [tag.path, tag]));
+    data.deletedTags = (data.deletedTags ?? []).filter((item) => item.path !== tagPath);
     const segments = tagPath.split("/");
     let currentPath = "";
     let parentId: string | null = null;
     let parentPath: string | null = null;
     let lastTag: StoredTagDefinition | null = null;
-    const now = new Date().toISOString();
+    const now = mutationUpdatedAt;
 
     for (const segment of segments) {
       currentPath = currentPath ? `${currentPath}/${segment}` : segment;
@@ -953,6 +1055,40 @@ function validateExclusiveChildTagSelection(
 
 function normalizeTagSegment(value: string): string {
   return value.trim().replaceAll("/", "");
+}
+
+function normalizeMutationUpdatedAt(value: string | undefined): string {
+  if (value) {
+    const timestamp = Date.parse(value);
+    if (Number.isFinite(timestamp)) {
+      return new Date(timestamp).toISOString();
+    }
+  }
+  return new Date().toISOString();
+}
+
+function asRecord(value: unknown): Record<string, any> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, any>
+    : {};
+}
+
+function mirrorSynced(mutation: LibraryMirrorMutation, updatedAt: string): LibraryMirrorMutationResult {
+  return {
+    mutationId: mutation.mutationId,
+    status: "synced",
+    updatedAt,
+    detail: null,
+  };
+}
+
+function mirrorConflict(mutation: LibraryMirrorMutation, updatedAt: string): LibraryMirrorMutationResult {
+  return {
+    mutationId: mutation.mutationId,
+    status: "conflict",
+    updatedAt,
+    detail: "主端已有更新的标签记录，已保留主端版本",
+  };
 }
 
 function normalizeFolderPath(value: string): string {

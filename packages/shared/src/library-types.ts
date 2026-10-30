@@ -258,6 +258,59 @@ export interface LibrarySnapshot {
   lastError: string | null;
 }
 
+export type LibraryMirrorMutationKind =
+  | "tag_definition"
+  | "document_tags"
+  | "folder_tags";
+
+export type LibraryMirrorMutationStatus = "synced" | "queued" | "conflict";
+
+export interface LibraryMirrorDocumentTagBinding {
+  documentId: string;
+  path: string;
+  title: string;
+  manualTagIds: string[];
+  updatedAt: string;
+}
+
+export interface LibraryMirrorFolderTagBinding {
+  folderPath: string;
+  bindingTagIds: string[];
+  updatedAt: string;
+}
+
+export interface LibraryMirrorSnapshot {
+  version: 1;
+  revision: string;
+  generatedAt: string;
+  config: LibraryConfig;
+  snapshot: LibrarySnapshot;
+  documents: LibraryDocumentRecord[];
+  tagDetails: LibraryTagDetailWithRules[];
+  documentTagBindings: LibraryMirrorDocumentTagBinding[];
+  folderTagBindings: LibraryMirrorFolderTagBinding[];
+}
+
+export interface LibraryMirrorMutation {
+  mutationId: string;
+  kind: LibraryMirrorMutationKind;
+  updatedAt: string;
+  baseRevision: string | null;
+  payload: unknown;
+}
+
+export interface LibraryMirrorMutationResult {
+  mutationId: string;
+  status: LibraryMirrorMutationStatus;
+  updatedAt: string;
+  detail?: string | null;
+}
+
+export interface LibraryMirrorMutationBatchResult {
+  revision: string;
+  results: LibraryMirrorMutationResult[];
+}
+
 export interface ListLibraryDocumentsInput {
   browseMode: LibraryBrowseMode;
   selectedFolderPath?: string | null;
@@ -528,6 +581,7 @@ export interface LibraryTagRule {
 export interface LibraryTagDetailWithRules extends LibraryTagNodeDetail {
   smartRules: LibraryTagRule[];
   smartRuleEnabled: boolean;
+  syncState?: LibraryMirrorMutationStatus;
 }
 
 export interface LibraryTagListSummary {
@@ -615,6 +669,7 @@ export interface LibraryDocumentTagDetails {
   resolvedTags: LibraryResolvedTagSource[];
   suppressedTags?: LibrarySuppressedTagSource[];
   recommendedTags?: LibraryTagRecommendation[];
+  syncState?: LibraryMirrorMutationStatus;
 }
 
 export interface LibraryFolderTagDetails {
@@ -628,6 +683,7 @@ export interface LibraryFolderTagDetails {
     applyMode: string;
   }>;
   recommendedTags?: LibraryTagRecommendation[];
+  syncState?: LibraryMirrorMutationStatus;
 }
 
 export interface HttpServerPersistentPolicy {

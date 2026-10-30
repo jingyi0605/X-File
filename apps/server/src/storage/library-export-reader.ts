@@ -121,6 +121,24 @@ const RECENT_TIME_TAGS = [
 
 export class LibraryExportReader {
   private readonly documentViews = new WeakMap<ManifestFile | CatalogSnapshot, LibraryDocumentRecord[]>();
+
+  readAllDocuments(binding: LibraryBinding | null): LibraryDocumentRecord[] {
+    if (!binding) {
+      return [];
+    }
+
+    const exportDir = resolveExportDir(binding.rootDir);
+    const catalog = readCatalogSnapshot(binding.rootDir);
+    const manifest = readJson<ManifestFile>(
+      path.join(exportDir, "manifest.json"),
+    ) ?? (catalog ? { generated_at: catalog.generatedAt } : null);
+    if (!manifest) {
+      return [];
+    }
+
+    return refreshRecentTimeTags(this.readDocuments(exportDir, manifest, catalog));
+  }
+
   readSnapshot(
     binding: LibraryBinding | null,
     fallbackStatus: LibraryIndexStatus,

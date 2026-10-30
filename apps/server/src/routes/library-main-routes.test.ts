@@ -52,6 +52,13 @@ test("文档库主路由、标签路由和 server state 都已注册", async () 
     assert.equal(tags.statusCode, 200);
     assert.equal(Array.isArray(tags.json().items), true);
 
+    const mirrorSnapshot = await app.inject({ method: "GET", url: "/api/library/mirror/snapshot" });
+    assert.equal(mirrorSnapshot.statusCode, 200);
+    assert.equal(mirrorSnapshot.json().version, 1);
+    assert.equal(Array.isArray(mirrorSnapshot.json().documents), true);
+    assert.equal(Array.isArray(mirrorSnapshot.json().tagDetails), true);
+    assert.equal(typeof mirrorSnapshot.json().revision, "string");
+
     const createdTag = await app.inject({
       method: "POST",
       url: "/api/library/tags/ensure",
@@ -59,6 +66,56 @@ test("文档库主路由、标签路由和 server state 都已注册", async () 
     });
     assert.equal(createdTag.statusCode, 200);
     const tagId = createdTag.json().id;
+
+    const mirrorMutation = {
+      mutationId: "mirror-route-idempotency",
+      kind: "tag_definition",
+      updatedAt: new Date(Date.now() + 60_000).toISOString(),
+      baseRevision: mirrorSnapshot.json().revision,
+      payload: {
+        operation: "create",
+        input: { name: "离线创建标签", parentId: null, status: "active" },
+      },
+    };
+    const mirrorMutationFirst = await app.inject({
+      method: "POST",
+      url: "/api/library/mirror/mutations",
+      payload: { mutations: [mirrorMutation] },
+    });
+    const mirrorMutationRepeat = await app.inject({
+      method: "POST",
+      url: "/api/library/mirror/mutations",
+      payload: { mutations: [mirrorMutation] },
+    });
+    assert.equal(mirrorMutationFirst.statusCode, 200);
+    assert.equal(mirrorMutationFirst.json().results[0].status, "synced");
+    assert.deepEqual(mirrorMutationRepeat.json().results, mirrorMutationFirst.json().results);
+    const mirrorCreated = await app.inject({ method: "GET", url: "/api/library/mirror/snapshot" });
+    const mirrorCreatedTag = mirrorCreated.json().tagDetails.find((item: { path: string }) => item.path === "离线创建标签");
+    const primaryUpdatedAt = new Date(Date.now() + 120_000).toISOString();
+    await app.inject({
+      method: "POST",
+      url: "/api/library/mirror/mutations",
+      payload: { mutations: [{
+        ...mirrorMutation,
+        mutationId: "mirror-primary-wins",
+        updatedAt: primaryUpdatedAt,
+        payload: { operation: "update", tagId: mirrorCreatedTag.id, input: { name: "主端较新" } },
+      }] },
+    });
+    const staleMirrorMutation = await app.inject({
+      method: "POST",
+      url: "/api/library/mirror/mutations",
+      payload: { mutations: [{
+        ...mirrorMutation,
+        mutationId: "mirror-stale-update",
+        updatedAt: new Date(Date.now() + 60_000).toISOString(),
+        payload: { operation: "update", tagId: mirrorCreatedTag.id, input: { name: "镜像旧版本" } },
+      }] },
+    });
+    assert.equal(staleMirrorMutation.json().results[0].status, "conflict");
+    const mergedSnapshot = await app.inject({ method: "GET", url: "/api/library/mirror/snapshot" });
+    assert.equal(mergedSnapshot.json().tagDetails.find((item: { id: string }) => item.id === mirrorCreatedTag.id).name, "主端较新");
 
     const tagDetail = await app.inject({ method: "GET", url: `/api/library/tags/${tagId}` });
     assert.equal(tagDetail.statusCode, 200);

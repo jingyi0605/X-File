@@ -53,6 +53,7 @@ export interface StoredLibraryTags {
   tagRules: StoredTagRule[];
   documentTags: StoredDocumentTagBinding[];
   folderTags: StoredFolderTagBinding[];
+  deletedTags?: Array<{ id: string; path: string; updatedAt: string }>;
   updatedAt: string;
 }
 
@@ -131,6 +132,7 @@ function normalizeStore(
     tagRules: Array.isArray(data.tagRules) ? data.tagRules : [],
     documentTags: Array.isArray(data.documentTags) ? data.documentTags : [],
     folderTags: Array.isArray(data.folderTags) ? data.folderTags : [],
+    deletedTags: Array.isArray(data.deletedTags) ? data.deletedTags : [],
     updatedAt: data.updatedAt ?? new Date().toISOString(),
   };
 }
