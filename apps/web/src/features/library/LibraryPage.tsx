@@ -1954,7 +1954,9 @@ function LibraryDesktopSidebar({
                     onClick={() => setFavoritesExpanded((expanded) => !expanded)}
                   >
                     <span>{t("libraryFavorites")}</span>
-                    {renderTagTreeChevronIcon(favoritesExpanded)}
+                    <span className="affairs-favorites-toggle-icon" aria-hidden="true">
+                      {renderTagTreeChevronIcon(favoritesExpanded)}
+                    </span>
                   </button>
                   {favoritesExpanded ? (
                     <div className="affairs-sidebar-list affairs-sidebar-list-plain">

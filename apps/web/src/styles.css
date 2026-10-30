@@ -6206,6 +6206,47 @@ html[data-theme="dark"]
   margin-left: auto;
 }
 
+.affairs-favorites-panel > .affairs-favorites-toggle {
+  width: 100%;
+  padding-right: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.affairs-favorites-toggle:hover {
+  color: var(--text-primary);
+}
+
+.affairs-favorites-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.affairs-favorites-toggle-icon {
+  display: inline-flex;
+  width: 22px;
+  min-width: 22px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 22px;
+}
+
+.affairs-favorites-toggle-icon .library-tree-chevron {
+  width: 18px;
+  height: 18px;
+  transform: rotate(0deg);
+  transition: transform var(--transition-fast);
+}
+
+.affairs-favorites-toggle-icon .library-tree-chevron[data-expanded="true"] {
+  transform: rotate(90deg);
+}
+
 .affairs-favorite-tag-preview {
   position: fixed;
   z-index: 1000;

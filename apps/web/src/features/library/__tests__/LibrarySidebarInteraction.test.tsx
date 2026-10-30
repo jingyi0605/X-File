@@ -19,6 +19,27 @@ beforeEach(() => {
   resetLibraryApiMock();
 });
 
+it("收藏标题可折叠列表且不显示收藏数量", async () => {
+  libraryApiMock.getLibrarySnapshot.mockResolvedValue(createLibrarySnapshot({
+    favorites: [
+      { kind: "folder", path: "合同签订", label: "合同签订" },
+      { kind: "folder", path: "麦迪格的实施项目", label: "麦迪格的实施项目" },
+    ],
+  }));
+  const { LibraryPage } = await import("../LibraryPage");
+  render(<LibraryPage onOpenSettings={() => undefined} platformData={platformData} />);
+
+  const favoritesToggle = await screen.findByRole("button", { name: "收藏" });
+  expect(favoritesToggle).toHaveAttribute("aria-expanded", "true");
+  expect(screen.getByText("合同签订")).toBeInTheDocument();
+  expect(screen.queryByText("2", { selector: ".affairs-sidebar-block-count" })).not.toBeInTheDocument();
+
+  await userEvent.click(favoritesToggle);
+
+  expect(favoritesToggle).toHaveAttribute("aria-expanded", "false");
+  expect(screen.queryByText("合同签订")).not.toBeInTheDocument();
+});
+
 it("常驻快速查找按 Enter 后在文件列表上方显示搜索结果", async () => {
   const { LibraryPage } = await import("../LibraryPage");
   render(<LibraryPage onOpenSettings={() => undefined} platformData={platformData} />);
