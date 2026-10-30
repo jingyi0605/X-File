@@ -16,6 +16,7 @@ describe("镜像模式 HTTP 会话", () => {
   });
 
   afterEach(() => {
+    localStorage.clear();
     sessionStorage.clear();
     vi.unstubAllGlobals();
   });
@@ -26,6 +27,9 @@ describe("镜像模式 HTTP 会话", () => {
       remoteApiBaseUrl: "https://primary.example.com"
     });
     setHttpAuthSessionToken("https://primary.example.com/api/auth/login", "session-token");
+
+    expect(localStorage.getItem("x-file.http-auth-session.https://primary.example.com")).toBe("session-token");
+    expect(sessionStorage.length).toBe(0);
 
     await expect(apiRequest("/api/library/config")).resolves.toEqual({ ok: true });
 

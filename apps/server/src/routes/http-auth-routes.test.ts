@@ -85,6 +85,19 @@ test("局域网请求必须先登录，登录后会话可以访问受保护内�
   assert.deepEqual(headerAuthenticated.json(), { content: "private" });
 
   await app.close();
+
+  const restartedManager = new HttpServerManager(path.join(tempDir, "state.json"));
+  const restartedApp = Fastify({ logger: false });
+  registerHttpAuthRoutes(restartedApp, restartedManager);
+  restartedApp.get("/api/content", async () => ({ content: "private" }));
+  const afterRestart = await restartedApp.inject({
+    method: "GET",
+    url: "/api/content",
+    remoteAddress: "192.168.1.20",
+    headers: { "x-file-session": login.json().sessionToken },
+  });
+  assert.equal(afterRestart.statusCode, 200);
+  await restartedApp.close();
 });
 
 test("本机回环请求不要求局域网登录", async () => {

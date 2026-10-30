@@ -1,4 +1,6 @@
-import { randomBytes } from "node:crypto";
+import fs from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import path from "node:path";
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
@@ -27,7 +29,8 @@ export function registerHttpAuthRoutes(
   app: FastifyInstance,
   httpServerManager: HttpServerManager,
 ): void {
-  const sessions = new Set<string>();
+  const sessionStore = new PersistentSessionStore(httpServerManager.getAuthSessionStorePath());
+  const sessions = new Set(sessionStore.read());
   const loginFailures = new Map<string, LoginFailures>();
 
   app.addHook("onRequest", async (request, reply) => {
@@ -93,7 +96,8 @@ export function registerHttpAuthRoutes(
 
     loginFailures.delete(clientKey);
     const token = randomBytes(32).toString("base64url");
-    sessions.add(token);
+    sessions.add(hashSessionToken(token));
+    sessionStore.write(sessions);
     reply
       .header("set-cookie", buildSessionCookie(token))
       .send({
@@ -108,7 +112,8 @@ export function registerHttpAuthRoutes(
   app.post("/api/auth/logout", async (request, reply) => {
     const token = readSessionToken(request);
     if (token) {
-      sessions.delete(token);
+      sessions.delete(hashSessionToken(token));
+      sessionStore.write(sessions);
     }
     reply.header("set-cookie", buildExpiredSessionCookie()).send({ ok: true });
   });
@@ -139,7 +144,36 @@ function hasValidSession(
   sessions: Set<string>,
 ): boolean {
   const token = readSessionToken(request);
-  return token !== null && sessions.has(token);
+  return token !== null && sessions.has(hashSessionToken(token));
+}
+
+class PersistentSessionStore {
+  constructor(private readonly filePath: string) {}
+
+  read(): string[] {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.filePath, "utf8")) as unknown;
+      return Array.isArray(parsed)
+        ? parsed.filter((item): item is string => typeof item === "string" && item.length > 0)
+        : [];
+    } catch {
+      return [];
+    }
+  }
+
+  write(sessions: Set<string>): void {
+    try {
+      fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+      fs.writeFileSync(this.filePath, `${JSON.stringify([...sessions], null, 2)}\n`, "utf8");
+      fs.chmodSync(this.filePath, 0o600);
+    } catch {
+      // 认证会话持久化失败时仍保留当前进程内会话，不阻断已完成的登录。
+    }
+  }
+}
+
+function hashSessionToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
 }
 
 function readSessionToken(request: FastifyRequest): string | null {

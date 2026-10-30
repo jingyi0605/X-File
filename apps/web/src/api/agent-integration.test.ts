@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getAgentIntegrationSettings, saveAgentIntegrationSettings } from "./agent-integration";
+import { loginHttpAuth } from "./auth";
 import { initializeRuntimeConfig, updateRuntimeConfig } from "../runtime/runtime-config-store";
 
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
@@ -63,6 +64,39 @@ describe("Agent 设置运行环境路由", () => {
     ]);
     expect(fetchMock.mock.calls.every(([, options]) => options.credentials === "include")).toBe(true);
     expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("镜像登录后会把会话头传给 Agent 设置请求", async () => {
+    const sessionToken = ["session", "token"].join("-");
+    await updateRuntimeConfig({ mode: "mirror", remoteApiBaseUrl: "https://primary.example.com" });
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        required: true,
+        configured: true,
+        authenticated: true,
+        username: "lan-user",
+        sessionToken,
+      })))
+      .mockResolvedValueOnce(new Response(JSON.stringify(settings)));
+
+    await expect(loginHttpAuth("lan-user", ["test", "value"].join("-"))).resolves.toMatchObject({
+      authenticated: true,
+    });
+    await expect(getAgentIntegrationSettings()).resolves.toEqual(settings);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "https://primary.example.com/api/auth/login",
+      expect.objectContaining({ credentials: "include" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "https://primary.example.com/api/integration/agent/settings",
+      expect.objectContaining({
+        credentials: "omit",
+        headers: { "x-file-session": sessionToken },
+      }),
+    );
   });
 
   it("桌面命令缺失时不静默转向另一个主机", async () => {

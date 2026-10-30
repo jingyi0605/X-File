@@ -14,7 +14,7 @@ export function getHttpAuthSessionToken(apiUrl: string): string | null {
   }
 
   try {
-    const stored = window.sessionStorage.getItem(buildStorageKey(scope));
+    const stored = window.localStorage.getItem(buildStorageKey(scope));
     if (stored) {
       memorySessions.set(scope, stored);
       return stored;
@@ -41,9 +41,9 @@ export function setHttpAuthSessionToken(apiUrl: string, token: string | null): v
   try {
     const storageKey = buildStorageKey(scope);
     if (token) {
-      window.sessionStorage.setItem(storageKey, token);
+      window.localStorage.setItem(storageKey, token);
     } else {
-      window.sessionStorage.removeItem(storageKey);
+      window.localStorage.removeItem(storageKey);
     }
   } catch {
     // 会话存储不可用时继续使用内存会话。

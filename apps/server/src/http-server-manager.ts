@@ -136,6 +136,10 @@ export class HttpServerManager {
     };
   }
 
+  getAuthSessionStorePath(): string {
+    return path.join(path.dirname(this.stateFilePath), "http-auth-sessions.json");
+  }
+
   bindServer(app: FastifyInstance): void {
     this.app = app;
   }
