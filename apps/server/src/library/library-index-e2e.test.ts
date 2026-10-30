@@ -95,7 +95,7 @@ test("仅导出原生快照，不再提供 SQLite 回退入口", async t => {
 
 test("摘要词项未变化时复用搜索桶和标签产物", async t => {
   const rootDir = library(t);
-  fs.writeFileSync(path.join(rootDir, "docs/a.md"), "alpha 正文 ".repeat(100));
+  fs.writeFileSync(path.join(rootDir, "docs/a.md"), "alpha 正文 ".repeat(400));
   await runLibraryIndexOnce({ rootDir });
   const manifestPath = path.join(rootDir, ".ai-index/exports/search/manifest.json");
   const before = fs.readFileSync(manifestPath, "utf8");

@@ -153,6 +153,8 @@ struct RuntimeActiveFileStateSnapshot {
 struct RuntimeIndexStateSnapshot {
     version: u32,
     generated_at: String,
+    #[serde(default)]
+    allowed_extensions: Option<Vec<String>>,
     failed_documents: Vec<RuntimeIndexedDocumentState>,
     skipped_documents: Vec<RuntimeIndexedDocumentState>,
     parser_skips: Vec<RuntimeParserSkipState>,
@@ -199,6 +201,10 @@ enum TargetScope {
         files: BTreeSet<String>,
         directories: BTreeSet<String>,
     },
+    ExtensionChange {
+        added_extensions: BTreeSet<String>,
+        removed_extensions: BTreeSet<String>,
+    },
 }
 
 pub fn run_native_index_worker(request: NativeIndexRequest) -> Result<Value, String> {
@@ -229,11 +235,18 @@ pub fn run_native_index_worker(request: NativeIndexRequest) -> Result<Value, Str
         let recovery_pending = fs::metadata(indexed_document_journal_path(&root_dir))
             .is_ok_and(|metadata| metadata.len() > 0);
         let options = NativeIndexOptions::from_request(&request);
-        let target_scope = if request.target_paths.is_empty() {
+        let requested_scope = if request.target_paths.is_empty() {
             resolve_target_scope(&root_dir, request.target_path.as_deref())
         } else {
             resolve_target_paths(&root_dir, &request.target_paths)
         };
+        let target_scope = resolve_extension_change_scope(
+            &root_dir,
+            requested_scope,
+            &request.allowed_extensions,
+        )?;
+        let extension_scope_changed =
+            matches!(&target_scope, TargetScope::ExtensionChange { .. });
         let previous_state = load_previous_native_index_state(&root_dir);
         let scanned = scan_documents(
             &root_dir,
@@ -266,6 +279,7 @@ pub fn run_native_index_worker(request: NativeIndexRequest) -> Result<Value, Str
             .any(|document| !document.reused_previous)
             || recovery_pending
             || !scanned.deleted_paths.is_empty()
+            || extension_scope_changed
             || !export_catalog_snapshot_path(&root_dir).exists()
         {
             write_export_snapshot(
@@ -281,6 +295,7 @@ pub fn run_native_index_worker(request: NativeIndexRequest) -> Result<Value, Str
         };
         let state_changed = recovery_pending
             || !scanned.deleted_paths.is_empty()
+            || extension_scope_changed
             || scanned
                 .documents
                 .iter()
@@ -297,6 +312,7 @@ pub fn run_native_index_worker(request: NativeIndexRequest) -> Result<Value, Str
                 &scanned,
                 &target_scope,
                 previous_state.as_deref(),
+                &request.allowed_extensions,
             )?;
         } else {
             clear_indexed_document_journal(&root_dir)?;
@@ -576,17 +592,21 @@ fn scan_documents(
     let deleted_paths = previous_state
         .as_ref()
         .map(|state| {
-            state
-                .active_files
-                .keys()
-                .chain(state.documents.keys())
-                .filter(|path| {
-                    target_scope_matches_path(target_scope, path) && !seen_paths.contains(*path)
-                })
-                .cloned()
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect()
+            let paths = state.active_files.keys().chain(state.documents.keys());
+            match target_scope {
+                TargetScope::ExtensionChange { .. } => paths
+                    .filter(|path| target_scope_matches_removed_path(target_scope, path))
+                    .cloned()
+                    .collect::<BTreeSet<_>>(),
+                _ => paths
+                    .filter(|path| {
+                        target_scope_matches_path(target_scope, path) && !seen_paths.contains(*path)
+                    })
+                    .cloned()
+                    .collect::<BTreeSet<_>>(),
+            }
+            .into_iter()
+            .collect()
         })
         .unwrap_or_default();
     Ok(ScanDocumentsResult {
@@ -655,11 +675,14 @@ fn discover_scannable_files(
                     {
                         queue.push_back(entry_path);
                     }
-                } else if kind.is_file() && is_supported_file(&entry_path, options) {
+                } else if kind.is_file()
+                    && is_supported_file(&entry_path, options)
+                    && target_scope_accepts_file(target_scope, &entry_path)
+                {
                     candidates.push(entry_path);
                 }
             }
-        } else if metadata.is_file() {
+        } else if metadata.is_file() && target_scope_accepts_file(target_scope, &current) {
             candidates.push(current);
         }
 
@@ -806,7 +829,7 @@ fn directory_queue_key(root: &Path, path: &Path) -> String {
 
 fn resolve_scan_bases(root: &Path, target_scope: &TargetScope) -> Vec<PathBuf> {
     match target_scope {
-        TargetScope::All => vec![root.to_path_buf()],
+        TargetScope::All | TargetScope::ExtensionChange { .. } => vec![root.to_path_buf()],
         TargetScope::Paths { files, directories } => files
             .iter()
             .chain(directories)
@@ -1006,7 +1029,10 @@ fn write_export_snapshot(
     let mut snapshot_documents = previous_state
         .into_iter()
         .flat_map(|state| state.documents.values())
-        .filter(|document| !target_scope_matches_path(target_scope, &document.path))
+        .filter(|document| {
+            !target_scope_matches_path(target_scope, &document.path)
+                && !target_scope_matches_removed_path(target_scope, &document.path)
+        })
         .cloned()
         .collect::<Vec<_>>();
     snapshot_documents.extend(documents.iter().map(snapshot_document_from_scanned));
@@ -1091,9 +1117,16 @@ fn write_runtime_mirror_snapshots(
     root_dir: &str,
     scanned: &ScanDocumentsResult,
     target_scope: &TargetScope,
+    allowed_extensions: &[String],
 ) -> Result<(), String> {
     let previous = load_previous_native_index_state(root_dir);
-    write_runtime_mirror_snapshots_with_state(root_dir, scanned, target_scope, previous.as_deref())
+    write_runtime_mirror_snapshots_with_state(
+        root_dir,
+        scanned,
+        target_scope,
+        previous.as_deref(),
+        allowed_extensions,
+    )
 }
 
 fn write_runtime_mirror_snapshots_with_state(
@@ -1101,6 +1134,7 @@ fn write_runtime_mirror_snapshots_with_state(
     scanned: &ScanDocumentsResult,
     target_scope: &TargetScope,
     previous_state: Option<&PreviousNativeIndexState>,
+    allowed_extensions: &[String],
 ) -> Result<(), String> {
     let active_file_path = active_file_state_snapshot_path(root_dir);
     let index_state_path = index_state_snapshot_path(root_dir);
@@ -1108,6 +1142,7 @@ fn write_runtime_mirror_snapshots_with_state(
         .unwrap_or(RuntimeIndexStateSnapshot {
             version: 1,
             generated_at: iso_now(),
+            allowed_extensions: None,
             failed_documents: Vec::new(),
             skipped_documents: Vec::new(),
             parser_skips: Vec::new(),
@@ -1125,7 +1160,7 @@ fn write_runtime_mirror_snapshots_with_state(
     }
 
     for document in &scanned.documents {
-        if !target_scope_matches_path(target_scope, &document.relative_path) {
+        if !target_scope_accepts_document_path(target_scope, &document.relative_path) {
             continue;
         }
         let runtime_state = runtime_active_state_from_document(document);
@@ -1134,7 +1169,7 @@ fn write_runtime_mirror_snapshots_with_state(
     }
 
     for skipped in &scanned.skipped_documents {
-        if !target_scope_matches_path(target_scope, &skipped.path) {
+        if !target_scope_accepts_document_path(target_scope, &skipped.path) {
             continue;
         }
         active_files.insert(skipped.path.clone(), skipped.clone());
@@ -1143,6 +1178,18 @@ fn write_runtime_mirror_snapshots_with_state(
 
     for parser_skip in &scanned.parser_skips {
         parser_skips.insert(parser_skip.skip_key.clone(), parser_skip.clone());
+    }
+
+    if matches!(target_scope, TargetScope::ExtensionChange { .. }) {
+        active_files.retain(|path, _| !target_scope_matches_removed_path(target_scope, path));
+        skipped_documents.retain(|path, _| !target_scope_matches_removed_path(target_scope, path));
+        parser_skips.retain(|_, item| {
+            !target_scope_matches_removed_path(target_scope, &format!("x{}", item.extension))
+        });
+    }
+    let mut failed_documents = previous_index.failed_documents;
+    if matches!(target_scope, TargetScope::ExtensionChange { .. }) {
+        failed_documents.retain(|item| !target_scope_matches_removed_path(target_scope, &item.path));
     }
 
     for deleted_path in &scanned.deleted_paths {
@@ -1158,7 +1205,16 @@ fn write_runtime_mirror_snapshots_with_state(
     let index_snapshot = RuntimeIndexStateSnapshot {
         version: 1,
         generated_at: iso_now(),
-        failed_documents: previous_index.failed_documents,
+        allowed_extensions: Some(
+            allowed_extensions
+                .iter()
+                .map(|extension| normalize_extension(extension))
+                .filter(|extension| !extension.is_empty())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+        ),
+        failed_documents,
         skipped_documents: skipped_documents.into_values().collect(),
         parser_skips: parser_skips.into_values().collect(),
     };
@@ -2017,6 +2073,7 @@ fn resolve_target_paths(root: &str, paths: &[String]) -> TargetScope {
                 files.extend(next_files);
                 directories.extend(next_dirs);
             }
+            TargetScope::ExtensionChange { .. } => return TargetScope::All,
         }
     }
     let parents = directories.clone();
@@ -2034,6 +2091,103 @@ fn resolve_target_paths(root: &str, paths: &[String]) -> TargetScope {
     TargetScope::Paths { files, directories }
 }
 
+fn resolve_extension_change_scope(
+    root_dir: &str,
+    requested_scope: TargetScope,
+    allowed_extensions: &[String],
+) -> Result<TargetScope, String> {
+    if !matches!(requested_scope, TargetScope::All) {
+        return Ok(requested_scope);
+    }
+    let Some(previous) = read_previous_allowed_extensions(root_dir)? else {
+        return Ok(requested_scope);
+    };
+    let current = effective_allowed_extensions(allowed_extensions);
+    if current == previous {
+        return Ok(requested_scope);
+    }
+    let added_extensions = current
+        .difference(&previous)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let removed_extensions = previous
+        .difference(&current)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    Ok(TargetScope::ExtensionChange {
+        added_extensions,
+        removed_extensions,
+    })
+}
+
+fn read_previous_allowed_extensions(root_dir: &str) -> Result<Option<BTreeSet<String>>, String> {
+    let Some(snapshot) = read_optional_json_file::<RuntimeIndexStateSnapshot>(
+        &index_state_snapshot_path(root_dir),
+    )? else {
+        return Ok(None);
+    };
+    Ok(snapshot
+        .allowed_extensions
+        .map(|extensions| effective_allowed_extensions(&extensions)))
+}
+
+fn effective_allowed_extensions(values: &[String]) -> BTreeSet<String> {
+    let normalized = values
+        .iter()
+        .map(|value| normalize_extension(value))
+        .filter(|value| !value.is_empty())
+        .collect::<BTreeSet<_>>();
+    if normalized.is_empty() {
+        return supported_extensions()
+            .iter()
+            .map(|extension| (*extension).to_string())
+            .collect();
+    }
+    normalized
+}
+
+fn normalize_extension(value: &str) -> String {
+    let normalized = value.trim().to_lowercase();
+    if normalized.is_empty() {
+        String::new()
+    } else if normalized.starts_with('.') {
+        normalized
+    } else {
+        format!(".{normalized}")
+    }
+}
+
+fn target_scope_accepts_file(target_scope: &TargetScope, path: &Path) -> bool {
+    match target_scope {
+        TargetScope::ExtensionChange {
+            added_extensions, ..
+        } => normalized_file_extension(path)
+            .is_some_and(|extension| added_extensions.contains(&extension)),
+        _ => true,
+    }
+}
+
+fn target_scope_accepts_document_path(target_scope: &TargetScope, document_path: &str) -> bool {
+    match target_scope {
+        TargetScope::ExtensionChange {
+            added_extensions, ..
+        } => normalized_file_extension(Path::new(document_path))
+            .is_some_and(|extension| added_extensions.contains(&extension)),
+        _ => target_scope_matches_path(target_scope, document_path),
+    }
+}
+
+fn target_scope_matches_removed_path(target_scope: &TargetScope, document_path: &str) -> bool {
+    let TargetScope::ExtensionChange {
+        removed_extensions, ..
+    } = target_scope
+    else {
+        return false;
+    };
+    normalized_file_extension(Path::new(document_path))
+        .is_some_and(|extension| removed_extensions.contains(&extension))
+}
+
 fn target_scope_matches_path(target_scope: &TargetScope, document_path: &str) -> bool {
     match target_scope {
         TargetScope::All => true,
@@ -2044,6 +2198,7 @@ fn target_scope_matches_path(target_scope: &TargetScope, document_path: &str) ->
                     .rmatch_indices('/')
                     .any(|(index, _)| directories.contains(&document_path[..index]))
         }
+        TargetScope::ExtensionChange { .. } => false,
     }
 }
 
@@ -2864,6 +3019,66 @@ mod tests {
     }
 
     #[test]
+    fn extension_scope_changes_insert_and_remove_without_reindexing_unrelated_documents() {
+        let root = make_temp_dir("x-file-native-extension-scope-change");
+        fs::write(root.join("document.md"), "# Existing").unwrap();
+        fs::write(root.join("image.png"), [137, 80, 78, 71]).unwrap();
+
+        let request = |allowed_extensions: Vec<&str>| NativeIndexRequest {
+            root_dir: root.to_string_lossy().to_string(),
+            allowed_extensions: allowed_extensions.into_iter().map(str::to_string).collect(),
+            included_hidden_paths: vec![],
+            hide_dot_files: true,
+            hide_system_folders: true,
+            reason: "extension_scope_test".to_string(),
+            target_path: None,
+            target_paths: Vec::new(),
+        };
+
+        let first = run_native_index_worker(request(vec![".md"])).unwrap();
+        assert_eq!(first["index"]["indexedCount"], 1);
+
+        let enabled = run_native_index_worker(request(vec![".md", ".png"])).unwrap();
+        assert_eq!(enabled["index"]["indexedCount"], 1);
+        assert_eq!(enabled["index"]["scannedCount"], 1);
+        assert_eq!(enabled["index"]["unchangedCount"], 0);
+        assert_eq!(enabled["index"]["deletedCount"], 0);
+        let snapshot = super::read_catalog(&root.to_string_lossy())
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.documents.len(), 2);
+        let active: Value = serde_json::from_str(
+            &fs::read_to_string(root.join(".ai-index/runtime/active-file-state-snapshot.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(active["files"].as_array().unwrap().len(), 2);
+
+        let disabled = run_native_index_worker(request(vec![".md"])).unwrap();
+        assert_eq!(disabled["index"]["indexedCount"], 0);
+        assert_eq!(disabled["index"]["scannedCount"], 0);
+        assert_eq!(disabled["index"]["deletedCount"], 1);
+        assert_eq!(
+            disabled["index"]["deletedPaths"],
+            serde_json::json!(["image.png"])
+        );
+        let snapshot = super::read_catalog(&root.to_string_lossy())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            snapshot.documents.iter().map(|document| document.path.as_str()).collect::<Vec<_>>(),
+            vec!["document.md"]
+        );
+        let active: Value = serde_json::from_str(
+            &fs::read_to_string(root.join(".ai-index/runtime/active-file-state-snapshot.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(active["files"].as_array().unwrap().len(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn priority_hint_会把已排队目录移动到队头() {
         let root_dir = make_temp_dir("x-file-native-priority-queue");
         let slow_dir = root_dir.join("slow");
@@ -3333,6 +3548,7 @@ mod tests {
                 deleted_paths: vec![],
             },
             &TargetScope::All,
+            &[".md".to_string()],
         )
         .expect("写入正式 runtime snapshot 失败");
         let journal_exists = journal_path.exists();
