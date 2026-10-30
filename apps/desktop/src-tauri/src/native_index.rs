@@ -821,10 +821,7 @@ fn scan_file(
     metadata: &fs::Metadata,
     options: &NativeIndexOptions,
 ) -> ScanFileOutcome {
-    let extension = file_path
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| format!(".{}", value.to_lowercase()));
+    let extension = normalized_file_extension(file_path);
     let Some(extension) = extension else {
         return ScanFileOutcome::Ignored;
     };
@@ -1218,11 +1215,17 @@ fn stable_skip_key(adapter: &str, reason_code: &str, extension: &str) -> String 
 }
 
 fn document_extension(path: &str) -> String {
-    Path::new(path)
-        .extension()
+    normalized_file_extension(Path::new(path)).unwrap_or_default()
+}
+
+fn normalized_file_extension(path: &Path) -> Option<String> {
+    let file_name = path.file_name()?.to_str()?.to_lowercase();
+    if file_name.starts_with('.') && !file_name[1..].contains('.') {
+        return Some(file_name);
+    }
+    path.extension()
         .and_then(|value| value.to_str())
         .map(|value| format!(".{}", value.to_lowercase()))
-        .unwrap_or_default()
 }
 
 fn register_tag_path(target: &mut BTreeMap<String, SnapshotTag>, tag_path: &str) {
@@ -1433,14 +1436,60 @@ fn merge_indexed_document_journal(
 fn extension_type_tag(extension: &str) -> Option<&'static str> {
     match extension {
         ".md" | ".markdown" | ".mdx" => Some("类型/文本/Markdown"),
-        ".txt" => Some("类型/文本/纯文本"),
+        ".txt" | ".text" | ".log" => Some("类型/文本/纯文本"),
         ".rtf" => Some("类型/文本/RTF"),
         ".html" | ".htm" => Some("类型/文本/HTML"),
+        ".xml" => Some("类型/代码/XML"),
+        ".json" | ".map" => Some("类型/代码/JSON"),
+        ".yaml" | ".yml" => Some("类型/代码/YAML"),
+        ".toml" => Some("类型/代码/TOML"),
+        ".ini" | ".conf" | ".properties" | ".env" => Some("类型/代码/配置"),
+        ".css" | ".scss" | ".less" => Some("类型/代码/CSS"),
+        ".js" | ".jsx" | ".mjs" | ".cjs" => Some("类型/代码/JavaScript"),
+        ".ts" | ".tsx" => Some("类型/代码/TypeScript"),
+        ".py" => Some("类型/代码/Python"),
+        ".go" => Some("类型/代码/Go"),
+        ".rs" => Some("类型/代码/Rust"),
+        ".java" => Some("类型/代码/Java"),
+        ".c" | ".h" => Some("类型/代码/C"),
+        ".cpp" | ".cc" | ".hpp" => Some("类型/代码/C++"),
+        ".sh" | ".bash" | ".zsh" => Some("类型/代码/Shell"),
+        ".sql" => Some("类型/代码/SQL"),
+        ".dockerfile" => Some("类型/代码/Dockerfile"),
+        ".gitignore" | ".editorconfig" => Some("类型/代码/配置"),
         ".pdf" => Some("类型/办公/PDF"),
         ".doc" | ".docx" | ".odt" | ".wps" => Some("类型/办公/Word"),
         ".ppt" | ".pptx" | ".odp" | ".key" => Some("类型/办公/PPT"),
         ".xls" | ".xlsx" | ".ods" | ".et" | ".numbers" => Some("类型/办公/Excel"),
         ".csv" => Some("类型/表格/CSV"),
+        ".tsv" => Some("类型/表格/TSV"),
+        ".png" => Some("类型/图片/PNG"),
+        ".jpg" | ".jpeg" => Some("类型/图片/JPEG"),
+        ".gif" => Some("类型/图片/GIF"),
+        ".webp" => Some("类型/图片/WebP"),
+        ".svg" => Some("类型/图片/SVG"),
+        ".bmp" => Some("类型/图片/BMP"),
+        ".ico" => Some("类型/图片/ICO"),
+        ".tif" | ".tiff" => Some("类型/图片/TIFF"),
+        ".heic" | ".heif" => Some("类型/图片/HEIF"),
+        ".avif" => Some("类型/图片/AVIF"),
+        ".mp3" => Some("类型/媒体/音频/MP3"),
+        ".wav" => Some("类型/媒体/音频/WAV"),
+        ".flac" => Some("类型/媒体/音频/FLAC"),
+        ".m4a" => Some("类型/媒体/音频/M4A"),
+        ".aac" => Some("类型/媒体/音频/AAC"),
+        ".ogg" => Some("类型/媒体/音频/OGG"),
+        ".opus" => Some("类型/媒体/音频/Opus"),
+        ".aiff" | ".aif" => Some("类型/媒体/音频/AIFF"),
+        ".mp4" => Some("类型/媒体/视频/MP4"),
+        ".mov" => Some("类型/媒体/视频/MOV"),
+        ".mkv" => Some("类型/媒体/视频/MKV"),
+        ".webm" => Some("类型/媒体/视频/WebM"),
+        ".avi" => Some("类型/媒体/视频/AVI"),
+        ".wmv" => Some("类型/媒体/视频/WMV"),
+        ".m4v" => Some("类型/媒体/视频/M4V"),
+        ".mpeg" | ".mpg" => Some("类型/媒体/视频/MPEG"),
+        ".3gp" => Some("类型/媒体/视频/3GP"),
         _ => None,
     }
 }
@@ -2129,14 +2178,47 @@ fn supported_extensions() -> &'static HashSet<&'static str> {
             ".markdown",
             ".mdx",
             ".txt",
+            ".text",
+            ".log",
             ".rtf",
             ".html",
             ".htm",
             ".xml",
             ".json",
+            ".map",
             ".yaml",
             ".yml",
             ".tsv",
+            ".css",
+            ".scss",
+            ".less",
+            ".js",
+            ".jsx",
+            ".mjs",
+            ".cjs",
+            ".ts",
+            ".tsx",
+            ".py",
+            ".go",
+            ".rs",
+            ".java",
+            ".c",
+            ".h",
+            ".cpp",
+            ".cc",
+            ".hpp",
+            ".sh",
+            ".bash",
+            ".zsh",
+            ".sql",
+            ".toml",
+            ".ini",
+            ".conf",
+            ".properties",
+            ".env",
+            ".dockerfile",
+            ".gitignore",
+            ".editorconfig",
             ".pdf",
             ".doc",
             ".docx",
@@ -2152,6 +2234,38 @@ fn supported_extensions() -> &'static HashSet<&'static str> {
             ".et",
             ".numbers",
             ".csv",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".gif",
+            ".webp",
+            ".svg",
+            ".bmp",
+            ".ico",
+            ".tif",
+            ".tiff",
+            ".heic",
+            ".heif",
+            ".avif",
+            ".mp3",
+            ".wav",
+            ".flac",
+            ".m4a",
+            ".aac",
+            ".ogg",
+            ".opus",
+            ".aiff",
+            ".aif",
+            ".mp4",
+            ".mov",
+            ".mkv",
+            ".webm",
+            ".avi",
+            ".wmv",
+            ".m4v",
+            ".mpeg",
+            ".mpg",
+            ".3gp",
         ]
         .into_iter()
         .collect()
@@ -2691,6 +2805,62 @@ mod tests {
         for extension in [".odt", ".ods", ".odp"] {
             assert!(!is_native_skip_only_extension(extension));
         }
+    }
+
+    #[test]
+    fn extension_type_tag_covers_image_media_and_code_extensions() {
+        for (extension, expected) in [
+            (".png", "类型/图片/PNG"),
+            (".jpeg", "类型/图片/JPEG"),
+            (".mp3", "类型/媒体/音频/MP3"),
+            (".mp4", "类型/媒体/视频/MP4"),
+            (".js", "类型/代码/JavaScript"),
+            (".ts", "类型/代码/TypeScript"),
+            (".py", "类型/代码/Python"),
+            (".rs", "类型/代码/Rust"),
+        ] {
+            assert_eq!(super::extension_type_tag(extension), Some(expected));
+            assert!(super::supported_extensions().contains(extension));
+        }
+    }
+
+    #[test]
+    fn index_exports_image_media_and_code_derived_tags() {
+        let root = make_temp_dir("x-file-native-classification-families");
+        fs::write(root.join("cover.png"), [137, 80, 78, 71]).unwrap();
+        fs::write(root.join("audio.mp3"), [73, 68, 51]).unwrap();
+        fs::write(root.join("script.ts"), "const answer: number = 42;").unwrap();
+
+        run_native_index_worker(NativeIndexRequest {
+            root_dir: root.to_string_lossy().to_string(),
+            allowed_extensions: vec![],
+            included_hidden_paths: vec![],
+            hide_dot_files: true,
+            hide_system_folders: true,
+            reason: "classification_test".to_string(),
+            target_path: None,
+            target_paths: Vec::new(),
+        })
+        .unwrap();
+
+        let snapshot = super::read_catalog(&root.to_string_lossy())
+            .unwrap()
+            .unwrap();
+        let derived_tags = |path: &str| {
+            snapshot
+                .documents
+                .iter()
+                .find(|document| document.path == path)
+                .map(|document| document.derived_tags.clone())
+        };
+
+        assert!(derived_tags("cover.png")
+            .is_some_and(|tags| tags.iter().any(|tag| tag == "类型/图片/PNG")));
+        assert!(derived_tags("audio.mp3")
+            .is_some_and(|tags| tags.iter().any(|tag| tag == "类型/媒体/音频/MP3")));
+        assert!(derived_tags("script.ts")
+            .is_some_and(|tags| tags.iter().any(|tag| tag == "类型/代码/TypeScript")));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
