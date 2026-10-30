@@ -6516,11 +6516,17 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_原生侧栏必须采样窗口后方() {
+    fn macos_原生侧栏必须在窗口内采样() {
         assert_eq!(
             macos_native_sidebar_blending_mode(),
-            NSVisualEffectBlendingMode::BehindWindow
+            NSVisualEffectBlendingMode::WithinWindow
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_原生侧栏失焦时仍必须保持_active_材质() {
+        assert_eq!(macos_native_sidebar_state(), NSVisualEffectState::Active);
     }
 }
 
@@ -6862,10 +6868,9 @@ unsafe fn ensure_macos_native_sidebar_view(
         NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)),
     );
     effect_view.setMaterial(NSVisualEffectMaterial::Sidebar);
-    // 透明 WKWebView 与 WithinWindow 材质由两条渲染管线提交，主内容剧变时无法保证原子更新。
-    // 采样窗口后方可以切断边栏与 WebView 内容之间的循环合成，避免半透明背景闪烁。
+    // 侧栏需要在透明窗口内部参与合成，才能同时保留前景和后台状态下的玻璃模糊。
     effect_view.setBlendingMode(macos_native_sidebar_blending_mode());
-    effect_view.setState(NSVisualEffectState::FollowsWindowActiveState);
+    effect_view.setState(macos_native_sidebar_state());
     apply_macos_native_sidebar_appearance(&effect_view, appearance);
     effect_view.setAutoresizingMask(MACOS_NATIVE_LEFT_SIDEBAR_AUTOREZING_MASK);
     effect_view.setLayerContentsRedrawPolicy(NSViewLayerContentsRedrawPolicy::DuringViewResize);
@@ -6876,7 +6881,12 @@ unsafe fn ensure_macos_native_sidebar_view(
 
 #[cfg(target_os = "macos")]
 fn macos_native_sidebar_blending_mode() -> NSVisualEffectBlendingMode {
-    NSVisualEffectBlendingMode::BehindWindow
+    NSVisualEffectBlendingMode::WithinWindow
+}
+
+#[cfg(target_os = "macos")]
+fn macos_native_sidebar_state() -> NSVisualEffectState {
+    NSVisualEffectState::Active
 }
 
 #[cfg(target_os = "macos")]
