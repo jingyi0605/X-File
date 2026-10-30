@@ -6516,10 +6516,10 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_原生侧栏必须在窗口内采样() {
+    fn macos_原生侧栏必须采样窗口后方() {
         assert_eq!(
             macos_native_sidebar_blending_mode(),
-            NSVisualEffectBlendingMode::WithinWindow
+            NSVisualEffectBlendingMode::BehindWindow
         );
     }
 
@@ -6868,7 +6868,7 @@ unsafe fn ensure_macos_native_sidebar_view(
         NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)),
     );
     effect_view.setMaterial(NSVisualEffectMaterial::Sidebar);
-    // 侧栏需要在透明窗口内部参与合成，才能同时保留前景和后台状态下的玻璃模糊。
+    // 透明窗口需要从窗口后方采样，才能模糊桌面或其他窗口中的背景内容。
     effect_view.setBlendingMode(macos_native_sidebar_blending_mode());
     effect_view.setState(macos_native_sidebar_state());
     apply_macos_native_sidebar_appearance(&effect_view, appearance);
@@ -6881,7 +6881,7 @@ unsafe fn ensure_macos_native_sidebar_view(
 
 #[cfg(target_os = "macos")]
 fn macos_native_sidebar_blending_mode() -> NSVisualEffectBlendingMode {
-    NSVisualEffectBlendingMode::WithinWindow
+    NSVisualEffectBlendingMode::BehindWindow
 }
 
 #[cfg(target_os = "macos")]

@@ -12162,7 +12162,7 @@ input[type="range"] {
 /* 原生窗口保留透明侧栏、标题栏安全区与拖拽区域。 */
 
 .workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] .workbench-sidebar {
-  background: var(--workbench-native-sidebar-tint);
+  background: transparent;
   box-shadow: inset -1px 0 0 var(--glass-edge);
 }
 
@@ -12260,7 +12260,7 @@ input[type="range"] {
   .workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"]
     .xfile-workbench-window
     > .workbench-sidebar[data-open] {
-    background-color: var(--workbench-native-sidebar-tint);
+    background-color: transparent;
     background-image: none;
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
