@@ -14,7 +14,7 @@
     "@aiden0z/pptx-renderer": "1.4.0",
     "@e965/xlsx": "0.20.3",
     "@fortune-sheet/react": "1.0.4",
-    "@tauri-apps/api": "^2.2.0",
+    "@tauri-apps/api": "2.12.4",
     "@tauri-apps/plugin-dialog": "^2.2.0",
     "@vitejs/plugin-react": "^4.3.4",
     "@x-file/shared": "workspace:*",
