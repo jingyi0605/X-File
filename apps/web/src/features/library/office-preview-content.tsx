@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { unzipSync } from "fflate";
 import "@fortune-sheet/react/dist/index.css";
 import { LIBRARY_PREVIEW_BUDGETS } from "@x-file/shared";
@@ -9,6 +9,7 @@ import {
 } from "./preview-resource-controller";
 import {
   parseXlsxBytes,
+  type ParsedSpreadsheetWorkbook,
   type ParsedSpreadsheetSheet,
 } from "./xlsx-preview-parser";
 
@@ -20,7 +21,12 @@ const FortuneSheetWorkbook = lazy(() => import("@fortune-sheet/react").then(({ W
 
 type OfficeContent =
   | { kind: "docx"; bytes: Uint8Array }
-  | { kind: "xlsx"; sheets: XlsxSheet[] }
+  | {
+      kind: "xlsx";
+      bytes: Uint8Array;
+      sheetNames: string[];
+      sheets: Array<XlsxSheet | null>;
+    }
   | { kind: "pptx"; bytes: Uint8Array };
 
 interface XlsxSheet {
@@ -46,6 +52,7 @@ export default function OfficePreviewContent({
   revision,
   resourceBytes,
   onError,
+  readOnlyPreview = false,
 }: {
   fileName: string;
   previewUrl: string;
@@ -53,14 +60,17 @@ export default function OfficePreviewContent({
   revision?: string;
   resourceBytes?: Uint8Array;
   onError: (message: string) => void;
+  readOnlyPreview?: boolean;
 }) {
   const [content, setContent] = useState<OfficeContent | null>(null);
   const [activeSheet, setActiveSheet] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [sheetLoading, setSheetLoading] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
+    setSheetLoading(false);
     setContent(null);
     setActiveSheet(0);
     void fetchOfficeContent(fileName, previewUrl, relativePath, controller.signal, revision, resourceBytes)
@@ -79,28 +89,70 @@ export default function OfficePreviewContent({
     return () => controller.abort();
   }, [fileName, previewUrl, relativePath, revision, resourceBytes]);
 
+  const activeSheetData = content?.kind === "xlsx"
+    ? content.sheets[activeSheet] ?? null
+    : null;
+
+  useEffect(() => {
+    if (content?.kind !== "xlsx" || activeSheetData || !content.bytes) {
+      return;
+    }
+
+    const controller = new AbortController();
+    setSheetLoading(true);
+    void parseXlsxInWorker(content.bytes, controller.signal, activeSheet)
+      .then((result) => {
+        const nextSheet = mapParsedSheet(result.sheets[0]);
+        if (controller.signal.aborted || !nextSheet) return;
+        setContent((current) => {
+          if (current?.kind !== "xlsx") return current;
+          const sheets = [...current.sheets];
+          sheets[activeSheet] = nextSheet;
+          return { ...current, sheets };
+        });
+      })
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) {
+          onError(toOfficeError(error));
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setSheetLoading(false);
+        }
+      });
+
+    return () => controller.abort();
+  }, [activeSheet, activeSheetData, content?.bytes, content?.kind, onError]);
+
   if (loading) return <div className="office-preview-state" role="status">{t("fileViewerOfficeLoading")}</div>;
   if (!content) return null;
   if (content.kind === "docx") return <DocxDocument bytes={content.bytes} onError={onError} />;
   if (content.kind === "xlsx") {
-    const sheet = content.sheets[activeSheet];
+    const sheet = content.sheets[activeSheet] ?? null;
     return (
       <div className="office-preview-workbook">
         <div className="office-preview-sheet-tabs" role="tablist" aria-label={t("fileViewerOfficeSheetLabel")}>
-          {content.sheets.map((item, index) => (
+          {content.sheetNames.map((name, index) => (
             <button
-              key={`${item.name}-${index}`}
+              key={`${name}-${index}`}
               type="button"
               role="tab"
               aria-selected={index === activeSheet}
               className="office-preview-sheet-tab"
               onClick={() => setActiveSheet(index)}
             >
-              {item.name}
+              {name}
             </button>
           ))}
         </div>
-        {sheet ? <SpreadsheetGrid sheet={sheet} /> : null}
+        {sheetLoading || !sheet ? (
+          <div className="office-preview-state" role="status">{t("fileViewerOfficeLoading")}</div>
+        ) : readOnlyPreview ? (
+          <ReadOnlySpreadsheetTable sheet={sheet} />
+        ) : (
+          <SpreadsheetGrid sheet={sheet} />
+        )}
       </div>
     );
   }
@@ -126,7 +178,15 @@ async function fetchOfficeContent(
   const extension = fileName.split(".").pop()?.toLowerCase();
   if (extension === "pptx") return { kind: "pptx", bytes };
   if (extension === "xls" || extension === "xlsx") {
-    return parseXlsxInWorker(bytes, signal);
+    const result = await parseXlsxInWorker(bytes, signal, 0);
+    return {
+      kind: "xlsx",
+      bytes,
+      sheetNames: result.sheetNames,
+      sheets: result.sheetNames.map((_, index) => (
+        index === 0 ? mapParsedSheet(result.sheets[0]) : null
+      )),
+    };
   }
 
   let entryCount = 0;
@@ -155,14 +215,18 @@ async function fetchOfficeContent(
   throw new Error("format");
 }
 
-async function parseXlsxInWorker(bytes: Uint8Array, signal: AbortSignal): Promise<OfficeContent> {
+async function parseXlsxInWorker(
+  bytes: Uint8Array,
+  signal: AbortSignal,
+  sheetIndex: number,
+): Promise<ParsedSpreadsheetWorkbook> {
   if (typeof Worker === "undefined" || import.meta.env.MODE === "test") {
-    return parseXlsxOnMain(bytes);
+    return parseXlsxOnMain(bytes, sheetIndex);
   }
 
   const worker = new Worker(new URL("./xlsx-preview.worker.ts", import.meta.url), { type: "module" });
   const transferableBytes = bytes.slice();
-  return await new Promise<OfficeContent>((resolve, reject) => {
+  return await new Promise<ParsedSpreadsheetWorkbook>((resolve, reject) => {
     const timeoutId = window.setTimeout(() => {
       worker.terminate();
       reject(new Error("timeout"));
@@ -177,36 +241,38 @@ async function parseXlsxInWorker(bytes: Uint8Array, signal: AbortSignal): Promis
       reject(new Error("cancelled"));
     };
     signal.addEventListener("abort", onAbort, { once: true });
-    worker.onmessage = (event: MessageEvent<{ ok: boolean; result?: { sheets: ParsedSpreadsheetSheet[] }; error?: string }>) => {
+    worker.onmessage = (event: MessageEvent<{
+      ok: boolean;
+      result?: ParsedSpreadsheetWorkbook;
+      error?: string;
+    }>) => {
       cleanup();
       if (!event.data.ok || !event.data.result) {
         reject(new Error(event.data.error || "format"));
         return;
       }
-      resolve({
-        kind: "xlsx",
-        sheets: event.data.result.sheets.map((sheet) => ({
-          ...sheet,
-          formulas: new Map(Object.entries(sheet.formulas)),
-        })),
-      });
+      resolve(event.data.result);
     };
     worker.onerror = () => {
       cleanup();
       reject(new Error("format"));
     };
-    worker.postMessage({ bytes: transferableBytes }, [transferableBytes.buffer]);
+    worker.postMessage({ bytes: transferableBytes, sheetIndex }, [transferableBytes.buffer]);
   });
 }
 
-async function parseXlsxOnMain(bytes: Uint8Array): Promise<OfficeContent> {
-  const result = parseXlsxBytes(bytes);
+async function parseXlsxOnMain(
+  bytes: Uint8Array,
+  sheetIndex: number,
+): Promise<ParsedSpreadsheetWorkbook> {
+  return parseXlsxBytes(bytes, { sheetIndex });
+}
+
+function mapParsedSheet(sheet: ParsedSpreadsheetSheet | undefined): XlsxSheet | null {
+  if (!sheet) return null;
   return {
-    kind: "xlsx",
-    sheets: result.sheets.map((sheet) => ({
-      ...sheet,
-      formulas: new Map(Object.entries(sheet.formulas)),
-    })),
+    ...sheet,
+    formulas: new Map(Object.entries(sheet.formulas)),
   };
 }
 
@@ -298,6 +364,29 @@ function SpreadsheetGrid({ sheet }: { sheet: XlsxSheet }) {
   const [copied, setCopied] = useState(false);
   const selectedAddress = selectionToAddress(selection);
   const selectedCell = sheet.fortuneData.data[selection.row[0]]?.[selection.column[0]] ?? null;
+  const workbookData = useMemo(() => [sheet.fortuneData], [sheet.fortuneData]);
+  const handleSelectionChange = useCallback(
+    (
+      _sheetId: string,
+      nextSelection: { row: number[]; column: number[] },
+    ) => {
+      const row = nextSelection.row ?? [0, 0];
+      const column = nextSelection.column ?? [0, 0];
+      setSelection((current) => (
+        current.row[0] === row[0]
+        && current.row[1] === row[1]
+        && current.column[0] === column[0]
+        && current.column[1] === column[1]
+          ? current
+          : { row, column }
+      ));
+    },
+    [],
+  );
+  const workbookHooks = useMemo(
+    () => ({ afterSelectionChange: handleSelectionChange }),
+    [handleSelectionChange],
+  );
 
   async function copySelection(): Promise<void> {
     const text = selectionToText(sheet, selection);
@@ -326,36 +415,87 @@ function SpreadsheetGrid({ sheet }: { sheet: XlsxSheet }) {
         <Suspense fallback={<div className="office-preview-state" role="status">{t("fileViewerOfficeLoading")}</div>}>
           <FortuneSheetWorkbook
             key={sheet.fortuneData.id}
-            data={[sheet.fortuneData]}
+            data={workbookData}
             allowEdit={false}
             showToolbar={false}
             showFormulaBar={false}
             showSheetTabs={false}
             lang="zh"
-            hooks={{
-              afterSelectionChange: (
-                _sheetId: string,
-                nextSelection: { row: number[]; column: number[] },
-              ) => {
-                setSelection({
-                  row: nextSelection.row ?? [0, 0],
-                  column: nextSelection.column ?? [0, 0],
-                });
-              },
-            }}
+            hooks={workbookHooks}
           />
         </Suspense>
       </div>
-      <table className="office-preview-grid-accessibility">
-        <tbody>
-          {sheet.rows.map((row, rowIndex) => (
-            <tr key={rowIndex}>
-              <th scope="row">{rowIndex + 1}</th>
-              {row.map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    </div>
+  );
+}
+
+function ReadOnlySpreadsheetTable({ sheet }: { sheet: XlsxSheet }) {
+  const [scrollTop, setScrollTop] = useState(0);
+  const columnCount = Math.max(1, sheet.fortuneData.column);
+  const rowCount = sheet.rows.length;
+  const rowHeight = 30;
+  const overscan = 8;
+  const viewportHeight = 320;
+  const startIndex = Math.max(0, Math.floor(scrollTop / rowHeight) - overscan);
+  const endIndex = Math.min(
+    rowCount,
+    Math.ceil((scrollTop + viewportHeight) / rowHeight) + overscan,
+  );
+  const visibleRows = sheet.rows.slice(startIndex, endIndex);
+
+  return (
+    <div
+      className="office-preview-readonly-grid"
+      role="grid"
+      aria-label={sheet.name}
+      aria-rowcount={rowCount}
+      aria-colcount={columnCount}
+      onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+      style={{ "--office-preview-readonly-column-count": columnCount } as React.CSSProperties}
+    >
+      <div className="office-preview-readonly-grid-header" role="row">
+        <span className="office-preview-readonly-corner" aria-hidden="true" />
+        {Array.from({ length: columnCount }, (_, columnIndex) => (
+          <span key={columnIndex} className="office-preview-readonly-column-header" role="columnheader">
+            {columnName(columnIndex)}
+          </span>
+        ))}
+      </div>
+      <div
+        className="office-preview-readonly-grid-spacer"
+        style={{ height: `${rowCount * rowHeight}px` }}
+      >
+        <div
+          className="office-preview-readonly-grid-window"
+          style={{ transform: `translateY(${startIndex * rowHeight}px)` }}
+        >
+          {visibleRows.map((row, rowOffset) => {
+            const rowIndex = startIndex + rowOffset;
+            return (
+              <div
+                key={rowIndex}
+                className="office-preview-readonly-row"
+                role="row"
+                aria-rowindex={rowIndex + 1}
+              >
+                <span className="office-preview-readonly-row-header" role="rowheader">
+                  {rowIndex + 1}
+                </span>
+                {Array.from({ length: columnCount }, (_, columnIndex) => (
+                  <span
+                    key={columnIndex}
+                    className="office-preview-readonly-cell"
+                    role="gridcell"
+                    aria-colindex={columnIndex + 1}
+                  >
+                    {row[columnIndex] ?? ""}
+                  </span>
+                ))}
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }
@@ -363,9 +503,11 @@ function SpreadsheetGrid({ sheet }: { sheet: XlsxSheet }) {
 export function DelimitedTextPreview({
   content,
   delimiter,
+  readOnlyPreview = false,
 }: {
   content: string;
   delimiter: "\t" | ",";
+  readOnlyPreview?: boolean;
 }) {
   const sheet = useMemo(() => {
     const rows = parseDelimitedRows(content, delimiter);
@@ -394,7 +536,9 @@ export function DelimitedTextPreview({
     } satisfies XlsxSheet;
   }, [content, delimiter]);
 
-  return <SpreadsheetGrid sheet={sheet} />;
+  return readOnlyPreview
+    ? <ReadOnlySpreadsheetTable sheet={sheet} />
+    : <SpreadsheetGrid sheet={sheet} />;
 }
 
 function parseDelimitedRows(content: string, delimiter: "\t" | ","): string[][] {

@@ -11,6 +11,10 @@ export const XLSX_PREVIEW_LIMITS = {
   maxUncompressedBytes: LIBRARY_PREVIEW_BUDGETS.xlsxMaxUncompressedBytes,
 } as const;
 
+export interface ParseXlsxOptions {
+  sheetIndex?: number;
+}
+
 export interface ParsedSpreadsheetCell {
   v?: string | number | boolean;
   m?: string;
@@ -36,10 +40,14 @@ export interface ParsedSpreadsheetSheet {
 }
 
 export interface ParsedSpreadsheetWorkbook {
+  sheetNames: string[];
   sheets: ParsedSpreadsheetSheet[];
 }
 
-export function parseXlsxBytes(bytes: Uint8Array): ParsedSpreadsheetWorkbook {
+export function parseXlsxBytes(
+  bytes: Uint8Array,
+  options: ParseXlsxOptions = {},
+): ParsedSpreadsheetWorkbook {
   const archive = inspectZipMetadata(bytes);
   let workbook: XLSX.WorkBook;
   try {
@@ -57,7 +65,14 @@ export function parseXlsxBytes(bytes: Uint8Array): ParsedSpreadsheetWorkbook {
   }).files;
   const unsupportedFeatures = inspectWorkbookFiles(workbookFiles, archive.unsupportedFeatures);
   (workbook as unknown as { files?: unknown }).files = undefined;
-  const sheets = workbook.SheetNames.slice(0, XLSX_PREVIEW_LIMITS.maxSheets).map((name, sheetIndex) => {
+  const sheetNames = workbook.SheetNames.slice(0, XLSX_PREVIEW_LIMITS.maxSheets);
+  const requestedSheetIndex = options.sheetIndex === undefined
+    ? 0
+    : Math.max(0, Math.min(options.sheetIndex, sheetNames.length - 1));
+  const sheets = sheetNames
+    .map((name, sheetIndex) => ({ name, sheetIndex }))
+    .filter(({ sheetIndex }) => sheetIndex === requestedSheetIndex)
+    .map(({ name, sheetIndex }) => {
     const worksheet = workbook.Sheets[name];
     const reference = worksheet?.["!ref"];
     if (!worksheet || !reference) return createEmptySheet(name, sheetIndex, unsupportedFeatures);
@@ -126,7 +141,7 @@ export function parseXlsxBytes(bytes: Uint8Array): ParsedSpreadsheetWorkbook {
   });
 
   if (!sheets.length) throw new Error("format");
-  return { sheets };
+  return { sheetNames, sheets };
 }
 
 function formatCell(cell: {

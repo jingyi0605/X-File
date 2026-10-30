@@ -27,6 +27,22 @@ describe("xlsx preview parser", () => {
     });
   });
 
+  it("keeps sheet names while parsing only the requested sheet", () => {
+    const first = XLSX.utils.aoa_to_sheet([["First"]]);
+    const second = XLSX.utils.aoa_to_sheet([["Second"]]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, first, "First");
+    XLSX.utils.book_append_sheet(workbook, second, "Second");
+    const bytes = new Uint8Array(XLSX.write(workbook, { type: "array", bookType: "xlsx" }) as ArrayBuffer);
+
+    const parsed = parseXlsxBytes(bytes, { sheetIndex: 1 });
+
+    expect(parsed.sheetNames).toEqual(["First", "Second"]);
+    expect(parsed.sheets).toHaveLength(1);
+    expect(parsed.sheets[0].name).toBe("Second");
+    expect(parsed.sheets[0].rows[0][0]).toBe("Second");
+  });
+
   it("rejects an archive whose expanded entry exceeds the safety budget before workbook parsing", () => {
     const oversizedEntry = strToU8("x".repeat(XLSX_PREVIEW_LIMITS.maxUncompressedBytes + 1));
     const bytes = zipSync({ "xl/sharedStrings.xml": oversizedEntry });
