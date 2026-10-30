@@ -13,6 +13,9 @@
   --startup-panel-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
   --startup-toolbar-height: 52px;
   --startup-blur: blur(58px) saturate(190%);
+  /* X-File macOS 侧栏透明度/模糊总开关：改 alpha 即可（0~1，越小越透） */
+  --xfile-sidebar-alpha: 0.55;
+  --xfile-sidebar-filter: blur(42px) saturate(120%);
   --settings-module-surface: var(--bg-primary);
   --settings-module-header-surface: var(--glass-control-surface, var(--panel-bg));
   --settings-module-padding: var(--space-5);
@@ -4546,11 +4549,50 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
 }
 
 .workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] .workbench-sidebar {
-  /* macOS 原生 Sidebar 材质在窗口内混合，WebView 侧栏保留半透明 tint 和模糊增强效果。 */
-  background: var(--workbench-sidebar-surface);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  will-change: contents;
+  /* 背景与模糊放在 ::before 独立层，文字本层透明 → 文字走正常渲染通道，不发虚。 */
+  position: relative;
+  background: transparent !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  box-shadow: inset -1px 0 0 var(--glass-edge);
+  /* 字体：日间纯黑 */
+  --text-primary: #000000;
+  --text-secondary: #000000;
+  --text-tertiary: #000000;
+  color: #000000;
+}
+
+.workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] .workbench-sidebar::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: rgba(250, 250, 252, var(--xfile-sidebar-alpha));
+  backdrop-filter: var(--xfile-sidebar-filter);
+  -webkit-backdrop-filter: var(--xfile-sidebar-filter);
+}
+
+.workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] .workbench-sidebar > * {
+  position: relative;
+  z-index: 1;
+}
+
+html[data-theme="dark"]
+  .workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"]
+  .workbench-sidebar {
+  background: transparent !important;
+  /* 字体：夜间纯白 */
+  --text-primary: #ffffff;
+  --text-secondary: #ffffff;
+  --text-tertiary: #ffffff;
+  color: #ffffff;
+}
+
+html[data-theme="dark"]
+  .workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"]
+  .workbench-sidebar::before {
+  background: rgba(24, 25, 28, var(--xfile-sidebar-alpha));
 }
 
 .workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] .affairs-detail-panel {
@@ -12176,12 +12218,7 @@ input[type="range"] {
 
 /* macOS 原生材质在窗口内混合，WebView 侧栏保留玻璃效果。 */
 .workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] .workbench-sidebar {
-  background: var(--workbench-sidebar-surface);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  isolation: auto;
   box-shadow: inset -1px 0 0 var(--glass-edge);
-  will-change: contents;
 }
 
 .workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] .affairs-detail-panel {

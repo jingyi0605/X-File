@@ -6525,20 +6525,17 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_原生侧栏必须在窗口内混合() {
+    fn macos_原生侧栏必须模糊窗口后的桌面() {
         assert_eq!(
             macos_native_sidebar_blending_mode(),
-            NSVisualEffectBlendingMode::WithinWindow
+            NSVisualEffectBlendingMode::BehindWindow
         );
     }
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_原生侧栏必须跟随窗口激活状态() {
-        assert_eq!(
-            macos_native_sidebar_state(),
-            NSVisualEffectState::FollowsWindowActiveState
-        );
+    fn macos_原生侧栏必须常驻激活状态() {
+        assert_eq!(macos_native_sidebar_state(), NSVisualEffectState::Active);
     }
 }
 
@@ -6893,7 +6890,8 @@ unsafe fn ensure_macos_native_sidebar_view(
 
 #[cfg(target_os = "macos")]
 fn macos_native_sidebar_blending_mode() -> NSVisualEffectBlendingMode {
-    NSVisualEffectBlendingMode::WithinWindow
+    // 模糊窗口“之后”的桌面，才能得到父仓库那种能看见桌面色彩的磨砂效果。
+    NSVisualEffectBlendingMode::BehindWindow
 }
 
 #[cfg(target_os = "macos")]
@@ -6903,7 +6901,9 @@ fn macos_native_sidebar_material() -> NSVisualEffectMaterial {
 
 #[cfg(target_os = "macos")]
 fn macos_native_sidebar_state() -> NSVisualEffectState {
-    NSVisualEffectState::FollowsWindowActiveState
+    // 对齐 DeepSeek Harness 的 visualEffectState: "active"——材质常驻激活，
+    // 前后台切换不退化，磨砂稳定。
+    NSVisualEffectState::Active
 }
 
 #[cfg(target_os = "macos")]
