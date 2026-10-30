@@ -6534,10 +6534,10 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_原生侧栏必须跟随窗口激活状态() {
+    fn macos_原生侧栏必须始终保持_active_状态() {
         assert_eq!(
             macos_native_sidebar_state(),
-            NSVisualEffectState::FollowsWindowActiveState
+            NSVisualEffectState::Active
         );
     }
 }
@@ -6903,7 +6903,7 @@ fn macos_native_sidebar_material() -> NSVisualEffectMaterial {
 
 #[cfg(target_os = "macos")]
 fn macos_native_sidebar_state() -> NSVisualEffectState {
-    NSVisualEffectState::FollowsWindowActiveState
+    NSVisualEffectState::Active
 }
 
 #[cfg(target_os = "macos")]
