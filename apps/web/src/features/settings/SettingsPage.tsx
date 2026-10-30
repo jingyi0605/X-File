@@ -827,6 +827,14 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
               <section className="affairs-library-config-section affairs-library-filter-switches">
                 <div className="affairs-library-filter-switch-row">
                   <div className="affairs-library-filter-switch-copy">
+                    <span>{t("settingsTagTreeFilterBehavior")}</span>
+                    <small>{t("settingsTagTreeFilterBehaviorHint")}</small>
+                  </div>
+                </div>
+              </section>
+              <section className="affairs-library-config-section affairs-library-filter-switches">
+                <div className="affairs-library-filter-switch-row">
+                  <div className="affairs-library-filter-switch-copy">
                     <span>{t("settingsHideDotFiles")}</span>
                     <small>{t("settingsHideDotFilesHint")}</small>
                   </div>

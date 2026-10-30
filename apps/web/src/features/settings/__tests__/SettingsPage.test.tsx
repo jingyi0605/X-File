@@ -146,6 +146,15 @@ describe("SettingsPage 文档库索引配置迁移行为", () => {
     });
   });
 
+  it("文档库设置说明父标签展开和数量筛选方式", async () => {
+    const { SettingsPage } = await import("../SettingsPage");
+    render(<SettingsPage />);
+
+    await userEvent.click(await screen.findByRole("tab", { name: /资料库/ }));
+    expect(screen.getByText("标签树筛选方式")).toBeInTheDocument();
+    expect(screen.getByText("父标签单击展开/收起；点击文件数量筛选标签。")).toBeInTheDocument();
+  });
+
   it("资料库设置默认隐藏点号路径和常见系统文件夹，并可关闭后保存", async () => {
     const { SettingsPage } = await import("../SettingsPage");
     render(<SettingsPage />);
