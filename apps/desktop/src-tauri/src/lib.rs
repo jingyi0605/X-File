@@ -6882,7 +6882,8 @@ unsafe fn ensure_macos_native_sidebar_view(
     effect_view.setState(macos_native_sidebar_state());
     apply_macos_native_sidebar_appearance(&effect_view, appearance);
     effect_view.setAutoresizingMask(MACOS_NATIVE_LEFT_SIDEBAR_AUTOREZING_MASK);
-    effect_view.setLayerContentsRedrawPolicy(NSViewLayerContentsRedrawPolicy::DuringViewResize);
+    // 注意：不要给 NSVisualEffectView 设 layerContentsRedrawPolicy（会缓存成不透的静态层，
+    // 导致 behindWindow 的桌面磨砂失效）。保持默认由系统管理其 layer。
     effect_view.setHidden(true);
     content_view.addSubview_positioned_relativeTo(&effect_view, NSWindowOrderingMode::Below, None);
     Some((&*effect_view) as *const NSVisualEffectView as usize)
