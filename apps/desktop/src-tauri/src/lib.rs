@@ -1952,9 +1952,43 @@ fn native_get_library_config() -> Result<Value, String> {
 }
 
 #[tauri::command]
-fn native_save_library_config(request: NativeSaveLibraryConfigRequest) -> Result<Value, String> {
-    serde_json::to_value(save_local_library_config(request)?)
-        .map_err(|error| format!("序列化本地 config 失败：{error}"))
+fn native_save_library_config(
+    app: AppHandle,
+    request: NativeSaveLibraryConfigRequest,
+) -> Result<Value, String> {
+    let previous_binding = read_local_library_binding()?;
+    let config = save_local_library_config(request)?;
+    let should_refresh = previous_binding.as_ref().is_some_and(|previous| {
+        config.binding.as_ref().is_some_and(|current| {
+            previous.allowed_extensions != current.allowed_extensions
+                || previous.included_hidden_paths != current.included_hidden_paths
+                || previous.hide_dot_files != current.hide_dot_files
+                || previous.hide_system_folders != current.hide_system_folders
+        })
+    });
+    let mut value =
+        serde_json::to_value(config).map_err(|error| format!("序列化本地 config 失败：{error}"))?;
+    if should_refresh {
+        let refresh = schedule_native_library_refresh(
+            NativeLibraryRefreshRequest {
+                target_paths: Vec::new(),
+                reason: Some("library_config_changed".to_string()),
+                target_path: None,
+                mode: Some("full".to_string()),
+            },
+            Some(app),
+        )?;
+        value["applyConfigTaskId"] = Value::Null;
+        value["applyConfigStatus"] = read_local_runtime_status(
+            value["binding"]["rootDir"].as_str().unwrap_or_default(),
+        )?
+        .map(|status| json!(status))
+        .unwrap_or_else(|| json!({
+            "state": if refresh { "queued" } else { "cooldown" },
+            "dirtyReasons": ["library_config_changed"],
+        }));
+    }
+    Ok(value)
 }
 
 #[tauri::command]
@@ -5400,10 +5434,7 @@ fn normalize_nullable_path(value: String, fallback: Option<String>) -> Option<St
     .or(fallback)
 }
 
-fn normalize_extensions(value: Vec<String>, fallback: Vec<String>) -> Vec<String> {
-    if value.is_empty() {
-        return fallback;
-    }
+fn normalize_extensions(value: Vec<String>, _fallback: Vec<String>) -> Vec<String> {
     let mut items = Vec::new();
     let mut seen = HashSet::new();
     for raw in value {

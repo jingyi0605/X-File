@@ -58,3 +58,44 @@ test("配置保存同步更新 binding 和资料库内配置文件", () => {
   assert.equal(configFile.hideSystemFolders, false);
   assert.equal(configFile.folderOpenBehavior, "single_click");
 });
+
+test("索引范围配置变化会排队一次配置变更刷新", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "x-file-config-refresh-"));
+  const dataDir = path.join(tempDir, "data");
+  const rootDir = path.join(tempDir, "library");
+  fs.mkdirSync(rootDir, { recursive: true });
+
+  const bindingStore = new LibraryBindingStore({ dataDir });
+  new LibraryService(bindingStore).saveBinding({ rootDir, completeInitialization: true });
+  let refreshCount = 0;
+  const configService = new LibraryConfigService(
+    bindingStore,
+    new LibraryConfigStore(),
+    () => {
+      refreshCount += 1;
+      return {
+        taskId: "task-config-refresh",
+        status: {
+          state: "queued",
+          dirtyReasons: ["library_config_changed"],
+          lastRequestedAt: null,
+          lastStartedAt: null,
+          lastCompletedAt: null,
+          lastFailedAt: null,
+          nextAllowedAt: null,
+          runningTaskId: "task-config-refresh",
+          runningStage: null,
+          errorSummary: null,
+        },
+      };
+    },
+  );
+
+  const config = configService.saveConfig({
+    allowedExtensions: [".md", ".png"],
+  });
+
+  assert.equal(refreshCount, 1);
+  assert.equal(config.applyConfigTaskId, "task-config-refresh");
+  assert.equal(config.applyConfigStatus?.state, "queued");
+});

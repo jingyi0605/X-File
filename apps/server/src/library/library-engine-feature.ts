@@ -89,6 +89,9 @@ export function registerLibraryCoreRoutes(
   const libraryConfigService = new LibraryConfigService(
     feature.libraryBindingStore,
     new LibraryConfigStore(),
+    (binding) => feature.libraryIndexService.requestRefresh(binding, {
+      reason: "library_config_changed",
+    }),
   );
   const previewLinkService = new LibraryPreviewLinkService(
     feature.libraryService,

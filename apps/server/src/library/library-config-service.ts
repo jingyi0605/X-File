@@ -1,6 +1,8 @@
 import {
   DEFAULT_LIBRARY_ALLOWED_EXTENSIONS,
+  type LibraryBinding,
   type LibraryConfig,
+  type LibraryRefreshResult,
   type SaveLibraryConfigInput,
 } from "@x-file/shared";
 
@@ -11,7 +13,8 @@ import type { LibraryConfigStore } from "../storage/library-config-store.js";
 export class LibraryConfigService {
   constructor(
     private readonly bindingStore: LibraryBindingStore,
-    private readonly configStore: LibraryConfigStore
+    private readonly configStore: LibraryConfigStore,
+    private readonly onIndexConfigChanged?: (binding: LibraryBinding) => LibraryRefreshResult,
   ) {}
 
   getConfig(): LibraryConfig {
@@ -51,7 +54,15 @@ export class LibraryConfigService {
     });
 
     this.configStore.writeForBinding(updatedBinding);
-    return this.getConfig();
+    const refresh = hasIndexConfigChanged(binding, updatedBinding)
+      ? this.onIndexConfigChanged?.(updatedBinding)
+      : undefined;
+    const config = this.getConfig();
+    if (refresh) {
+      config.applyConfigTaskId = refresh.taskId;
+      config.applyConfigStatus = refresh.status;
+    }
+    return config;
   }
 }
 
@@ -75,6 +86,13 @@ function normalizeExtensions(value: string[] | undefined, fallback: string[]): s
     .map((item) => item.startsWith(".") ? item : `.${item}`);
 
   return Array.from(new Set(items));
+}
+
+function hasIndexConfigChanged(previous: LibraryBinding, next: LibraryBinding): boolean {
+  return previous.allowedExtensions.join("\u001d") !== next.allowedExtensions.join("\u001d")
+    || previous.includedHiddenPaths.join("\u001d") !== next.includedHiddenPaths.join("\u001d")
+    || previous.hideDotFiles !== next.hideDotFiles
+    || previous.hideSystemFolders !== next.hideSystemFolders;
 }
 
 function normalizeStringList(value: string[] | undefined, fallback: string[]): string[] {
