@@ -13089,3 +13089,63 @@ html[data-theme="dark"]
     0 10px 30px rgba(0, 0, 0, 0.12),
     var(--primary-button-shadow-hover, 0 7px 20px rgba(0, 0, 0, 0.16));
 }
+
+/* ===== 右侧详情栏顶部：统一文字层级（可读性 & 美观最佳实践） ===== */
+.affairs-detail-panel .affairs-detail-headline-main h2 {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+}
+
+.affairs-detail-panel .affairs-detail-summary,
+.affairs-detail-panel .affairs-detail-headline p {
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--text-secondary);
+}
+
+.affairs-detail-panel .affairs-detail-summary-toggle {
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.affairs-detail-panel .affairs-detail-summary-toggle:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
+.affairs-detail-panel .affairs-detail-meta-list dt {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-tertiary);
+}
+
+.affairs-detail-panel .affairs-detail-meta-list dd {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.affairs-detail-panel .affairs-detail-meta-list dd.affairs-detail-path-value {
+  font-weight: 400;
+  color: var(--text-secondary);
+}
+
+.affairs-detail-panel .affairs-detail-path-segment {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.affairs-detail-panel .affairs-detail-path-segment:hover {
+  color: var(--accent);
+}
+
+.affairs-detail-panel .detail-path-separator {
+  color: var(--text-tertiary);
+  font-weight: 400;
+}
