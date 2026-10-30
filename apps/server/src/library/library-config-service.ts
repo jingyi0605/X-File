@@ -1,22 +1,12 @@
-import type { LibraryConfig, SaveLibraryConfigInput } from "@x-file/shared";
+import {
+  DEFAULT_LIBRARY_ALLOWED_EXTENSIONS,
+  type LibraryConfig,
+  type SaveLibraryConfigInput,
+} from "@x-file/shared";
 
 import { LibraryError } from "./library-errors.js";
 import type { LibraryBindingStore } from "../storage/library-binding-store.js";
 import type { LibraryConfigStore } from "../storage/library-config-store.js";
-
-const DEFAULT_ALLOWED_EXTENSIONS = [
-  ".md",
-  ".markdown",
-  ".txt",
-  ".csv",
-  ".pdf",
-  ".doc",
-  ".docx",
-  ".xls",
-  ".xlsx",
-  ".ppt",
-  ".pptx"
-];
 
 export class LibraryConfigService {
   constructor(
@@ -30,7 +20,9 @@ export class LibraryConfigService {
       binding,
       enabled: binding?.enabled ?? false,
       mirrorRoot: binding?.mirrorRoot ?? null,
-      allowedExtensions: binding?.allowedExtensions?.length ? binding.allowedExtensions : DEFAULT_ALLOWED_EXTENSIONS,
+      allowedExtensions: binding?.allowedExtensions?.length
+        ? binding.allowedExtensions
+        : [...DEFAULT_LIBRARY_ALLOWED_EXTENSIONS],
       includedHiddenPaths: binding?.includedHiddenPaths ?? [],
       hideDotFiles: binding?.hideDotFiles ?? true,
       hideSystemFolders: binding?.hideSystemFolders ?? true,

@@ -8,6 +8,7 @@ import type {
   LibraryConfig,
   LibraryBackup,
 } from "@x-file/shared";
+import { DEFAULT_LIBRARY_ALLOWED_EXTENSIONS } from "@x-file/shared";
 
 import {
   browseHostDirectories,
@@ -94,25 +95,7 @@ interface LibraryBackupImportModalState {
 
 type SettingsTabId = "appearance" | "library" | "integration" | "network" | "updates";
 
-const LIBRARY_PRESET_EXTENSIONS = [
-  ".md",
-  ".markdown",
-  ".txt",
-  ".pdf",
-  ".doc",
-  ".docx",
-  ".xls",
-  ".xlsx",
-  ".ppt",
-  ".pptx",
-  ".csv",
-  ".json",
-  ".html",
-  ".png",
-  ".jpg",
-  ".jpeg",
-  ".webp"
-] as const;
+const LIBRARY_PRESET_EXTENSIONS = DEFAULT_LIBRARY_ALLOWED_EXTENSIONS;
 
 const SETTINGS_TABS: Array<{
   id: SettingsTabId;

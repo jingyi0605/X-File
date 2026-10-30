@@ -30,6 +30,9 @@ test("文档库主路由、标签路由和 server state 都已注册", async () 
     const config = await app.inject({ method: "GET", url: "/api/library/config" });
     assert.equal(config.statusCode, 200);
     assert.equal(config.json().allowedExtensions.includes(".doc"), true);
+    assert.equal(config.json().allowedExtensions.includes(".png"), true);
+    assert.equal(config.json().allowedExtensions.includes(".mp4"), true);
+    assert.equal(config.json().allowedExtensions.includes(".ts"), true);
 
     const officePreview = await app.inject({ method: "GET", url: "/api/library/preview?path=brief.docx" });
     assert.equal(officePreview.statusCode, 200);

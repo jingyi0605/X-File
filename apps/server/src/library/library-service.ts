@@ -17,6 +17,7 @@ import type {
   LibraryRefreshResult,
   LibrarySnapshot
 } from "@x-file/shared";
+import { DEFAULT_LIBRARY_ALLOWED_EXTENSIONS } from "@x-file/shared";
 import { isLibraryPathVisible } from "@x-file/indexer";
 
 import {
@@ -41,20 +42,6 @@ import { TaskManager } from "../tasks/task-manager.js";
 
 const DEFAULT_LIBRARY_ID = "default";
 const DEFAULT_CONFIG_RELATIVE_PATH = ".ai-index/doc-semantic-index.config.json";
-const DEFAULT_ALLOWED_EXTENSIONS = [
-  ".md",
-  ".markdown",
-  ".txt",
-  ".csv",
-  ".pdf",
-  ".doc",
-  ".docx",
-  ".xls",
-  ".xlsx",
-  ".ppt",
-  ".pptx"
-];
-
 export interface SaveLibraryBindingInput {
   rootDir?: string;
   completeInitialization?: boolean;
@@ -145,7 +132,7 @@ export class LibraryService {
       mirrorRoot: existing?.mirrorRoot ?? null,
       allowedExtensions: existing?.allowedExtensions?.length
         ? existing.allowedExtensions
-        : DEFAULT_ALLOWED_EXTENSIONS,
+        : [...DEFAULT_LIBRARY_ALLOWED_EXTENSIONS],
       includedHiddenPaths: existing?.includedHiddenPaths ?? [],
       hideDotFiles: existing?.hideDotFiles ?? true,
       hideSystemFolders: existing?.hideSystemFolders ?? true,
