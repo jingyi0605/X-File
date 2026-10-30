@@ -12,6 +12,7 @@ target/
 .x-file/
 apps/desktop/src-tauri/resources/x-file-server/
 apps/desktop/src-tauri/resources/x-file-runtime/
+.codingns
 
 .x-file-dev/
 apps/server/runtime/
