@@ -564,8 +564,7 @@ export function LibraryPage({
   const [isMobileViewport, setIsMobileViewport] = useState(
     isLibraryMobileViewport,
   );
-  const sidebarAutoHideEnabled = platformData.runtimePlatform === "desktop"
-    || isMobileViewport;
+  const sidebarAutoHideEnabled = isMobileViewport;
   const mobileTouchStartRef = useRef<{ x: number; y: number } | null>(null);
   const detailsTriggerRef = useRef<HTMLElement | null>(null);
   const detailsCloseRef = useRef<HTMLButtonElement | null>(null);
