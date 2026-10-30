@@ -27,6 +27,12 @@ const platformData = {
   overlayTitlebar: false,
 };
 
+const desktopPlatformData = {
+  runtimePlatform: "desktop" as const,
+  osFamily: "macos" as const,
+  overlayTitlebar: false,
+};
+
 const defaultMatchMedia = window.matchMedia;
 
 function mockMobileViewport(): void {
@@ -90,6 +96,20 @@ describe("LibraryPage 高风险交互", () => {
     await userEvent.click(within(sidebar).getByRole("button", { name: "设置" }));
     expect(onOpenSettings).toHaveBeenCalledTimes(1);
     expect(sidebar).toHaveAttribute("data-open", "true");
+  });
+
+  it("macOS 桌面端侧栏保持常驻，不显示失效的边缘打开状态", async () => {
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={vi.fn()} platformData={desktopPlatformData} />);
+
+    const sidebar = document.querySelector(".affairs-layout-sidebar") as HTMLElement;
+    const edgeTrigger = document.querySelector(".workbench-sidebar-edge-trigger") as HTMLButtonElement;
+    await waitFor(() => expect(sidebar).toHaveAttribute("data-open", "true"));
+    expect(edgeTrigger).toHaveAttribute("aria-expanded", "true");
+
+    fireEvent.mouseLeave(sidebar);
+    expect(sidebar).toHaveAttribute("data-open", "true");
+    expect(edgeTrigger).toHaveAttribute("aria-expanded", "true");
   });
 
   it("移动端从左缘右滑打开导航抽屉，并可向左滑关闭", async () => {
