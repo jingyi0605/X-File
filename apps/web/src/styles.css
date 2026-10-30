@@ -4548,8 +4548,9 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
 .workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] .workbench-sidebar {
   /* macOS 原生 Sidebar 材质在窗口内混合，WebView 侧栏保留半透明 tint 和模糊增强效果。 */
   background: var(--workbench-sidebar-surface);
-  backdrop-filter: blur(40px) saturate(180%);
-  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  will-change: contents;
 }
 
 .workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] .affairs-detail-panel {
@@ -12176,10 +12177,11 @@ input[type="range"] {
 /* macOS 原生材质在窗口内混合，WebView 侧栏保留玻璃效果。 */
 .workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] .workbench-sidebar {
   background: var(--workbench-sidebar-surface);
-  backdrop-filter: blur(40px) saturate(180%);
-  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   isolation: auto;
   box-shadow: inset -1px 0 0 var(--glass-edge);
+  will-change: contents;
 }
 
 .workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] .affairs-detail-panel {
@@ -12278,9 +12280,10 @@ input[type="range"] {
     > .workbench-sidebar[data-open] {
     background-color: var(--workbench-sidebar-surface);
     background-image: none;
-    backdrop-filter: blur(40px) saturate(180%);
-    -webkit-backdrop-filter: blur(40px) saturate(180%);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
     isolation: auto;
+    will-change: contents;
   }
 
   .workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"]
