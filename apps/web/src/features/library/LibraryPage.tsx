@@ -2090,7 +2090,7 @@ function LibraryTagTreeNode({
   const hasChildren = node.children.length > 0;
   const isGroupRoot = LIBRARY_TAG_TREE_DEFAULT_ROOTS.has(node.path);
   const expanded = forceExpanded || (hasChildren && expandedPaths.includes(node.path));
-  const active = !isGroupRoot && selectedTagPaths.includes(node.path);
+  const active = selectedTagPaths.includes(node.path);
   const showAllChildren = forceExpanded || expandedMorePaths.includes(node.path);
   const visibleChildren = showAllChildren
     ? node.children
@@ -2118,10 +2118,10 @@ function LibraryTagTreeNode({
           <button
             type="button"
             className="affairs-sidebar-item-button affairs-sidebar-item-button-content"
-            aria-expanded={isGroupRoot && hasChildren ? expanded : undefined}
+            aria-expanded={hasChildren ? expanded : undefined}
             onClick={(event) => {
               event.preventDefault();
-              if (isGroupRoot) onToggleExpand(node.path);
+              if (hasChildren) onToggleExpand(node.path);
               else onSelect(node.path);
             }}
           >
@@ -2135,11 +2135,23 @@ function LibraryTagTreeNode({
                 ) : null}
                 <span>{node.label}</span>
               </span>
-              <span className="affairs-sidebar-item-actions">
-                <span className="affairs-sidebar-item-badge">{node.count}</span>
-              </span>
             </span>
           </button>
+          <span className="affairs-sidebar-item-actions">
+            <button
+              type="button"
+              className="affairs-sidebar-item-badge affairs-sidebar-item-badge-button"
+              aria-label={t("libraryTagTreeFilterByCount", { count: node.count })}
+              title={`${node.label} · ${t("libraryTagTreeFilterByCount", { count: node.count })}`}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onSelect(node.path);
+              }}
+            >
+              {node.count}
+            </button>
+          </span>
         </span>
       </span>
   );

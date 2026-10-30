@@ -70,7 +70,7 @@ describe("第 8 批：标签筛选树、多选过滤、徽标计数、排序、�
     const tree = await screen.findByRole("tree", { name: "标签树" });
     const rootLabel = systemRootLabel(root);
     const rootItem = within(tree).getByRole("treeitem", { name: rootLabel });
-    const rootButton = within(rootItem).getByRole("button", { name: `${rootLabel} 2` });
+    const rootButton = within(rootItem).getByRole("button", { name: rootLabel });
     expect(rootButton.closest(".affairs-sidebar-item")).toHaveAttribute("data-system-tag", "true");
     expect(within(rootButton).getByTitle(`${rootLabel} · 系统内置标签`)).toBeInTheDocument();
     const initialRequestCount = libraryApiMock.listLibraryDocuments.mock.calls.length;
@@ -79,7 +79,7 @@ describe("第 8 批：标签筛选树、多选过滤、徽标计数、排序、�
     await userEvent.click(rootButton);
     expect(rootItem).toHaveAttribute("aria-expanded", "true");
     expect(rootButton).toHaveAttribute("aria-expanded", "true");
-    expect(within(rootItem).getByRole("button", { name: "分组 2" })).toBeInTheDocument();
+    expect(within(rootItem).getByRole("button", { name: "分组" })).toBeInTheDocument();
 
     await userEvent.click(rootButton);
     expect(rootItem).toHaveAttribute("aria-expanded", "false");
@@ -88,7 +88,7 @@ describe("第 8 批：标签筛选树、多选过滤、徽标计数、排序、�
     expect(libraryApiMock.listLibraryDocuments).toHaveBeenCalledTimes(initialRequestCount);
 
     await userEvent.click(within(rootItem).getByRole("button", { name: "展开标签" }));
-    await userEvent.click(within(rootItem).getByRole("button", { name: "分组 2" }));
+    await userEvent.click(within(rootItem).getByTitle("分组 · 按文件数量筛选（2）"));
     await waitFor(() => {
       expect(libraryApiMock.listLibraryDocuments).toHaveBeenLastCalledWith(expect.objectContaining({
         browseMode: "tag",
@@ -110,7 +110,7 @@ describe("第 8 批：标签筛选树、多选过滤、徽标计数、排序、�
     expect(libraryApiMock.listLibraryDocuments).toHaveBeenCalledTimes(filteredRequestCount);
   });
 
-  it("自定义根标签仍可点击筛选", async () => {
+  it("父标签单击展开，点击文件数量筛选", async () => {
     mockTags([
       tag("项目", 2),
       tag("项目/时间", 1, { parentPath: "项目", depth: 1 }),
@@ -119,18 +119,35 @@ describe("第 8 批：标签筛选树、多选过滤、徽标计数、排序、�
     const { LibraryPage } = await import("../LibraryPage");
     render(<LibraryPage onOpenSettings={() => undefined} platformData={platformData} />);
 
-    await userEvent.click(await screen.findByRole("button", { name: "项目 2" }));
+    const rootButton = await screen.findByRole("button", { name: "项目" });
+    await userEvent.click(rootButton);
+    expect(screen.getByRole("button", { name: "时间" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "按文件数量筛选（2）" }));
     await waitFor(() => {
       expect(libraryApiMock.listLibraryDocuments).toHaveBeenLastCalledWith(expect.objectContaining({
         browseMode: "tag",
         selectedTagPaths: ["项目"],
       }));
     });
-    await expandTag("项目");
     await userEvent.click(screen.getByRole("button", { name: /时间/ }));
     await waitFor(() => {
       expect(libraryApiMock.listLibraryDocuments).toHaveBeenLastCalledWith(expect.objectContaining({
         selectedTagPaths: ["项目/时间"],
+      }));
+    });
+  });
+
+  it("无子标签的根标签单击即可筛选", async () => {
+    mockTags([tag("项目", 2)]);
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={() => undefined} platformData={platformData} />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "项目" }));
+    await waitFor(() => {
+      expect(libraryApiMock.listLibraryDocuments).toHaveBeenLastCalledWith(expect.objectContaining({
+        browseMode: "tag",
+        selectedTagPaths: ["项目"],
       }));
     });
   });
@@ -265,8 +282,7 @@ describe("第 8 批：标签筛选树、多选过滤、徽标计数、排序、�
 
     await expandTag("类型");
     const tree = await screen.findByRole("tree", { name: "标签树" });
-    const pdfButton = await within(tree).findByRole("button", { name: /PDF/ });
-    expect(within(pdfButton).getByText("2")).toBeInTheDocument();
+    expect(within(tree).getByTitle("PDF · 按文件数量筛选（2）")).toBeInTheDocument();
     expect(within(tree).queryByRole("button", { name: /Markdown/ })).not.toBeInTheDocument();
   });
 
@@ -290,7 +306,7 @@ describe("第 8 批：标签筛选树、多选过滤、徽标计数、排序、�
     const { LibraryPage } = await import("../LibraryPage");
     render(<LibraryPage onOpenSettings={() => undefined} platformData={platformData} />);
 
-    await userEvent.click(await screen.findByRole("button", { name: "项目 1" }));
+    await userEvent.click(await screen.findByTitle("项目 · 按文件数量筛选（1）"));
     await userEvent.click(await screen.findByRole("button", { name: "列表" }));
 
     const directory = await screen.findByRole("button", { name: /已标记目录/ });
@@ -326,8 +342,8 @@ describe("第 8 批：标签筛选树、多选过滤、徽标计数、排序、�
     const { LibraryPage } = await import("../LibraryPage");
     render(<LibraryPage onOpenSettings={() => undefined} platformData={platformData} />);
 
-    await userEvent.click(await screen.findByRole("button", { name: "项目 1" }));
-    await userEvent.click(await screen.findByRole("button", { name: "业务 1" }));
+    await userEvent.click(await screen.findByTitle("项目 · 按文件数量筛选（1）"));
+    await userEvent.click(await screen.findByTitle("业务 · 按文件数量筛选（1）"));
     await userEvent.click(await screen.findByRole("button", { name: "列表" }));
 
     await waitFor(() => {
@@ -433,7 +449,7 @@ describe("第 8 批：标签筛选树、多选过滤、徽标计数、排序、�
     await expandTag("项目");
 
     const timeChildren = childTitlesOf("时间");
-    expect(timeChildren).toEqual(["最近3天2", "最近7天4", "更早9"]);
+    expect(timeChildren).toEqual(["最近3天", "最近7天", "更早"]);
     const projectChildren = childTitlesOf("项目");
     expect(projectChildren[0]).toContain("高频");
   });
@@ -459,7 +475,7 @@ describe("第 8 批：标签筛选树、多选过滤、徽标计数、排序、�
       .toEqual(["2026", "2025", "2024"]);
 
     await expandTag("2026");
-    expect(childTitlesOf("2026")).toEqual(["122", "91", "023"]);
+    expect(childTitlesOf("2026")).toEqual(["12", "9", "02"]);
   });
 
   it("旧快照没有最近分类时不虚构标签，零计数标签在筛选后隐藏", async () => {
@@ -476,15 +492,15 @@ describe("第 8 批：标签筛选树、多选过滤、徽标计数、排序、�
     render(<LibraryPage onOpenSettings={() => undefined} platformData={platformData} />);
 
     await expandTag("时间");
-    expect(childTitlesOf("时间")).toEqual(["20241"]);
+    expect(childTitlesOf("时间")).toEqual(["2024"]);
 
-    await userEvent.click(screen.getByRole("button", { name: "2024 1" }));
+    await userEvent.click(screen.getByTitle("2024 · 按文件数量筛选（1）"));
     await waitFor(() => {
       expect(libraryApiMock.listLibraryDocuments).toHaveBeenLastCalledWith(expect.objectContaining({
         selectedTagPaths: ["时间/2024"],
       }));
     });
-    expect(childTitlesOf("时间")).toEqual(["20240"]);
+    expect(childTitlesOf("时间")).toEqual(["2024"]);
   });
 
   it("最近分类筛选后隐藏零计数的其他标签，同时保留当前选中项", async () => {
@@ -502,15 +518,15 @@ describe("第 8 批：标签筛选树、多选过滤、徽标计数、排序、�
     render(<LibraryPage onOpenSettings={() => undefined} platformData={platformData} />);
 
     await expandTag("时间");
-    expect(childTitlesOf("时间")).toEqual(["最近3天2", "最近7天3"]);
-    await userEvent.click(screen.getByRole("button", { name: "最近3天 2" }));
+    expect(childTitlesOf("时间")).toEqual(["最近3天", "最近7天"]);
+    await userEvent.click(screen.getByTitle("最近3天 · 按文件数量筛选（2）"));
 
     await waitFor(() => {
       expect(libraryApiMock.listLibraryDocuments).toHaveBeenLastCalledWith(expect.objectContaining({
         selectedTagPaths: ["时间/最近3天"],
       }));
     });
-    expect(childTitlesOf("时间")).toEqual(["最近3天0"]);
+    expect(childTitlesOf("时间")).toEqual(["最近3天"]);
   });
 
   it.each(
@@ -549,18 +565,18 @@ describe("第 8 批：标签筛选树、多选过滤、徽标计数、排序、�
     const tree = screen.getByRole("tree", { name: "标签树" });
     const expectAllRecentTags = () => {
       for (const [value, count] of recentCounts) {
-        expect(within(tree).getByRole("button", { name: `${label(value)} ${count}` })).toBeInTheDocument();
+        expect(within(tree).getByTitle(`${label(value)} · 按文件数量筛选（${count}）`)).toBeInTheDocument();
       }
       expect(within(tree).queryByRole("treeitem", { name: label(90) })).not.toBeInTheDocument();
     };
     const selectRecentTag = async () => {
-      await userEvent.click(within(tree).getByRole("button", { name: `${label(days)} ${selectedCount}` }));
+      await userEvent.click(within(tree).getByTitle(`${label(days)} · 按文件数量筛选（${selectedCount}）`));
       await waitFor(() => {
         expect(libraryApiMock.listLibraryDocuments).toHaveBeenLastCalledWith(expect.objectContaining({
           selectedTagPaths: [selectedPath],
         }));
       });
-      expect(within(tree).getByRole("button", { name: `${label(days)} ${selectedCount}` })).toBeInTheDocument();
+      expect(within(tree).getByTitle(`${label(days)} · 按文件数量筛选（${selectedCount}）`)).toBeInTheDocument();
       for (const value of recentCounts.keys()) {
         if (value !== days) {
           expect(within(tree).queryByRole("treeitem", { name: label(value) })).not.toBeInTheDocument();
@@ -571,7 +587,7 @@ describe("第 8 批：标签筛选树、多选过滤、徽标计数、排序、�
 
     expectAllRecentTags();
     await selectRecentTag();
-    await userEvent.click(within(tree).getByRole("button", { name: `2026 ${selectedCount}` }));
+    await userEvent.click(within(tree).getByTitle(`2026 · 按文件数量筛选（${selectedCount}）`));
     await waitFor(() => {
       expect(libraryApiMock.listLibraryDocuments).toHaveBeenLastCalledWith(expect.objectContaining({
         selectedTagPaths: [yearPath],
@@ -580,7 +596,7 @@ describe("第 8 批：标签筛选树、多选过滤、徽标计数、排序、�
     expectAllRecentTags();
 
     await selectRecentTag();
-    await userEvent.click(within(tree).getByRole("button", { name: `${label(days)} ${selectedCount}` }));
+    await userEvent.click(within(tree).getByTitle(`${label(days)} · 按文件数量筛选（${selectedCount}）`));
     await waitFor(() => {
       expect(libraryApiMock.listLibraryDocuments).toHaveBeenLastCalledWith(expect.objectContaining({
         selectedTagPaths: [],
@@ -605,7 +621,7 @@ describe("第 8 批：标签筛选树、多选过滤、徽标计数、排序、�
     render(<LibraryPage onOpenSettings={() => undefined} platformData={platformData} />);
 
     await expandTag("time");
-    expect(childTitlesOf("time")).toEqual(["recent-7-days1", "20261", "20251"]);
+    expect(childTitlesOf("time")).toEqual(["recent-7-days", "2026", "2025"]);
   });
 
   it("每层标签默认最多显示 5 个，支持展开和收起并记住状态", async () => {
@@ -708,7 +724,7 @@ function childTitlesOf(rootLabel: string): string[] {
   const root = screen.getByRole("treeitem", { name: systemRootLabel(rootLabel) });
   const group = within(root).getByRole("group");
   return within(group)
-    .getAllByRole("button")
+    .getAllByRole("button", { name: /^(?!按文件数量筛选)/ })
     .map((button) => button.textContent?.trim() ?? "")
     .filter(Boolean);
 }

@@ -5976,7 +5976,7 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
 
 .affairs-tag-tree-row {
   display: grid;
-  grid-template-columns: var(--workbench-sidebar-icon-slot-size) minmax(0, 1fr);
+  grid-template-columns: var(--workbench-sidebar-icon-slot-size) minmax(0, 1fr) auto;
   align-items: center;
   min-height: var(--tag-tree-row-height);
   column-gap: var(--tag-tree-column-gap);
@@ -6025,11 +6025,12 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
 
 .affairs-tag-tree-row .affairs-sidebar-item-button {
   display: flex;
+  grid-column: 2;
   min-width: 0;
   min-height: var(--tag-tree-row-height);
   align-items: center;
   padding-left: 0;
-  padding-right: var(--workbench-sidebar-item-padding-end);
+  padding-right: 0;
   border-radius: var(--tag-tree-radius);
 }
 
@@ -6050,7 +6051,9 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
 }
 
 .affairs-tag-tree-row .affairs-sidebar-item-actions {
+  grid-column: 3;
   flex: 0 0 auto;
+  padding-right: var(--workbench-sidebar-item-padding-end);
 }
 
 .affairs-tag-tree-row .affairs-sidebar-item-badge {
@@ -6059,6 +6062,15 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
   background: var(--tag-tree-count-surface);
   font-weight: 500;
   font-variant-numeric: tabular-nums;
+}
+
+.affairs-tag-tree-row .affairs-sidebar-item-badge-button {
+  cursor: pointer;
+}
+
+.affairs-tag-tree-row .affairs-sidebar-item-badge-button:hover {
+  background: var(--tag-tree-count-active-surface);
+  color: var(--accent);
 }
 
 .affairs-tag-tree-node[data-depth="0"] > .affairs-sidebar-item .affairs-sidebar-item-title {
