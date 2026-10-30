@@ -6516,17 +6516,29 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_原生侧栏必须采样窗口后方() {
+    fn macos_原生侧栏必须使用_sidebar_材质() {
         assert_eq!(
-            macos_native_sidebar_blending_mode(),
-            NSVisualEffectBlendingMode::BehindWindow
+            macos_native_sidebar_material(),
+            NSVisualEffectMaterial::Sidebar
         );
     }
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_原生侧栏失焦时仍必须保持_active_材质() {
-        assert_eq!(macos_native_sidebar_state(), NSVisualEffectState::Active);
+    fn macos_原生侧栏必须在窗口内混合() {
+        assert_eq!(
+            macos_native_sidebar_blending_mode(),
+            NSVisualEffectBlendingMode::WithinWindow
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_原生侧栏必须跟随窗口激活状态() {
+        assert_eq!(
+            macos_native_sidebar_state(),
+            NSVisualEffectState::FollowsWindowActiveState
+        );
     }
 }
 
@@ -6867,8 +6879,8 @@ unsafe fn ensure_macos_native_sidebar_view(
         mtm.alloc(),
         NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)),
     );
-    effect_view.setMaterial(NSVisualEffectMaterial::Sidebar);
-    // 透明窗口需要从窗口后方采样，才能模糊桌面或其他窗口中的背景内容。
+    effect_view.setMaterial(macos_native_sidebar_material());
+    // 侧边栏属于窗口内部语义，在窗口内混合模糊，不模糊桌面。
     effect_view.setBlendingMode(macos_native_sidebar_blending_mode());
     effect_view.setState(macos_native_sidebar_state());
     apply_macos_native_sidebar_appearance(&effect_view, appearance);
@@ -6881,12 +6893,17 @@ unsafe fn ensure_macos_native_sidebar_view(
 
 #[cfg(target_os = "macos")]
 fn macos_native_sidebar_blending_mode() -> NSVisualEffectBlendingMode {
-    NSVisualEffectBlendingMode::BehindWindow
+    NSVisualEffectBlendingMode::WithinWindow
+}
+
+#[cfg(target_os = "macos")]
+fn macos_native_sidebar_material() -> NSVisualEffectMaterial {
+    NSVisualEffectMaterial::Sidebar
 }
 
 #[cfg(target_os = "macos")]
 fn macos_native_sidebar_state() -> NSVisualEffectState {
-    NSVisualEffectState::Active
+    NSVisualEffectState::FollowsWindowActiveState
 }
 
 #[cfg(target_os = "macos")]

@@ -4546,10 +4546,10 @@ body[data-workbench-macos-vibrancy="true"][data-window-mode="initialization"] #r
 }
 
 .workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] .workbench-sidebar {
-  /* macOS 已由底层 NSVisualEffectView 提供 Sidebar 材质。
-     WebKit 再做 backdrop-filter 会在拖拽和实时缩放时反复重建合成层。 */
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
+  /* macOS 原生 Sidebar 材质在窗口内混合，WebView 侧栏保留半透明 tint 和模糊增强效果。 */
+  background: var(--workbench-sidebar-surface);
+  backdrop-filter: blur(40px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
 }
 
 .workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] .affairs-detail-panel {
@@ -12173,10 +12173,12 @@ input[type="range"] {
 
 /* 原生窗口保留透明侧栏、标题栏安全区与拖拽区域。 */
 
+/* macOS 原生材质在窗口内混合，WebView 侧栏保留玻璃效果。 */
 .workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"] .workbench-sidebar {
-  background: var(--workbench-native-sidebar-tint);
-  backdrop-filter: var(--workbench-glass-blur);
-  -webkit-backdrop-filter: var(--workbench-glass-blur);
+  background: var(--workbench-sidebar-surface);
+  backdrop-filter: blur(40px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  isolation: auto;
   box-shadow: inset -1px 0 0 var(--glass-edge);
 }
 
@@ -12274,10 +12276,11 @@ input[type="range"] {
   .workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"]
     .xfile-workbench-window
     > .workbench-sidebar[data-open] {
-    background-color: var(--workbench-native-sidebar-tint);
+    background-color: var(--workbench-sidebar-surface);
     background-image: none;
-    backdrop-filter: var(--workbench-glass-blur);
-    -webkit-backdrop-filter: var(--workbench-glass-blur);
+    backdrop-filter: blur(40px) saturate(180%);
+    -webkit-backdrop-filter: blur(40px) saturate(180%);
+    isolation: auto;
   }
 
   .workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"]
