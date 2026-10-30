@@ -94,8 +94,47 @@ interface LibraryBackupImportModalState {
 }
 
 type SettingsTabId = "appearance" | "library" | "integration" | "network" | "updates";
+type ExtensionTabId = "all" | "text-code" | "office-table" | "image" | "audio" | "video" | "other";
 
 const LIBRARY_PRESET_EXTENSIONS = DEFAULT_LIBRARY_ALLOWED_EXTENSIONS;
+const EXTENSION_TAB_DEFINITIONS: Array<{
+  id: ExtensionTabId;
+  labelKey:
+    | "settingsAllowedExtensionsTabAll"
+    | "settingsAllowedExtensionsTabTextCode"
+    | "settingsAllowedExtensionsTabOfficeTable"
+    | "settingsAllowedExtensionsTabImage"
+    | "settingsAllowedExtensionsTabAudio"
+    | "settingsAllowedExtensionsTabVideo"
+    | "settingsAllowedExtensionsTabOther";
+}> = [
+  { id: "all", labelKey: "settingsAllowedExtensionsTabAll" },
+  { id: "text-code", labelKey: "settingsAllowedExtensionsTabTextCode" },
+  { id: "office-table", labelKey: "settingsAllowedExtensionsTabOfficeTable" },
+  { id: "image", labelKey: "settingsAllowedExtensionsTabImage" },
+  { id: "audio", labelKey: "settingsAllowedExtensionsTabAudio" },
+  { id: "video", labelKey: "settingsAllowedExtensionsTabVideo" },
+  { id: "other", labelKey: "settingsAllowedExtensionsTabOther" },
+];
+const EXTENSION_TAB_GROUPS: Record<Exclude<ExtensionTabId, "all" | "other">, ReadonlySet<string>> = {
+  "text-code": new Set([
+    ".md", ".markdown", ".mdx", ".txt", ".text", ".log", ".rtf", ".html", ".htm",
+    ".xml", ".json", ".map", ".yaml", ".yml", ".css", ".scss", ".less", ".js", ".jsx",
+    ".mjs", ".cjs", ".ts", ".tsx", ".py", ".go", ".rs", ".java", ".c", ".h", ".cpp",
+    ".cc", ".hpp", ".sh", ".bash", ".zsh", ".sql", ".toml", ".ini", ".conf",
+    ".properties", ".env", ".dockerfile", ".gitignore", ".editorconfig",
+  ]),
+  "office-table": new Set([
+    ".csv", ".tsv", ".pdf", ".doc", ".docx", ".odt", ".wps", ".xls", ".xlsx", ".ods",
+    ".et", ".numbers", ".ppt", ".pptx", ".odp", ".key",
+  ]),
+  image: new Set([
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico", ".tif", ".tiff",
+    ".heic", ".heif", ".avif",
+  ]),
+  audio: new Set([".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".aiff", ".aif"]),
+  video: new Set([".mp4", ".mov", ".mkv", ".webm", ".avi", ".wmv", ".m4v", ".mpeg", ".mpg", ".3gp"]),
+};
 
 const SETTINGS_TABS: Array<{
   id: SettingsTabId;
@@ -147,6 +186,7 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
     folderOpenBehavior: "double_click",
     manualExtension: "",
   });
+  const [activeExtensionTab, setActiveExtensionTab] = useState<ExtensionTabId>("all");
   const [serverForm, setServerForm] = useState<ServerFormState>({
     enabled: false,
     persistent: false,
@@ -817,10 +857,33 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
                   onChange={(event) => setConfigForm((current) => ({ ...current, includedHiddenPaths: event.target.value }))}
                 />
               </label>
-              <label>
-                <span>{t("settingsAllowedExtensions")}</span>
-                <div className="affairs-extension-chip-list">
-                  {buildAllowedExtensionOptions(configForm.allowedExtensions).map((extension) => {
+              <section className="affairs-extension-picker" aria-labelledby="settings-allowed-extensions-label">
+                <span id="settings-allowed-extensions-label" className="affairs-extension-picker-label">
+                  {t("settingsAllowedExtensions")}
+                </span>
+                <div className="affairs-extension-tabs" role="tablist" aria-label={t("settingsAllowedExtensions")}>
+                  {EXTENSION_TAB_DEFINITIONS.map((tab) => (
+                    <button
+                      key={tab.id}
+                      id={`settings-extension-tab-${tab.id}`}
+                      type="button"
+                      role="tab"
+                      aria-selected={activeExtensionTab === tab.id}
+                      aria-controls={`settings-extension-panel-${tab.id}`}
+                      className={activeExtensionTab === tab.id ? "affairs-extension-tab active" : "affairs-extension-tab"}
+                      onClick={() => setActiveExtensionTab(tab.id)}
+                    >
+                      {t(tab.labelKey)}
+                    </button>
+                  ))}
+                </div>
+                <div
+                  id={`settings-extension-panel-${activeExtensionTab}`}
+                  className="affairs-extension-tabpanel"
+                  role="tabpanel"
+                  aria-labelledby={`settings-extension-tab-${activeExtensionTab}`}
+                >
+                  {buildAllowedExtensionOptions(configForm.allowedExtensions, activeExtensionTab).map((extension) => {
                     const selected = configForm.allowedExtensions.includes(extension);
                     const preset = LIBRARY_PRESET_EXTENSIONS.includes(extension as typeof LIBRARY_PRESET_EXTENSIONS[number]);
                     return (
@@ -837,8 +900,11 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
                       </button>
                     );
                   })}
+                  {!buildAllowedExtensionOptions(configForm.allowedExtensions, activeExtensionTab).length ? (
+                    <p className="affairs-extension-empty">{t("settingsAllowedExtensionsEmpty")}</p>
+                  ) : null}
                 </div>
-              </label>
+              </section>
               <div className="affairs-extension-manual-row">
                 <input
                   value={configForm.manualExtension}
@@ -1710,8 +1776,24 @@ function resolveEditableAllowedExtensions(input: readonly string[]): string[] {
   return normalized.length > 0 ? normalized : [...LIBRARY_PRESET_EXTENSIONS];
 }
 
-function buildAllowedExtensionOptions(selectedExtensions: readonly string[]): string[] {
-  return sortAllowedExtensions([...LIBRARY_PRESET_EXTENSIONS, ...selectedExtensions]);
+function buildAllowedExtensionOptions(
+  selectedExtensions: readonly string[],
+  tab: ExtensionTabId = "all",
+): string[] {
+  const extensions = sortAllowedExtensions([...LIBRARY_PRESET_EXTENSIONS, ...selectedExtensions]);
+  if (tab === "all") {
+    return extensions;
+  }
+  return extensions.filter((extension) => resolveExtensionTab(extension) === tab);
+}
+
+function resolveExtensionTab(extension: string): Exclude<ExtensionTabId, "all"> {
+  for (const tab of ["text-code", "office-table", "image", "audio", "video"] as const) {
+    if (EXTENSION_TAB_GROUPS[tab].has(extension)) {
+      return tab;
+    }
+  }
+  return "other";
 }
 
 function shouldPersistImplicitAllowedExtensions(

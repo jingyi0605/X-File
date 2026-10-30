@@ -100,6 +100,25 @@ describe("SettingsPage 文档库索引配置迁移行为", () => {
     });
   });
 
+  it("允许索引的扩展名按类型标签页分组展示，并保留自定义扩展名", async () => {
+    const { SettingsPage } = await import("../SettingsPage");
+    render(<SettingsPage />);
+
+    await userEvent.click(await screen.findByRole("tab", { name: /资料库/ }));
+    await userEvent.click(screen.getByRole("tab", { name: "图片" }));
+    expect(screen.getByRole("button", { name: ".png" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: ".docx" })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("tab", { name: "文本与代码" }));
+    expect(screen.getByRole("button", { name: ".ts" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: ".png" })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("tab", { name: "其他" }));
+    await userEvent.type(screen.getByPlaceholderText(".epub"), ".epub");
+    await userEvent.click(screen.getByRole("button", { name: "添加扩展名" }));
+    expect(screen.getByRole("button", { name: ".epub 自定义" })).toBeInTheDocument();
+  });
+
   it("文档库设置可以切换文件夹单击打开方式并保存到配置", async () => {
     libraryApiMock.getLibraryConfig.mockResolvedValue(
       createLibraryConfig({
