@@ -43,7 +43,7 @@ export function createServer(options: CreateServerOptions = {}) {
         "Access-Control-Allow-Methods",
         "GET,POST,PUT,DELETE,OPTIONS",
       );
-      reply.header("Access-Control-Allow-Headers", "content-type");
+      reply.header("Access-Control-Allow-Headers", "content-type, x-file-session");
       reply.header("Access-Control-Allow-Credentials", "true");
     }
   });

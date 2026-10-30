@@ -1,4 +1,5 @@
-import { apiRequest, postJson } from "./http";
+import { apiRequest, postJson, resolveApiUrl } from "./http";
+import { setHttpAuthSessionToken } from "./http-auth-session";
 import { getRuntimeConfigSnapshot } from "../runtime/runtime-config-store";
 
 export interface HttpAuthStatus {
@@ -6,6 +7,7 @@ export interface HttpAuthStatus {
   configured: boolean;
   authenticated: boolean;
   username: string | null;
+  sessionToken?: string;
 }
 
 export function getHttpAuthStatus(): Promise<HttpAuthStatus> {
@@ -25,9 +27,16 @@ export function getHttpAuthStatus(): Promise<HttpAuthStatus> {
 }
 
 export function loginHttpAuth(username: string, password: string): Promise<HttpAuthStatus> {
-  return postJson<HttpAuthStatus>("/api/auth/login", { username, password });
+  return postJson<HttpAuthStatus>("/api/auth/login", { username, password }).then((result) => {
+    if (result.sessionToken) {
+      setHttpAuthSessionToken(resolveApiUrl("/api/auth/login"), result.sessionToken);
+    }
+    return result;
+  });
 }
 
-export function logoutHttpAuth(): Promise<void> {
-  return postJson<void>("/api/auth/logout", {});
+export async function logoutHttpAuth(): Promise<void> {
+  const apiUrl = resolveApiUrl("/api/auth/logout");
+  await postJson<void>("/api/auth/logout", {});
+  setHttpAuthSessionToken(apiUrl, null);
 }

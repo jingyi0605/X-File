@@ -5,6 +5,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { HttpServerManager } from "../http-server-manager.js";
 
 const SESSION_COOKIE = "x_file_session";
+const SESSION_HEADER = "x-file-session";
 const SESSION_COOKIE_MAX_AGE_SECONDS = 365 * 24 * 60 * 60;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const MAX_LOGIN_FAILURES = 8;
@@ -19,6 +20,7 @@ export interface HttpAuthStatus {
   configured: boolean;
   authenticated: boolean;
   username: string | null;
+  sessionToken?: string;
 }
 
 export function registerHttpAuthRoutes(
@@ -98,7 +100,8 @@ export function registerHttpAuthRoutes(
         required: true,
         configured: true,
         authenticated: true,
-        username: state.authUsername
+        username: state.authUsername,
+        sessionToken: token
       });
   });
 
@@ -140,6 +143,11 @@ function hasValidSession(
 }
 
 function readSessionToken(request: FastifyRequest): string | null {
+  const header = request.headers[SESSION_HEADER];
+  if (typeof header === "string" && header) {
+    return header;
+  }
+
   const cookieHeader = request.headers.cookie;
   if (!cookieHeader) {
     return null;

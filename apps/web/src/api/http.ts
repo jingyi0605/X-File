@@ -1,5 +1,6 @@
 import { t } from "../i18n";
 import { getActiveApiBaseUrl } from "../runtime/runtime-config";
+import { getHttpAuthSessionToken } from "./http-auth-session";
 
 export class ApiClientError extends Error {
   readonly status: number;
@@ -20,12 +21,15 @@ export async function apiRequest<T>(
   options: RequestInit = {}
 ): Promise<T> {
   let response: Response;
+  const apiUrl = resolveApiUrl(path);
+  const sessionToken = getHttpAuthSessionToken(apiUrl);
 
   try {
-    response = await fetch(resolveApiUrl(path), {
+    response = await fetch(apiUrl, {
       ...options,
-      credentials: "include",
+      credentials: sessionToken ? "omit" : "include",
       headers: {
+        ...(sessionToken ? { "x-file-session": sessionToken } : {}),
         ...(options.body ? { "content-type": "application/json" } : {}),
         ...options.headers
       }

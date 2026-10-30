@@ -73,6 +73,17 @@ test("局域网请求必须先登录，登录后会话可以访问受保护内�
   assert.equal(authenticated.statusCode, 200);
   assert.deepEqual(authenticated.json(), { content: "private" });
 
+  const headerAuthenticated = await app.inject({
+    method: "GET",
+    url: "/api/content",
+    remoteAddress: "192.168.1.20",
+    headers: {
+      "x-file-session": login.json().sessionToken
+    }
+  });
+  assert.equal(headerAuthenticated.statusCode, 200);
+  assert.deepEqual(headerAuthenticated.json(), { content: "private" });
+
   await app.close();
 });
 
