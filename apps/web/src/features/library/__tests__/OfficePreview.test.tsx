@@ -160,12 +160,11 @@ describe("OfficePreview", () => {
 
     render(<OfficePreview fileName="forecast.xlsx" relativePath="forecast.xlsx" previewUrl="/forecast.xlsx" localFilePath={null} size={1024} />);
 
-    expect(await screen.findByRole("cell", { name: "FY 2026" })).toBeInTheDocument();
-    expect(screen.getByRole("cell", { name: "$420.00" })).toBeInTheDocument();
     expect(await screen.findByTestId("fortune-sheet-mock")).toHaveAttribute("data-cell-count", "5");
-    expect(screen.getByRole("row", { name: /3/ }).querySelector("th[scope='row']")).toHaveTextContent("3");
+    expect(screen.getByRole("tab", { name: "Summary" })).toHaveAttribute("aria-selected", "true");
     fireEvent.click(screen.getByRole("tab", { name: "Details" }));
-    expect(await screen.findByRole("cell", { name: "Revenue" })).toBeInTheDocument();
+    expect(await screen.findByTestId("fortune-sheet-mock")).toHaveTextContent("Details");
+    expect(document.querySelector(".office-preview-grid-accessibility")).toBeNull();
   });
 
   it("can render the detail-sidebar Office surface without the toolbar", async () => {
@@ -179,13 +178,17 @@ describe("OfficePreview", () => {
         localFilePath={null}
         size={1024}
         hideToolbar
+        readOnlyPreview
         className="library-detail-preview-shell"
       />,
     );
 
-    expect(await screen.findByRole("cell", { name: "FY 2026" })).toBeInTheDocument();
+    expect(await screen.findByRole("gridcell", { name: "FY 2026" })).toBeInTheDocument();
+    expect(screen.getByRole("gridcell", { name: "$420.00" })).toBeInTheDocument();
     expect(document.querySelector(".office-preview-toolbar")).toBeNull();
     expect(document.querySelector(".office-preview-shell.library-detail-preview-shell")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Details" }));
+    expect(await screen.findByRole("gridcell", { name: "Revenue" })).toBeInTheDocument();
   });
 
   it("opens legacy XLS files with the same read-only spreadsheet renderer", async () => {
@@ -193,7 +196,7 @@ describe("OfficePreview", () => {
 
     render(<OfficePreview fileName="legacy.xls" relativePath="legacy.xls" previewUrl="/legacy.xls" localFilePath={null} size={1024} />);
 
-    expect(await screen.findByRole("cell", { name: "Legacy" })).toBeInTheDocument();
+    expect(await screen.findByTestId("fortune-sheet-mock")).toHaveTextContent("Legacy");
     expect(screen.getByRole("tab", { name: "Legacy" })).toBeInTheDocument();
   });
 
@@ -202,8 +205,7 @@ describe("OfficePreview", () => {
 
     render(<DelimitedTextPreview content={'Name,Note\n"Alpha, Inc.","00123"'} delimiter="," />);
 
-    expect(await screen.findByRole("cell", { name: "Alpha, Inc." })).toBeInTheDocument();
-    expect(screen.getByRole("cell", { name: "00123" })).toBeInTheDocument();
+    expect(await screen.findByTestId("fortune-sheet-mock")).toHaveTextContent("CSV");
     expect(await screen.findByTestId("fortune-sheet-mock")).toHaveAttribute("data-cell-count", "4");
   });
 
@@ -306,7 +308,7 @@ describe("OfficePreview", () => {
       <OfficePreview fileName="forecast.xlsx" relativePath="forecast.xlsx" previewUrl="/forecast.xlsx" localFilePath="/Library/forecast.xlsx" size={12} />,
     );
 
-    await screen.findByRole("cell", { name: "FY 2026" });
+    expect(await screen.findByTestId("fortune-sheet-mock")).toHaveTextContent("Summary");
     fireEvent.click(screen.getByRole("button", { name: "本地打开" }));
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("open_path", { path: "/Library/forecast.xlsx" }));
     expect(container.querySelector(".office-preview-shell")).toBeInTheDocument();
@@ -317,7 +319,7 @@ describe("OfficePreview", () => {
     vi.mocked(fetch).mockResolvedValue(new Response(Uint8Array.from(createXlsxFixture()).buffer as ArrayBuffer, { status: 200 }));
     render(<OfficePreview fileName="remote.xlsx" relativePath="remote.xlsx" previewUrl="/remote.xlsx" localFilePath={null} size={12} />);
 
-    await screen.findByRole("cell", { name: "FY 2026" });
+    expect(await screen.findByTestId("fortune-sheet-mock")).toHaveTextContent("Summary");
     expect(screen.queryByRole("button", { name: "本地打开" })).not.toBeInTheDocument();
   });
 

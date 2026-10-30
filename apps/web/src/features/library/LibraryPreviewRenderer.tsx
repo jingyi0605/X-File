@@ -240,6 +240,7 @@ function OfficeRenderer({ preview, localFilePath, layout, resourceBytes }: Libra
       revision={`${preview.size}:${preview.updatedAt ?? ""}`}
       resourceBytes={resourceBytes}
       hideToolbar={layout === "detail" || layout === "viewer"}
+      readOnlyPreview={layout === "detail"}
       className={className}
     />
   );
@@ -250,7 +251,11 @@ function DelimitedTextRenderer({ preview, content, layout }: LibraryPreviewRende
   return (
     <RendererFrame layout={layout} className="library-detail-text-preview-shell">
       <Suspense fallback={<div className="office-preview-state" role="status">{t("fileViewerOfficeLoading")}</div>}>
-        <DelimitedTextPreview content={content || t("libraryPreviewEmpty")} delimiter={delimiter} />
+        <DelimitedTextPreview
+          content={content || t("libraryPreviewEmpty")}
+          delimiter={delimiter}
+          readOnlyPreview={layout === "detail"}
+        />
       </Suspense>
     </RendererFrame>
   );

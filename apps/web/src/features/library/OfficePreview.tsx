@@ -17,6 +17,7 @@ interface OfficePreviewProps {
   revision?: string;
   resourceBytes?: Uint8Array;
   hideToolbar?: boolean;
+  readOnlyPreview?: boolean;
   className?: string;
 }
 
@@ -29,6 +30,7 @@ export function OfficePreview({
   revision,
   resourceBytes,
   hideToolbar = false,
+  readOnlyPreview = false,
   className = "",
 }: OfficePreviewProps) {
   const [error, setError] = useState<string | null>(null);
@@ -218,6 +220,7 @@ export function OfficePreview({
               revision={revision}
               resourceBytes={resourceBytes}
               onError={setError}
+              readOnlyPreview={readOnlyPreview}
             />
           </Suspense>
         </>
