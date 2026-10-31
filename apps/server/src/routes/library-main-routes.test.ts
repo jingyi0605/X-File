@@ -72,6 +72,14 @@ test("文档库主路由、标签路由和 server state 都已注册", async () 
     });
     assert.equal(createdTag.statusCode, 200);
     const tagId = createdTag.json().id;
+    const tagDelta = await app.inject({
+      method: "GET",
+      url: `/api/library/mirror/snapshot?sinceRevision=${mirrorSnapshot.json().revision}`,
+    });
+    assert.equal(tagDelta.statusCode, 200);
+    assert.equal(tagDelta.json().kind, "delta");
+    assert.equal(tagDelta.json().baseRevision, mirrorSnapshot.json().revision);
+    assert.equal(tagDelta.json().tagDetailUpserts.some((item: { id: string }) => item.id === tagId), true);
 
     const mirrorMutation = {
       mutationId: "mirror-route-idempotency",
