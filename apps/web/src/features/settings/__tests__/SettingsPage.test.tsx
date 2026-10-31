@@ -197,7 +197,7 @@ describe("SettingsPage 文档库索引配置迁移行为", () => {
     expect(screen.getByPlaceholderText("/Users/you/X-File-Mirror")).toHaveValue("/Users/test/X-File-Mirror");
   });
 
-  it("标题后会显示当前运行模式标签，镜像模式下仍明确提示主服务端设置", async () => {
+  it("标题后会显示当前运行模式标签，镜像模式保留完整分类导航", async () => {
     const { SettingsPage } = await import("../SettingsPage");
     render(<SettingsPage onClose={() => undefined} />);
 
@@ -207,21 +207,16 @@ describe("SettingsPage 文档库索引配置迁移行为", () => {
     await userEvent.click(screen.getByRole("button", { name: "镜像模式" }));
 
     expect(screen.getAllByText("镜像模式", { selector: ".settings-runtime-badge" }).length).toBeGreaterThan(0);
+    expect(screen.getByRole("tab", { name: "外观" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "资料库" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "集成服务" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "网络服务" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "更新" })).toBeInTheDocument();
 
-    const configOwnerNotice = screen.getByText("主服务端设置").closest(".settings-remote-owner-note");
-    expect(configOwnerNotice).toHaveAttribute("data-tone", "danger");
-    expect(
-      screen.getByText(
-        "你当前在镜像模式下编辑的是主服务端的索引范围配置。保存后会通过镜像连接写入源端本地模式实例，不是写到镜像端本机。",
-      ),
-    ).toBeInTheDocument();
+    expect(screen.queryByText("主服务端设置")).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("tab", { name: /网络服务/ }));
-    expect(
-      screen.getByText(
-        "你当前在镜像模式下编辑的是主服务端的 HTTP 服务配置。保存后会作用到源端本地模式实例，不是镜像端本机。",
-      ),
-    ).toBeInTheDocument();
+    expect(screen.queryByText("主服务端设置")).not.toBeInTheDocument();
   });
 
   it("HTTP 服务设置不展示内部监听生命周期调试信息", async () => {

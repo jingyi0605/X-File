@@ -90,11 +90,7 @@ export interface ListDocumentsQuery {
 
 export async function getLibraryBinding(): Promise<LibraryBinding | null> {
   if (isMirrorRuntime()) {
-    try {
-      return (await getMirrorSnapshot()).snapshot.binding;
-    } catch {
-      return null;
-    }
+    return apiRequest<LibraryBinding | null>("/api/library/binding");
   }
   if (getRuntimeConfigSnapshot().config.mode === "local") {
     const native = await getNativeLibraryBinding();
@@ -142,7 +138,8 @@ export async function browseHostDirectories(
 
 export async function getLibraryConfig(): Promise<LibraryConfig> {
   if (isMirrorRuntime()) {
-    return (await getMirrorSnapshot()).config;
+    // 设置页必须读取主端实时值，不能回退为离线镜像快照。
+    return apiRequest<LibraryConfig>("/api/library/config");
   }
   if (getRuntimeConfigSnapshot().config.mode === "local") {
     const native = await getNativeLibraryConfig();
@@ -156,9 +153,6 @@ export async function getLibraryConfig(): Promise<LibraryConfig> {
 export async function saveLibraryConfig(
   input: SaveLibraryConfigInput,
 ): Promise<LibraryConfig> {
-  if (isMirrorRuntime()) {
-    throw new MirrorUnavailableError("镜像端不能修改主端资料库配置，请连接主端操作");
-  }
   if (getRuntimeConfigSnapshot().config.mode === "local") {
     const native = await saveNativeLibraryConfig(input);
     if (native) {
@@ -177,9 +171,6 @@ export async function getLibraryBackup(): Promise<LibraryBackup> {
 }
 
 export async function restoreLibraryBackup(input: unknown): Promise<LibraryBackupImportResult> {
-  if (isMirrorRuntime()) {
-    throw new MirrorUnavailableError("镜像端不能导入资料库备份，请连接主端操作");
-  }
   if (getRuntimeConfigSnapshot().config.mode === "local") {
     const native = await importNativeLibraryBackup(input as LibraryBackup);
     if (native) {
@@ -564,9 +555,6 @@ export async function getHttpServerState(): Promise<HttpServerState> {
 export async function saveHttpServerState(
   input: SaveHttpServerStateInput,
 ): Promise<HttpServerState> {
-  if (isMirrorRuntime()) {
-    throw new MirrorUnavailableError("镜像端不能修改主端 HTTP 服务配置");
-  }
   if (shouldUseNativeLibraryBridge()) {
     const native = await saveNativeHttpServerState(input);
     if (native) {

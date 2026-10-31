@@ -261,11 +261,13 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
       setConfigUnavailable(toApiErrorMessage(err));
     }
 
-    try {
-      const snapshot = await getLibrarySnapshot();
-      setLibraryIndexStatus(snapshot.status);
-    } catch (err) {
-      setError((current) => current ?? toApiErrorMessage(err));
+    if (!isMirrorMode) {
+      try {
+        const snapshot = await getLibrarySnapshot();
+        setLibraryIndexStatus(snapshot.status);
+      } catch (err) {
+        setError((current) => current ?? toApiErrorMessage(err));
+      }
     }
 
     try {
@@ -793,12 +795,6 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
 
         <SettingsModule title={t("settingsConfigTitle")}>
           <form className="settings-module-form" onSubmit={(event) => void submitConfig(event)}>
-            {isMirrorMode ? (
-              <div className="settings-remote-owner-note" data-tone="danger">
-                <strong>{t("settingsRemoteOwnerTitle")}</strong>
-                <span>{t("settingsMirrorConfigRemoteNotice")}</span>
-              </div>
-            ) : null}
             {configUnavailable ? <div className="inline-note">{t("settingsConfigUnavailable")} {configUnavailable}</div> : null}
             <div className="affairs-library-settings-form">
               <section className="affairs-library-config-section">
@@ -966,12 +962,6 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
         description={t("settingsServerDescription")}
         status={t(serverState?.running ? "settingsServerRunning" : "settingsServerStopped")}>
         <form className="settings-module-form" onSubmit={(event) => void submitServer(event)}>
-          {isMirrorMode ? (
-            <div className="settings-remote-owner-note" data-tone="danger">
-              <strong>{t("settingsRemoteOwnerTitle")}</strong>
-              <span>{t("settingsMirrorServerRemoteNotice")}</span>
-            </div>
-          ) : null}
           {serverUnavailable ? <div className="inline-note">{t("settingsServerUnavailable")} {serverUnavailable}</div> : null}
           <label className="switch-row">
             <span>{t("settingsServerEnabled")}</span>
@@ -1110,6 +1100,12 @@ export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
         role="tabpanel"
         aria-labelledby={`settings-tab-${activeTab}`}
       >
+        {isMirrorMode && (activeTab === "library" || activeTab === "integration" || activeTab === "network") ? (
+          <div className="settings-remote-owner-note" role="note">
+            <strong>{t("settingsMirrorScopeTitle")}</strong>
+            <span>{t("settingsMirrorScopeDescription")}</span>
+          </div>
+        ) : null}
         {error ? <div className="inline-alert" role="alert">{error}</div> : null}
         {tabPanels[activeTab]}
       </section>

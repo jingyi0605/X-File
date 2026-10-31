@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getHttpServerState, saveHttpServerState } from "./library";
+import {
+  getLibraryBinding,
+  getHttpServerState,
+  getLibraryConfig,
+  saveHttpServerState,
+  saveLibraryConfig,
+} from "./library";
 import { initializeRuntimeConfig } from "../runtime/runtime-config-store";
 
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
@@ -8,7 +14,42 @@ const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
 
 const serverInput = { enabled: true, persistent: false, port: 17321 };
+const libraryConfigInput = {
+  enabled: true,
+  allowedExtensions: [".md", ".pdf"],
+  includedHiddenPaths: [".obsidian"],
+  hideDotFiles: false,
+  hideSystemFolders: true,
+  folderOpenBehavior: "single_click" as const,
+};
 const operations = [
+  {
+    name: "读取资料库绑定",
+    command: "native_get_library_binding",
+    path: "/api/library/binding",
+    method: "GET",
+    input: undefined,
+    nativeArgs: undefined,
+    run: () => getLibraryBinding(),
+  },
+  {
+    name: "读取资料库配置",
+    command: "native_get_library_config",
+    path: "/api/library/config",
+    method: "GET",
+    input: undefined,
+    nativeArgs: undefined,
+    run: () => getLibraryConfig(),
+  },
+  {
+    name: "保存资料库配置",
+    command: "native_save_library_config",
+    path: "/api/library/config",
+    method: "PUT",
+    input: libraryConfigInput,
+    nativeArgs: { request: libraryConfigInput },
+    run: () => saveLibraryConfig(libraryConfigInput),
+  },
   {
     name: "读取 HTTP 服务设置",
     command: "native_get_http_server_state",
