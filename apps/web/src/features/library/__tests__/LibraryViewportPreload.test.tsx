@@ -33,7 +33,11 @@ describe.each(["grid", "list"] as const)("%s 视口自动预加载", (viewMode) 
     resetLibraryApiMock();
     libraryApiMock.listLibraryFiles.mockResolvedValue(createFileList());
     for (const libraryId of ["default", "library-test"]) {
-      writeLibraryViewState({ ...createDefaultLibraryViewState(libraryId), viewMode });
+      writeLibraryViewState({
+        ...createDefaultLibraryViewState(libraryId),
+        viewMode,
+        desktopViewMode: viewMode,
+      });
     }
     for (const [property, value] of [["clientWidth", 300], ["clientHeight", 400]] as const) {
       const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, property);
