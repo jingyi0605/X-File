@@ -12,6 +12,7 @@
     "dev:server": "bash scripts/dev-server.sh",
     "dev:desktop": "pnpm --filter @x-file/desktop tauri:dev",
     "dev:desktop:frontend": "bash scripts/dev-desktop-frontend.sh",
+    "dev:desktop:mirror": "bash scripts/dev-desktop-mirror.sh",
     "start:server": "pnpm --filter @x-file/server start",
     "verify:desktop": "node scripts/verify-desktop.mjs",
     "report:preview-capabilities": "node scripts/report-preview-capabilities.mjs",
