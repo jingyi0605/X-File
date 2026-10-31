@@ -87,7 +87,7 @@ export function registerLibraryCoreRoutes(
   options: RegisterLibraryEngineFeatureOptions = {},
 ): void {
   if (resolveSidecarProfile(options) === "sidecar-only") {
-    registerLibraryCoreRoutePlaceholders(server);
+    registerLibraryCoreRoutePlaceholders(server, feature);
     return;
   }
 
@@ -207,7 +207,10 @@ function resolveSidecarProfile(
   return "sidecar-only";
 }
 
-function registerLibraryCoreRoutePlaceholders(server: FastifyInstance): void {
+function registerLibraryCoreRoutePlaceholders(
+  server: FastifyInstance,
+  feature: LibraryEngineFeature,
+): void {
   const reject = async () => {
     throw new LibraryError(
       503,
@@ -215,10 +218,22 @@ function registerLibraryCoreRoutePlaceholders(server: FastifyInstance): void {
       "当前 Node sidecar 已切到 sidecar-only 模式；正式包默认不再由它提供 library 核心数据面 HTTP 路由。请改走桌面 native bridge，或仅在调试时显式设置 X_FILE_NODE_SIDECAR_PROFILE=full。",
     );
   };
-  server.get("/api/library/binding", reject);
+  // 原生宿主拥有索引任务生命周期；sidecar 只持久化主端设置，不重复启动 Node 索引。
+  const configService = new LibraryConfigService(
+    feature.libraryBindingStore,
+    new LibraryConfigStore(),
+  );
+  server.get("/api/library/binding", async () => feature.libraryBindingStore.read());
   server.put("/api/library/binding", reject);
-  server.get("/api/library/config", reject);
-  server.put("/api/library/config", reject);
+  server.get("/api/library/config", async () => configService.getConfig());
+  server.put("/api/library/config", async (request, reply) => {
+    try {
+      reply.send(configService.saveConfig(request.body ?? {}));
+    } catch (error) {
+      const response = toLibraryErrorResponse(error);
+      reply.code(response.statusCode).send(response.body);
+    }
+  });
   server.get("/api/library/snapshot", reject);
   server.get("/api/library/tasks", reject);
   server.get("/api/library/documents", reject);

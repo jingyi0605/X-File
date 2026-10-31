@@ -199,3 +199,62 @@ test("文档库主路由、标签路由和 server state 都已注册", async () 
     }
   }
 });
+
+test("sidecar-only 仍提供镜像设置所需的主端 binding 与 config 读写", async () => {
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "x-file-settings-home-"));
+  const previousHome = process.env.HOME;
+  const previousDataDir = process.env.X_FILE_DATA_DIR;
+  const dataDir = path.join(tempHome, ".x-file");
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "x-file-settings-library-"));
+  fs.mkdirSync(dataDir, { recursive: true });
+  fs.writeFileSync(path.join(dataDir, "library-binding.json"), JSON.stringify({
+    libraryId: "primary-library",
+    rootDir,
+    enabled: true,
+    mirrorRoot: null,
+    allowedExtensions: [".md"],
+    includedHiddenPaths: [],
+    hideDotFiles: true,
+    hideSystemFolders: true,
+    folderOpenBehavior: "double_click",
+    configRelativePath: ".ai-index/doc-semantic-index.config.json",
+    exportMode: "v2",
+    initialized: true,
+    initializedAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  }));
+  process.env.HOME = tempHome;
+  process.env.X_FILE_DATA_DIR = dataDir;
+  const app = createServer({
+    httpServerRuntimeState: { running: false },
+    sidecarProfile: "sidecar-only",
+  });
+
+  try {
+    const binding = await app.inject({ method: "GET", url: "/api/library/binding" });
+    assert.equal(binding.statusCode, 200);
+    assert.equal(binding.json().rootDir, rootDir);
+
+    const config = await app.inject({ method: "GET", url: "/api/library/config" });
+    assert.equal(config.statusCode, 200);
+    assert.deepEqual(config.json().allowedExtensions, [".md"]);
+
+    const saved = await app.inject({
+      method: "PUT",
+      url: "/api/library/config",
+      payload: { allowedExtensions: [".md", ".pdf"], hideDotFiles: false },
+    });
+    assert.equal(saved.statusCode, 200);
+    assert.deepEqual(saved.json().allowedExtensions, [".md", ".pdf"]);
+    assert.equal(saved.json().hideDotFiles, false);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir, "library-binding.json"), "utf8")).hideDotFiles, false);
+  } finally {
+    await app.close();
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    if (previousDataDir === undefined) delete process.env.X_FILE_DATA_DIR;
+    else process.env.X_FILE_DATA_DIR = previousDataDir;
+    fs.rmSync(tempHome, { recursive: true, force: true });
+    fs.rmSync(rootDir, { recursive: true, force: true });
+  }
+});
