@@ -53,3 +53,25 @@ test("移除内置助手后，两种服务模式均不注册助手及专用插�
     fs.rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test("Tauri 生产环境的本地 Origin 可以访问镜像 API", async () => {
+  const server = createServer();
+  try {
+    for (const origin of [
+      "tauri://localhost",
+      "http://tauri.localhost",
+      "https://tauri.localhost",
+    ]) {
+      const response = await server.inject({
+        method: "GET",
+        url: "/api/health",
+        headers: { origin },
+      });
+      assert.equal(response.statusCode, 200, origin);
+      assert.equal(response.headers["access-control-allow-origin"], origin);
+      assert.equal(response.headers["access-control-allow-credentials"], "true");
+    }
+  } finally {
+    await server.close();
+  }
+});

@@ -77,13 +77,16 @@ export function createServer(options: CreateServerOptions = {}) {
 function isAllowedLocalOrigin(origin: string): boolean {
   try {
     const url = new URL(origin);
+    const isTauriLocalhost =
+      url.hostname === "tauri.localhost"
+      && (url.protocol === "http:" || url.protocol === "https:");
     return (
       url.protocol === "http:" &&
       (url.hostname === "127.0.0.1" ||
         url.hostname === "localhost" ||
         url.hostname === "::1")
       || (url.protocol === "tauri:" && url.hostname === "localhost")
-      || (url.protocol === "http:" && url.hostname === "tauri.localhost")
+      || isTauriLocalhost
     );
   } catch {
     return false;
