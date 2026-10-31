@@ -74,7 +74,10 @@ import {
   isDesktopWindowDragHandleTarget,
   toggleDesktopWindowMaximize,
 } from "../../runtime/window-drag";
-import { updateRuntimeConfig } from "../../runtime/runtime-config-store";
+import {
+  getRuntimeConfigSnapshot,
+  updateRuntimeConfig,
+} from "../../runtime/runtime-config-store";
 import {
   updatePreferences,
   usePreferencesSelector,
@@ -3221,6 +3224,13 @@ function LibraryStage({
   }));
   const isSearchResultView = searchOpen && searchEntries !== undefined;
   const visibleEntries = isSearchResultView ? searchEntries : library.entries;
+  const onOpenLocalFile = useCallback(
+    (path: string) => {
+      const localPath = resolveLibraryLocalPath(library, path);
+      return localPath ? openPathInDesktop(localPath) : Promise.resolve(false);
+    },
+    [library],
+  );
   const visibleLibrary = useMemo<StageLibraryState>(
     () => isSearchResultView
       ? {
@@ -3296,6 +3306,7 @@ function LibraryStage({
             onOpenLibraryDetails={onOpenLibraryDetails}
             onOpenContextMenu={onOpenContextMenu}
             onOpenLibraryViewer={onOpenLibraryViewer}
+            onOpenLocalFile={onOpenLocalFile}
           />
         ) : (
           <VirtualLibraryFinderList
@@ -3304,6 +3315,7 @@ function LibraryStage({
             onOpenLibraryDetails={onOpenLibraryDetails}
             onOpenContextMenu={onOpenContextMenu}
             onOpenLibraryViewer={onOpenLibraryViewer}
+            onOpenLocalFile={onOpenLocalFile}
           />
         )}
       </div>
@@ -3836,6 +3848,7 @@ function VirtualLibraryGrid({
   onOpenContextMenu,
   onOpenLibraryDetails,
   onOpenLibraryViewer,
+  onOpenLocalFile,
 }: {
   library: StageLibraryState;
   entries: LibraryEntry[];
@@ -3845,6 +3858,7 @@ function VirtualLibraryGrid({
   ) => void;
   onOpenLibraryDetails: (entry?: LibraryEntry) => void;
   onOpenLibraryViewer: (entry: LibraryDocumentEntry) => void;
+  onOpenLocalFile: (path: string) => Promise<boolean>;
 }) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const [viewport, setViewport] = useState({
@@ -4066,6 +4080,7 @@ function VirtualLibraryGrid({
             onOpenLibraryDetails={onOpenLibraryDetails}
             onOpenContextMenu={onOpenContextMenu}
             onOpenLibraryViewer={onOpenLibraryViewer}
+            onOpenLocalFile={onOpenLocalFile}
             onToggleFavorite={library.toggleFavorite}
             isFavorite={slot.entry.kind === "folder" && isFolderFavorite(library, slot.entry.path)}
           />
@@ -4105,6 +4120,7 @@ function VirtualLibraryFinderList({
   onOpenLibraryDetails,
   onOpenContextMenu,
   onOpenLibraryViewer,
+  onOpenLocalFile,
 }: {
   library: StageLibraryState;
   entries: LibraryEntry[];
@@ -4114,6 +4130,7 @@ function VirtualLibraryFinderList({
     target: LibraryContextMenuTarget,
   ) => void;
   onOpenLibraryViewer: (entry: LibraryDocumentEntry) => void;
+  onOpenLocalFile: (path: string) => Promise<boolean>;
 }) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const [viewport, setViewport] = useState({ height: 0, scrollTop: 0 });
@@ -4479,6 +4496,7 @@ function VirtualLibraryFinderList({
                   gridTemplateColumns={finderGridTemplateColumns}
                   onOpenContextMenu={onOpenContextMenu}
                   onOpenLibraryViewer={onOpenLibraryViewer}
+                  onOpenLocalFile={onOpenLocalFile}
                   onToggleFavorite={library.toggleFavorite}
                   isFavorite={slot.entry.kind === "folder" && isFolderFavorite(library, slot.entry.path)}
                 />
@@ -4858,6 +4876,7 @@ function LibraryEntryCard({
   onOpenLibraryDetails,
   onOpenContextMenu,
   onOpenLibraryViewer,
+  onOpenLocalFile,
   onToggleFavorite,
   isFavorite,
 }: {
@@ -4876,6 +4895,7 @@ function LibraryEntryCard({
     target: LibraryContextMenuTarget,
   ) => void;
   onOpenLibraryViewer: (entry: LibraryDocumentEntry) => void;
+  onOpenLocalFile: (path: string) => Promise<boolean>;
   onToggleFavorite: LibraryState["toggleFavorite"];
   isFavorite: boolean;
 }) {
@@ -4977,7 +4997,7 @@ function LibraryEntryCard({
         }}
         onDoubleClick={() => {
           if (getFileOpenModeForPath(entry.path) === "local_app") {
-            void openPathInDesktop(entry.path).then((opened) => {
+            void onOpenLocalFile(entry.path).then((opened) => {
               if (!opened) onOpenLibraryViewer(entry);
             });
             return;
@@ -5044,6 +5064,7 @@ function LibraryFinderRow({
     target: LibraryContextMenuTarget,
   ) => void;
   onOpenLibraryViewer: (entry: LibraryDocumentEntry) => void;
+  onOpenLocalFile: (path: string) => Promise<boolean>;
   onToggleFavorite: LibraryState["toggleFavorite"];
   isFavorite: boolean;
 }) {
@@ -5175,7 +5196,7 @@ function LibraryFinderRow({
         }}
         onDoubleClick={() => {
           if (getFileOpenModeForPath(entry.path) === "local_app") {
-            void openPathInDesktop(entry.path).then((opened) => {
+            void onOpenLocalFile(entry.path).then((opened) => {
               if (!opened) onOpenLibraryViewer(entry);
             });
             return;
@@ -10259,20 +10280,23 @@ function resolveDocumentLocalPath(
   library: LibrarySnapshotBridge,
   path: string,
 ): string | null {
-  const mirrorRoot = library.snapshot?.binding?.mirrorRoot?.trim();
-  if (!mirrorRoot) return null;
-  return joinLibraryPath(mirrorRoot, path);
+  const binding = library.snapshot?.binding;
+  const runtimeConfig = getRuntimeConfigSnapshot().config;
+  const root = runtimeConfig.mode === "mirror"
+    ? runtimeConfig.localRootDir || binding?.mirrorRoot || ""
+    : binding?.mirrorRoot || binding?.rootDir || "";
+  return joinLibraryPath(root, path);
 }
 
 function resolveLibraryLocalPath(
-  library: LibraryState,
+  library: LibrarySnapshotBridge,
   relativePath: string,
 ): string | null {
   const binding = library.snapshot?.binding;
-  const root = (binding?.mirrorRoot || binding?.rootDir || "")
-    .trim()
-    .replace(/\/+$/g, "");
-  if (!root) return null;
+  const runtimeConfig = getRuntimeConfigSnapshot().config;
+  const root = runtimeConfig.mode === "mirror"
+    ? runtimeConfig.localRootDir || binding?.mirrorRoot || ""
+    : binding?.mirrorRoot || binding?.rootDir || "";
   return joinLibraryPath(root, relativePath);
 }
 

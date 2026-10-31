@@ -4,6 +4,7 @@ import {
   clearPreviewResourceCache,
   readPreviewResource,
 } from "../preview-resource-controller";
+import { setHttpAuthSessionToken } from "../../../api/http-auth-session";
 
 const { nativeReadMock } = vi.hoisted(() => ({ nativeReadMock: vi.fn() }));
 
@@ -40,6 +41,23 @@ describe("preview resource controller", () => {
 
     expect(second).toEqual(Uint8Array.from([1, 2, 3]));
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("forwards the remote HTTP auth session when reading preview bytes", async () => {
+    const previewUrl = "https://primary.example.com/preview/manual.pdf";
+    setHttpAuthSessionToken(previewUrl, "session-token");
+    vi.mocked(fetch).mockResolvedValue(new Response(Uint8Array.from([1, 2, 3]).buffer));
+
+    await readPreviewResource({
+      path: "docs/manual.pdf",
+      previewUrl,
+    });
+
+    expect(fetch).toHaveBeenCalledWith(previewUrl, expect.objectContaining({
+      credentials: "omit",
+      headers: { "x-file-session": "session-token" },
+      signal: expect.any(AbortSignal),
+    }));
   });
 
   it("rejects resources over the declared size budget before reading them", async () => {

@@ -6,6 +6,8 @@ import {
 } from "@x-file/shared";
 
 import { t } from "../../i18n";
+import { getHttpAuthSessionToken } from "../../api/http-auth-session";
+import { resolveApiUrl } from "../../api/http";
 import { CodePreview, MarkdownPreview, detectLanguage } from "./LibraryFileCodeViewer";
 import { LibraryPdfPreview } from "./LibraryPdfPreview";
 import { OfficePreview } from "./OfficePreview";
@@ -170,9 +172,14 @@ function MarkdownRenderer({ content, layout }: LibraryPreviewRendererProps) {
 }
 
 function HtmlRenderer({ preview, content, layout }: LibraryPreviewRendererProps) {
-  const httpPreviewUrl = preview.previewUrl && /^https?:/i.test(preview.previewUrl)
+  const resolvedPreviewUrl = preview.previewUrl && /^https?:/i.test(preview.previewUrl)
     ? preview.previewUrl
     : null;
+  const requiresAuthenticatedDocument = Boolean(
+    resolvedPreviewUrl
+    && getHttpAuthSessionToken(resolveApiUrl(resolvedPreviewUrl)),
+  );
+  const httpPreviewUrl = requiresAuthenticatedDocument ? null : resolvedPreviewUrl;
   return (
     <RendererFrame layout={layout} className="file-viewer-html-frame-shell">
       <iframe

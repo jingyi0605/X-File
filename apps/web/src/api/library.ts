@@ -28,7 +28,7 @@ import type {
   UpdateLibraryFavoritesInput,
 } from "@x-file/shared";
 
-import { apiRequest, postJson, putJson } from "./http";
+import { ApiClientError, apiRequest, postJson, putJson } from "./http";
 import { getRuntimeConfigSnapshot } from "../runtime/runtime-config-store";
 import {
   getMirrorDocumentTagDetails,
@@ -123,7 +123,10 @@ export async function saveLibraryBinding(
 export async function browseHostDirectories(
   path?: string | null,
 ): Promise<HostDirectoryBrowseResult> {
-  if (getRuntimeConfigSnapshot().config.mode === "local") {
+  if (
+    typeof window !== "undefined"
+    && "__TAURI_INTERNALS__" in window
+  ) {
     const native = await browseNativeHostDirectories(path ?? null);
     if (native) {
       return native;
@@ -279,26 +282,31 @@ export function getLibraryPreview(
   if (isMirrorRuntime()) {
     return apiRequest<LibraryPreview>(
       `/api/library/preview?path=${encodeURIComponent(path)}${displayMode ? `&displayMode=${encodeURIComponent(displayMode)}` : ""}`,
-    ).catch(() => ({
-      libraryId: "default",
-      path,
-      supported: false,
-      kind: "unsupported",
-      reason: "主端已离线，镜像快照只保存文件模型，正文预览需要重新连接主端",
-      content: null,
-      version: null,
-      size: 0,
-      updatedAt: null,
-      previewPath: null,
-      previewUrl: null,
-      capabilities: {
-        canEdit: false,
-        canRefresh: false,
-        canResize: false,
-        canZoom: false,
-        canPaginate: false,
-      },
-    }));
+    ).catch((error) => {
+      if (error instanceof ApiClientError && error.status !== 0) {
+        throw error;
+      }
+      return {
+        libraryId: "default",
+        path,
+        supported: false,
+        kind: "unsupported",
+        reason: "主端已离线，镜像快照只保存文件模型，正文预览需要重新连接主端",
+        content: null,
+        version: null,
+        size: 0,
+        updatedAt: null,
+        previewPath: null,
+        previewUrl: null,
+        capabilities: {
+          canEdit: false,
+          canRefresh: false,
+          canResize: false,
+          canZoom: false,
+          canPaginate: false,
+        },
+      };
+    });
   }
   if (shouldUseNativeLibraryBridge()) {
     return getLibraryPreviewWithNative(path, displayMode);

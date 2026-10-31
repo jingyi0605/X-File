@@ -1,5 +1,7 @@
 import { readNativePreviewResource } from "../../runtime/native-library-bridge";
 import { getRuntimeConfigSnapshot } from "../../runtime/runtime-config-store";
+import { getHttpAuthSessionToken } from "../../api/http-auth-session";
+import { resolveApiUrl } from "../../api/http";
 import { LIBRARY_PREVIEW_BUDGETS } from "@x-file/shared";
 
 export const DEFAULT_PREVIEW_RESOURCE_MAX_BYTES = LIBRARY_PREVIEW_BUDGETS.resourceMaxBytes;
@@ -146,7 +148,13 @@ async function readHttpPreviewResource(
   maxBytes: number,
   signal: AbortSignal,
 ): Promise<Uint8Array> {
-  const response = await fetch(previewUrl, { signal });
+  const apiUrl = resolveApiUrl(previewUrl);
+  const sessionToken = getHttpAuthSessionToken(apiUrl);
+  const response = await fetch(apiUrl, {
+    signal,
+    credentials: sessionToken ? "omit" : "include",
+    headers: sessionToken ? { "x-file-session": sessionToken } : {},
+  });
   if (!response.ok) throw new Error("resource");
 
   const declaredSize = Number(response.headers.get("content-length"));

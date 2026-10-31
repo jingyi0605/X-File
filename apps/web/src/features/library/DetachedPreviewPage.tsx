@@ -5,6 +5,7 @@ import { getLibraryPreview, getLibrarySnapshot } from "../../api/library";
 import { toApiErrorMessage } from "../../api/http";
 import { t } from "../../i18n";
 import { getPathName } from "../../shared/format";
+import { getRuntimeConfigSnapshot } from "../../runtime/runtime-config-store";
 import { LibraryPreviewRenderer } from "./LibraryPreviewRenderer";
 
 export function DetachedPreviewPage({ path, title }: { path: string; title: string }) {
@@ -29,7 +30,10 @@ export function DetachedPreviewPage({ path, title }: { path: string; title: stri
     };
   }, [path]);
 
-  const localRootDir = snapshot?.binding?.rootDir || snapshot?.binding?.mirrorRoot || null;
+  const runtimeConfig = getRuntimeConfigSnapshot().config;
+  const localRootDir = runtimeConfig.mode === "mirror"
+    ? runtimeConfig.localRootDir || snapshot?.binding?.mirrorRoot || null
+    : snapshot?.binding?.rootDir || null;
   const localFilePath = localRootDir
     ? `${localRootDir.replace(/\/+$/g, "")}/${path.replace(/^\/+/, "")}`
     : null;
