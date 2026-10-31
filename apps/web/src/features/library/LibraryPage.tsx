@@ -5008,6 +5008,7 @@ function LibraryFinderRow({
   gridTemplateColumns,
   onOpenContextMenu,
   onOpenLibraryViewer,
+  onOpenLocalFile,
   onToggleFavorite,
   isFavorite,
 }: {
