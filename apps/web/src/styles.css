@@ -12358,9 +12358,6 @@ html[data-theme="dark"]
 /* 中间内容区：对齐 DSH 的干净近黑，避免窗口底/工具栏带出脏灰。 */
 html[data-theme="dark"]
   .workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"]
-  .xfile-workbench-window,
-html[data-theme="dark"]
-  .workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"]
   .affairs-main-panel,
 html[data-theme="dark"]
   .workbench-shell[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-titlebar="true"]
