@@ -33,6 +33,7 @@ export interface LibraryPreviewRendererProps {
   localFilePath?: string | null;
   compact?: boolean;
   resourceBytes?: Uint8Array;
+  resourceLoadError?: boolean;
 }
 
 type PreviewRendererComponent = ComponentType<LibraryPreviewRendererProps>;
@@ -117,6 +118,10 @@ function ResourceAdapterRenderer({
     result?.dispose();
   }, [result]);
 
+  if (error && (entry.adapter.family === "office-document" || entry.adapter.family === "spreadsheet")) {
+    const Renderer = entry.renderer;
+    return <Renderer {...props} resourceLoadError />;
+  }
   if (error) {
     return <div className={resolveStateClass(props.layout)} role="status">{t("fileViewerOfficeResourceUnavailable")}</div>;
   }
@@ -230,7 +235,7 @@ function PdfRenderer({ preview, layout, resourceBytes }: LibraryPreviewRendererP
   );
 }
 
-function OfficeRenderer({ preview, localFilePath, layout, resourceBytes }: LibraryPreviewRendererProps & { resourceBytes?: Uint8Array }) {
+function OfficeRenderer({ preview, localFilePath, layout, resourceBytes, resourceLoadError }: LibraryPreviewRendererProps & { resourceBytes?: Uint8Array }) {
   const className = layout === "detail"
     ? "library-detail-preview-shell"
     : layout === "standalone"
@@ -241,7 +246,7 @@ function OfficeRenderer({ preview, localFilePath, layout, resourceBytes }: Libra
     <OfficePreview
       fileName={preview.path.split(/[\\/]/).pop() ?? preview.path}
       relativePath={preview.path}
-      previewUrl={preview.previewUrl}
+      previewUrl={resourceLoadError ? null : preview.previewUrl}
       localFilePath={localFilePath ?? null}
       size={preview.size}
       revision={`${preview.size}:${preview.updatedAt ?? ""}`}
