@@ -561,6 +561,18 @@ export function useLibraryState(): LibraryState {
   }
 
   async function refresh(): Promise<void> {
+    if (runtimeConfig.mode === "mirror") {
+      setRefreshPending(true);
+      setError(null);
+      try {
+        // 镜像刷新只拉取主端增量并重新读取当前视图，不触发主端索引任务。
+        await reload();
+        await reloadDocuments(true);
+      } finally {
+        setRefreshPending(false);
+      }
+      return;
+    }
     await refreshWithReason("manual_refresh");
   }
 
