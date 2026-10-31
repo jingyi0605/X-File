@@ -5,8 +5,11 @@ import { listLibraryTasks, listenLibraryTaskUpdates } from "../../api/library";
 import { toApiErrorMessage } from "../../api/http";
 import { getLocaleForIntl, t } from "../../i18n";
 import { formatDateTime } from "../../shared/format";
+import { useMirrorSyncTasks } from "../../runtime/mirror-sync-progress";
+import { isMirrorRuntime } from "../../runtime/mirror-api";
 
 function taskTypeLabel(type: string): string {
+  if (type === "library.mirror_sync") return t("mirrorProgressTitle");
   if (type === "library.file_scan") return t("libraryTaskTypeScan");
   if (type === "library.tag_assignment" || type === "library.tag_recompute") return t("libraryTaskTypeTags");
   return t("libraryTaskTypeIndex");
@@ -22,6 +25,9 @@ function taskStateLabel(state: LibraryTask["state"]): string {
 }
 
 function taskStageLabel(stage: string): string {
+  if (stage === "connect_primary") return t("mirrorProgressConnecting");
+  if (stage === "receive_snapshot") return t("mirrorProgressReceiving");
+  if (stage === "save_offline_data") return t("mirrorProgressSaving");
   switch (stage) {
     case "count_tag_files": return t("libraryTaskCountingFiles");
     case "apply_tags": return t("libraryTaskApplyingTags");
@@ -81,8 +87,15 @@ function isIndexTask(type: string): boolean {
 
 type TaskProgressCounts = Pick<LibraryTask, "processedCount" | "totalCount">;
 
-function TaskProgress({ processedCount, totalCount, label, pendingLabel, saving, stageProgress }: TaskProgressCounts & {
-  label: string; pendingLabel?: string; saving?: boolean; stageProgress?: LibraryTask["stageProgress"];
+function formatByteCount(value: number): string {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function TaskProgress({ processedCount, totalCount, label, pendingLabel, saving, stageProgress, bytes = false }: TaskProgressCounts & {
+  label: string; pendingLabel?: string; saving?: boolean; stageProgress?: LibraryTask["stageProgress"]; bytes?: boolean;
 }) {
   const knownTotal = totalCount !== null && totalCount >= 0;
   const progress = saving ? stageProgress ?? { processedCount: 0, totalCount: null } : { processedCount, totalCount };
@@ -97,7 +110,9 @@ function TaskProgress({ processedCount, totalCount, label, pendingLabel, saving,
         </span>
       ) : null}
       <span className="library-task-count">{knownTotal
-        ? `${processedCount.toLocaleString(getLocaleForIntl())} / ${totalCount.toLocaleString(getLocaleForIntl())}`
+        ? bytes
+          ? `${formatByteCount(processedCount)} / ${formatByteCount(totalCount)}`
+          : `${processedCount.toLocaleString(getLocaleForIntl())} / ${totalCount.toLocaleString(getLocaleForIntl())}`
         : pendingLabel ?? t("libraryTaskProcessed", { count: processedCount })}</span>
     </span>
   );
@@ -137,6 +152,7 @@ function TaskRow({ task, statusLabel, children }: { task: LibraryTask; statusLab
           label={taskTypeLabel(task.taskType)}
           saving={isSavingTags(task)}
           stageProgress={task.stageProgress}
+          bytes={task.taskType === "library.mirror_sync"}
           pendingLabel={isTagTask(task.taskType) && !finished
             ? t(task.stage === "count_tag_files" ? "libraryTaskCountingFiles" : "libraryTaskPreparingTags")
             : undefined}
@@ -154,7 +170,9 @@ function TaskRow({ task, statusLabel, children }: { task: LibraryTask; statusLab
           <span className="library-task-target">{task.targetPath ?? task.rootDir}</span>
           <span className="library-task-stage">{taskStateLabel(task.state)}{task.stage ? ` · ${taskStageLabel(task.stage)}` : ""}</span>
           {finished ? <span className="library-task-stage">{knownTotal
-            ? t("libraryTaskProcessedTotal", { current: task.processedCount, total: task.totalCount! })
+            ? task.taskType === "library.mirror_sync"
+              ? `${formatByteCount(task.processedCount)} / ${formatByteCount(task.totalCount!)}`
+              : t("libraryTaskProcessedTotal", { current: task.processedCount, total: task.totalCount! })
             : t("libraryTaskProcessed", { count: task.processedCount })}</span> : null}
           {children}
         </div>
@@ -173,6 +191,8 @@ export function LibraryTaskCenter({
   indexStatus?: LibraryIndexStatus | null;
   children: ReactNode;
 }) {
+  const mirrorTasks = useMirrorSyncTasks();
+  const mirrorMode = isMirrorRuntime();
   const [open, setOpen] = useState(false);
   const [result, setResult] = useState<{ root: string | null; tasks: LibraryTask[]; error: string | null }>({
     root: null, tasks: [], error: null,
@@ -192,8 +212,30 @@ export function LibraryTaskCenter({
     startedAt: indexStatus?.lastStartedAt ?? null,
     completedAt: fallbackState === "failed" ? indexStatus?.lastFailedAt ?? null : indexStatus?.lastCompletedAt ?? null,
   };
-  const tasks = rootDir && !registeredTasks.some((task) => isIndexTask(task.taskType))
-    ? [...registeredTasks, fallback] : registeredTasks;
+  const mirrorTaskRows: LibraryTask[] = mirrorMode ? mirrorTasks.map((mirrorTask) => ({
+    taskId: mirrorTask.taskId,
+    taskType: "library.mirror_sync",
+    rootDir: rootDir ?? "",
+    targetPath: null,
+    source: "mirror_client",
+    state: mirrorTask.phase === "failed" ? "failed"
+      : mirrorTask.phase === "complete" ? "completed" : "running",
+    stage: mirrorTask.phase === "connecting" ? "connect_primary"
+      : mirrorTask.phase === "receiving" ? "receive_snapshot"
+        : mirrorTask.phase === "saving" ? "save_offline_data" : null,
+    totalCount: mirrorTask.totalDocuments ?? mirrorTask.totalBytes,
+    processedCount: mirrorTask.totalDocuments !== null
+      ? mirrorTask.receivedDocuments
+      : mirrorTask.receivedBytes,
+    errorSummary: mirrorTask.phase === "failed" ? t("mirrorProgressFailed") : null,
+    queuedAt: mirrorTask.startedAt ?? "",
+    startedAt: mirrorTask.startedAt,
+    completedAt: mirrorTask.completedAt,
+  })) : [];
+  const tasks = [
+    ...(rootDir && !registeredTasks.some((task) => isIndexTask(task.taskType)) ? [fallback] : registeredTasks),
+    ...mirrorTaskRows,
+  ];
   const active = tasks.filter((task) => task.state === "queued" || task.state === "running");
   const finished = tasks.filter((task) => task.state !== "queued" && task.state !== "running")
     .sort((left, right) => taskCompletionTime(right) - taskCompletionTime(left))

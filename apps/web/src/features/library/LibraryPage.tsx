@@ -61,8 +61,6 @@ import {
 import { toApiErrorMessage } from "../../api/http";
 import { t } from "../../i18n";
 import { normalizeBaseUrl } from "../../runtime/runtime-config";
-import { loadMirrorCache } from "../../runtime/mirror-cache";
-import { getMirrorSnapshot } from "../../runtime/mirror-api";
 import {
   notifyWindowReadyForNativeSidebar,
   setInitializationWindowMode,
@@ -130,70 +128,13 @@ import {
   type LibrarySortMode,
   type LibrarySortState,
 } from "./library-view-state";
+import { MirrorStatusNotice } from "./MirrorStatusNotice";
+import { MirrorSyncProgressPanel } from "./MirrorSyncProgressPanel";
 
 export interface WorkbenchPlatformData {
   runtimePlatform: "desktop" | "web";
   osFamily: "macos" | "windows" | "web";
   overlayTitlebar: boolean;
-}
-
-function MirrorStatusNotice({
-  remoteApiBaseUrl,
-  onAvailable,
-}: {
-  remoteApiBaseUrl: string;
-  onAvailable?: () => void;
-}) {
-  const onAvailableRef = useRef(onAvailable);
-  onAvailableRef.current = onAvailable;
-  const observedRevisionRef = useRef<string | null>(null);
-  const [state, setState] = useState<{ hasSnapshot: boolean; pendingCount: number; conflictCount: number; lastError: string | null }>({
-    hasSnapshot: false,
-    pendingCount: 0,
-    conflictCount: 0,
-    lastError: null,
-  });
-
-  useEffect(() => {
-    let active = true;
-    const refresh = () => {
-      void getMirrorSnapshot()
-        .then((snapshot) => {
-          if (!active || observedRevisionRef.current === snapshot.revision) return;
-          observedRevisionRef.current = snapshot.revision;
-          onAvailableRef.current?.();
-        })
-        .catch(() => null)
-        .then(() => loadMirrorCache(remoteApiBaseUrl.trim().replace(/\/+$/g, "")))
-        .then((cache) => {
-          if (active) {
-            setState({
-              hasSnapshot: cache.snapshot !== null,
-              pendingCount: cache.pendingMutations.length,
-              conflictCount: cache.syncResults.filter((result) => result.status === "conflict").length,
-              lastError: cache.lastError,
-            });
-          }
-        });
-    };
-    refresh();
-    const timer = window.setInterval(refresh, 8000);
-    return () => {
-      active = false;
-      window.clearInterval(timer);
-    };
-  }, [remoteApiBaseUrl]);
-
-  if (state.pendingCount > 0) {
-    return <div className="inline-note mirror-status-notice" role="status">{t("mirrorPendingNotice", { count: state.pendingCount })}</div>;
-  }
-  if (state.conflictCount > 0) {
-    return <div className="inline-note mirror-status-notice" role="status">{t("mirrorConflictNotice", { count: state.conflictCount })}</div>;
-  }
-  if (state.lastError && state.hasSnapshot) {
-    return <div className="inline-note mirror-status-notice" role="status">{t("mirrorOfflineNotice")}</div>;
-  }
-  return null;
 }
 
 interface LibraryPageProps {
@@ -1388,12 +1329,22 @@ export function LibraryPage({
         <section className="settings-section">
           <div className="section-header">
             <h2>{t("mirrorFirstSyncTitle")}</h2>
-            <button type="button" className="secondary-button" onClick={() => void library.reload()}>
-              {t("httpAuthRetry")}
-            </button>
+            <div className="button-row">
+              <button type="button" className="secondary-button" onClick={onOpenSettings}>
+                {t("navSettings")}
+              </button>
+              <button type="button" className="secondary-button" onClick={() => void library.reload()}>
+                {t("httpAuthRetry")}
+              </button>
+            </div>
           </div>
-          <p className="inline-note">{library.error || t("mirrorFirstSyncDescription")}</p>
-          <MirrorStatusNotice remoteApiBaseUrl={runtimeConfig.remoteApiBaseUrl} onAvailable={() => void library.reload()} />
+          <p className="inline-note">
+            {library.error || (library.loading
+              ? t("mirrorFirstSyncLoading")
+              : t("mirrorFirstSyncDescription"))}
+          </p>
+          <MirrorSyncProgressPanel active={library.loading} />
+          <MirrorStatusNotice remoteApiBaseUrl={runtimeConfig.remoteApiBaseUrl} libraryLoading={library.loading} onAvailable={() => void library.reload()} />
         </section>
       </main>
     );
@@ -1424,7 +1375,7 @@ export function LibraryPage({
       onTouchStart={handleWorkbenchTouchStart}
       onTouchEnd={handleWorkbenchTouchEnd}
     >
-      {runtimeConfig.mode === "mirror" ? <MirrorStatusNotice remoteApiBaseUrl={runtimeConfig.remoteApiBaseUrl} onAvailable={() => void library.reload()} /> : null}
+      {runtimeConfig.mode === "mirror" ? <MirrorStatusNotice remoteApiBaseUrl={runtimeConfig.remoteApiBaseUrl} libraryLoading={library.loading} onAvailable={() => void library.reload()} /> : null}
       <section
         className="workbench-window xfile-workbench-window workbench-window-resizable"
         data-overlay-titlebar={String(platformData.overlayTitlebar)}

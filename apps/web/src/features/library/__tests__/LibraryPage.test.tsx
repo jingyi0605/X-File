@@ -98,6 +98,24 @@ describe("LibraryPage 高风险交互", () => {
     expect(sidebar).toHaveAttribute("data-open", "true");
   });
 
+  it("镜像模式在左上角品牌标题旁显示 Mirror 标签", async () => {
+    const { LibraryPage } = await import("../LibraryPage");
+    render(
+      <LibraryPage
+        onOpenSettings={vi.fn()}
+        platformData={platformData}
+        runtimeConfig={{
+          mode: "mirror",
+          remoteApiBaseUrl: "http://127.0.0.1:17321",
+          localRootDir: "/Users/test/X-File-Mirror",
+          updatedAt: "2026-06-16T00:00:00.000Z",
+        }}
+      />,
+    );
+
+    expect(await screen.findByText("Mirror", { selector: ".xfile-sidebar-brand-mode" })).toBeInTheDocument();
+  });
+
   it("macOS 桌面端侧栏保持常驻，不显示失效的边缘打开状态", async () => {
     const { LibraryPage } = await import("../LibraryPage");
     render(<LibraryPage onOpenSettings={vi.fn()} platformData={desktopPlatformData} />);

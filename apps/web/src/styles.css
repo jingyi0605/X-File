@@ -28,6 +28,7 @@
   --library-task-list-max-height: 360px;
   --library-task-viewport-inset: calc(var(--space-6) * 2);
   --library-task-progress-height: 3px;
+  --mirror-sync-progress-height: 7px;
   --library-task-pending-width: 35%;
   --library-task-pending-duration: 1.2s;
   --library-task-icon-size: 14px;
@@ -3498,6 +3499,144 @@ mark {
   min-width: 0;
 }
 
+.mirror-sync-progress-card {
+  display: grid;
+  gap: var(--space-5);
+  margin-top: var(--space-5);
+  padding: var(--space-7);
+  border: 1px solid var(--glass-control-border);
+  border-radius: var(--radius-md);
+  background:
+    radial-gradient(ellipse at 0% 0%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 54%),
+    var(--glass-control-surface);
+  box-shadow: var(--glass-control-shadow), var(--glass-panel-shadow);
+  color: var(--text-primary);
+}
+
+.mirror-sync-progress-heading,
+.mirror-sync-progress-footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.mirror-sync-progress-heading-copy {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.mirror-sync-progress-eyebrow {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+.mirror-sync-progress-heading-copy strong {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.mirror-sync-progress-percent {
+  margin-left: auto;
+  color: var(--accent);
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.mirror-sync-progress-orbit {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--glass-control-border));
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+
+.mirror-sync-progress-orbit span {
+  width: var(--space-3);
+  height: var(--space-3);
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  box-shadow: 0 0 0 var(--space-2) color-mix(in srgb, var(--accent) 12%, transparent);
+  animation: mirror-sync-pulse 1.8s ease-in-out infinite;
+}
+
+.mirror-sync-progress-track {
+  position: relative;
+  height: var(--mirror-sync-progress-height);
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--text-tertiary) 14%, transparent);
+}
+
+.mirror-sync-progress-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 55%, var(--success)));
+  transition: width 260ms ease;
+}
+
+.mirror-sync-progress-fill.is-indeterminate {
+  width: var(--library-task-pending-width);
+  animation: library-task-pending var(--library-task-pending-duration) ease-in-out infinite;
+}
+
+.mirror-sync-progress-footer {
+  justify-content: space-between;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.mirror-sync-progress-footer span:last-child:not(:first-child) {
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.mirror-sync-progress-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.mirror-sync-progress-steps span {
+  padding-top: var(--space-3);
+  border-top: 1px solid color-mix(in srgb, var(--text-tertiary) 16%, transparent);
+}
+
+.mirror-sync-progress-steps span.is-active {
+  border-color: color-mix(in srgb, var(--accent) 58%, transparent);
+  color: var(--text-primary);
+}
+
+@keyframes mirror-sync-pulse {
+  50% { opacity: 0.55; transform: scale(0.78); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mirror-sync-progress-orbit span,
+  .mirror-sync-progress-fill.is-indeterminate {
+    animation: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .mirror-sync-progress-card {
+    padding: var(--space-5);
+  }
+
+  .mirror-sync-progress-steps {
+    font-size: 10px;
+  }
+}
+
 .settings-section h2 {
   margin-bottom: 4px;
 }
@@ -5802,8 +5941,8 @@ html[data-theme="dark"]
 .xfile-sidebar-brand-copy {
   display: flex;
   min-width: 0;
-  flex-direction: column;
-  gap: 2px;
+  align-items: center;
+  gap: var(--space-2);
 }
 
 .xfile-sidebar-brand-copy strong {
@@ -10878,6 +11017,19 @@ input[type="range"] {
   letter-spacing: -0.03em;
 }
 
+.xfile-sidebar-brand-mode {
+  flex: 0 0 auto;
+  padding: 2px var(--space-2);
+  border: 1px solid var(--glass-control-border);
+  border-radius: var(--radius-pill);
+  background: var(--glass-control-surface);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+}
+
 .affairs-sidebar-shell {
   gap: var(--space-5);
 }
@@ -12062,6 +12214,115 @@ input[type="range"] {
   animation: settings-toast-in var(--transition-fast) both;
 }
 
+.mirror-warning-toast {
+  position: fixed;
+  top: calc(var(--startup-toolbar-height) + var(--space-5));
+  inset-inline-start: 50%;
+  z-index: var(--toast-z-index);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--space-3);
+  width: min(560px, calc(100vw - 32px));
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--warning-fg) 32%, var(--glass-control-border));
+  border-radius: calc(var(--radius-control) + 4px);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--warning-fg) 12%, transparent), transparent 62%),
+    color-mix(in srgb, var(--glass-control-surface) 94%, var(--warning-fg) 6%);
+  box-shadow:
+    0 16px 42px color-mix(in srgb, var(--text-primary) 12%, transparent),
+    var(--glass-panel-shadow);
+  color: var(--text-primary);
+  transform: translateX(-50%);
+  animation: mirror-warning-toast-in var(--transition-fast) both;
+  backdrop-filter: blur(18px) saturate(150%);
+}
+
+.mirror-warning-toast[data-tone="danger"] {
+  border-color: color-mix(in srgb, var(--danger-fg) 34%, var(--glass-control-border));
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--danger-fg) 12%, transparent), transparent 62%),
+    color-mix(in srgb, var(--glass-control-surface) 94%, var(--danger-fg) 6%);
+}
+
+.mirror-warning-toast-icon {
+  display: inline-grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--warning-fg) 34%, transparent);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--warning-fg) 14%, transparent);
+  color: color-mix(in srgb, var(--warning-fg) 88%, var(--text-primary));
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.mirror-warning-toast[data-tone="danger"] .mirror-warning-toast-icon {
+  border-color: color-mix(in srgb, var(--danger-fg) 36%, transparent);
+  background: color-mix(in srgb, var(--danger-fg) 14%, transparent);
+  color: color-mix(in srgb, var(--danger-fg) 88%, var(--text-primary));
+}
+
+.mirror-warning-toast-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.mirror-warning-toast-copy strong {
+  color: color-mix(in srgb, var(--warning-fg) 82%, var(--text-primary));
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.mirror-warning-toast[data-tone="danger"] .mirror-warning-toast-copy strong {
+  color: color-mix(in srgb, var(--danger-fg) 84%, var(--text-primary));
+}
+
+.mirror-warning-toast-copy span {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.mirror-warning-toast-dismiss {
+  display: inline-grid;
+  width: var(--control-height-sm);
+  height: var(--control-height-sm);
+  min-height: var(--control-height-sm);
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.mirror-warning-toast-dismiss:hover,
+.mirror-warning-toast-dismiss:focus-visible {
+  border-color: var(--glass-control-border);
+  background: var(--panel-hover);
+  color: var(--text-primary);
+}
+
+@keyframes mirror-warning-toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
 @keyframes settings-toast-in {
   from {
     opacity: 0;
@@ -12071,6 +12332,19 @@ input[type="range"] {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@media (max-width: 640px) {
+  .mirror-warning-toast {
+    top: calc(var(--startup-toolbar-height) + var(--space-3));
+    width: calc(100vw - 20px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mirror-warning-toast {
+    animation: none;
   }
 }
 
