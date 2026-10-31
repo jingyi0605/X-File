@@ -2,6 +2,14 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { LibraryPreview } from "@x-file/shared";
+import { updateRuntimeConfig } from "../../../runtime/runtime-config-store";
+
+const { nativePreviewMock } = vi.hoisted(() => ({ nativePreviewMock: vi.fn() }));
+
+vi.mock("../../../runtime/native-library-bridge", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../runtime/native-library-bridge")>(),
+  getNativeLibraryPreview: nativePreviewMock,
+}));
 
 import {
   createDocumentList,
@@ -24,9 +32,11 @@ const platformData = {
 };
 
 describe("第 1 批：文档预览、编辑写回、Office 阅读视图与目录详情", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     localStorage.clear();
     resetLibraryApiMock();
+    nativePreviewMock.mockReset();
+    await updateRuntimeConfig({ mode: "local" });
   });
 
   it("双击文档会复用文件预览工具，并走文档库默认预览接口", async () => {
@@ -49,6 +59,32 @@ describe("第 1 批：文档预览、编辑写回、Office 阅读视图与目录
     await waitFor(() => {
       expect(libraryApiMock.getLibraryPreview).toHaveBeenCalledWith("docs/预览.md");
     });
+  });
+
+  it("镜像端查看器通过主端预览接口读取，不调用本机文档库", async () => {
+    await updateRuntimeConfig({ mode: "mirror", remoteApiBaseUrl: "http://primary.test" });
+    nativePreviewMock.mockRejectedValueOnce(new Error("当前未绑定文档库"));
+    libraryApiMock.listLibraryDocuments.mockResolvedValue(
+      createDocumentList([createDocumentRecord({ documentId: "doc-mirror", path: "docs/镜像预览.md" })]),
+    );
+    libraryApiMock.getLibraryPreview.mockResolvedValue(createPreview({
+      path: "docs/镜像预览.md",
+      kind: "markdown",
+      content: "# 主端预览内容",
+    }));
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
+
+    fireEvent.doubleClick(await screen.findByRole("button", { name: /镜像预览\.md/ }));
+
+    expect(await screen.findByRole("dialog", { name: "镜像预览.md" })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(libraryApiMock.getLibraryPreview).toHaveBeenCalledWith("docs/镜像预览.md");
+    });
+    expect(nativePreviewMock).not.toHaveBeenCalled();
+    expect(screen.queryByText("当前未绑定文档库")).not.toBeInTheDocument();
+    await updateRuntimeConfig({ mode: "local" });
   });
 
   it("文档预览编辑后会走文档库写回接口保存", async () => {

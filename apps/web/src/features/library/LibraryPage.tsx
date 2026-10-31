@@ -65,7 +65,6 @@ import { loadMirrorCache } from "../../runtime/mirror-cache";
 import { getMirrorSnapshot } from "../../runtime/mirror-api";
 import {
   notifyWindowReadyForNativeSidebar,
-  getNativeLibraryPreview,
   setInitializationWindowMode,
   syncNativeSidebarLayout,
 } from "../../runtime/native-library-bridge";
@@ -8798,8 +8797,7 @@ function LibraryFileViewerSurface({
 }
 
 function getLibraryPreviewForViewer(path: string): Promise<LibraryPreview> {
-  return getNativeLibraryPreview(path, "reading")
-    .then((preview) => preview ?? getLibraryPreview(path));
+  return getLibraryPreview(path);
 }
 
 interface HtmlPresentationModeInput {
