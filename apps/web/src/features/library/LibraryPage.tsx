@@ -1405,6 +1405,7 @@ export function LibraryPage({
         library={library}
         onOpenSettings={onOpenSettings}
         platformData={platformData}
+        runtimeConfig={runtimeConfig}
       />
     );
   }
@@ -1496,6 +1497,7 @@ export function LibraryPage({
           onOpenSettings={onOpenSettings}
           onOpenTagManager={handleOpenTagManager}
           overlayMacOsTitlebar={overlayMacOsTitlebar}
+          runtimeConfig={runtimeConfig}
           navigationRevision={navigationRevision}
           canGoBack={navigationHistoryRef.current.back.length > 0}
           canGoForward={navigationHistoryRef.current.forward.length > 0}
@@ -1623,10 +1625,12 @@ function LibraryDisabledPanel({
   library,
   onOpenSettings,
   platformData,
+  runtimeConfig,
 }: {
   library: LibraryState;
   onOpenSettings: () => void;
   platformData: WorkbenchPlatformData;
+  runtimeConfig: XFileRuntimeConfig;
 }) {
   return (
     <main
@@ -1647,6 +1651,9 @@ function LibraryDisabledPanel({
               </span>
               <span className="xfile-sidebar-brand-copy">
                 <strong>{t("appTitle")}</strong>
+                {runtimeConfig.mode === "mirror" ? (
+                  <span className="xfile-sidebar-brand-mode">Mirror</span>
+                ) : null}
               </span>
             </div>
             <footer className="workbench-sidebar-footer">
@@ -1697,6 +1704,7 @@ function LibraryDesktopSidebar({
   onOpenSettings,
   onOpenTagManager,
   overlayMacOsTitlebar,
+  runtimeConfig,
 }: {
   library: SidebarLibraryState;
   navigationRevision: number;
@@ -1713,6 +1721,7 @@ function LibraryDesktopSidebar({
   onOpenSettings: () => void;
   onOpenTagManager: () => void;
   overlayMacOsTitlebar: boolean;
+  runtimeConfig: XFileRuntimeConfig;
 }) {
   const snapshot = library.snapshot;
   const selectedTagPath = library.viewState.selectedTagPath;
@@ -1876,6 +1885,9 @@ function LibraryDesktopSidebar({
             </span>
             <span className="xfile-sidebar-brand-copy">
               <strong>{t("appTitle")}</strong>
+              {runtimeConfig.mode === "mirror" ? (
+                <span className="xfile-sidebar-brand-mode">Mirror</span>
+              ) : null}
             </span>
           </div>
         </div>

@@ -291,6 +291,31 @@ export interface LibraryMirrorSnapshot {
   folderTagBindings: LibraryMirrorFolderTagBinding[];
 }
 
+export interface LibraryMirrorSnapshotDelta {
+  version: 1;
+  kind: "delta";
+  baseRevision: string;
+  revision: string;
+  generatedAt: string;
+  config: LibraryConfig;
+  snapshot: LibrarySnapshot;
+  documentUpserts: LibraryDocumentRecord[];
+  deletedDocumentIds: string[];
+  tagDetailUpserts: LibraryTagDetailWithRules[];
+  deletedTagIds: string[];
+  documentTagBindingUpserts: LibraryMirrorDocumentTagBinding[];
+  deletedDocumentTagBindingIds: string[];
+  folderTagBindingUpserts: LibraryMirrorFolderTagBinding[];
+  deletedFolderTagPaths: string[];
+}
+
+export interface LibraryMirrorSnapshotUnchanged {
+  version: 1;
+  kind: "unchanged";
+  revision: string;
+  generatedAt: string;
+}
+
 export interface LibraryMirrorMutation {
   mutationId: string;
   kind: LibraryMirrorMutationKind;

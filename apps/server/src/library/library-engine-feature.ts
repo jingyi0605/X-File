@@ -113,8 +113,10 @@ export function registerLibraryCoreRoutes(
     ),
   );
   void registerTagRoutes(server, new TagController(tagService));
-  server.get("/api/library/mirror/snapshot", async (_request, reply) => {
-    reply.send(feature.libraryMirrorService.getSnapshot());
+  server.get("/api/library/mirror/snapshot", async (request, reply) => {
+    const query = request.query as { sinceRevision?: unknown };
+    const revision = typeof query.sinceRevision === "string" ? query.sinceRevision : null;
+    reply.send(feature.libraryMirrorService.getSnapshotSince(revision));
   });
   server.post("/api/library/mirror/mutations", async (request, reply) => {
     try {

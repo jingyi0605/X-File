@@ -18,6 +18,7 @@ export interface MirrorCacheState {
 const DB_NAME = "x-file-mirror";
 const DB_VERSION = 1;
 const STORE_NAME = "states";
+const INDEXED_DB_OPERATION_TIMEOUT_MS = 2000;
 const MEMORY_CACHE = new Map<string, MirrorCacheState>();
 const listeners = new Set<() => void>();
 
@@ -37,8 +38,11 @@ export async function loadMirrorCache(baseUrl: string): Promise<MirrorCacheState
     return cloneState(cached);
   }
 
-  const stored = await readIndexedDb(key).catch(() => null)
-    ?? readLocalStorage(key);
+  const indexedDbValue = await withTimeout(
+    readIndexedDb(key),
+    INDEXED_DB_OPERATION_TIMEOUT_MS,
+  ).catch(() => null);
+  const stored = indexedDbValue ?? readLocalStorage(key);
   const state = normalizeState(stored);
   MEMORY_CACHE.set(key, state);
   return cloneState(state);
@@ -51,9 +55,25 @@ export async function saveMirrorCache(
   const key = getMirrorCacheKey(baseUrl);
   const normalized = normalizeState(state);
   MEMORY_CACHE.set(key, normalized);
-  await writeIndexedDb(key, normalized).catch(() => {
-    writeLocalStorage(key, normalized);
+  await withTimeout(
+    writeIndexedDb(key, normalized),
+    INDEXED_DB_OPERATION_TIMEOUT_MS,
+  ).catch(() => undefined);
+  writeLocalStorage(key, normalized);
+  emit();
+  return cloneState(normalized);
+}
+
+export async function markMirrorCacheSynced(baseUrl: string): Promise<MirrorCacheState> {
+  const key = getMirrorCacheKey(baseUrl);
+  const current = await loadMirrorCache(baseUrl);
+  const normalized = normalizeState({
+    ...current,
+    source: "primary",
+    lastSyncedAt: new Date().toISOString(),
+    lastError: null,
   });
+  MEMORY_CACHE.set(key, normalized);
   emit();
   return cloneState(normalized);
 }
@@ -171,4 +191,22 @@ function openDatabase(): Promise<IDBDatabase> {
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error ?? new Error("IndexedDB open failed"));
   });
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: number | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = window.setTimeout(() => {
+          reject(new Error("IndexedDB operation timed out"));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+    }
+  }
 }

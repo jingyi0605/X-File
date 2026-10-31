@@ -43,4 +43,21 @@ describe("镜像模式 HTTP 会话", () => {
       })
     );
   });
+
+  it("报告响应体下载进度", async () => {
+    const payload = JSON.stringify({ ok: true, documents: ["a", "b"] });
+    fetchMock.mockResolvedValueOnce(new Response(payload, {
+      headers: { "content-length": String(new TextEncoder().encode(payload).byteLength) },
+    }));
+    const progress: Array<{ loadedBytes: number; totalBytes: number | null }> = [];
+
+    await expect(apiRequest("/api/library/mirror/snapshot", {
+      onDownloadProgress: (value) => progress.push(value),
+    })).resolves.toEqual({ ok: true, documents: ["a", "b"] });
+
+    expect(progress.at(-1)).toEqual({
+      loadedBytes: new TextEncoder().encode(payload).byteLength,
+      totalBytes: new TextEncoder().encode(payload).byteLength,
+    });
+  });
 });

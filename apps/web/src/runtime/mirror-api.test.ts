@@ -124,6 +124,7 @@ describe("mirror API cache", () => {
 
     const { listMirrorDocuments, listMirrorFiles, getMirrorSnapshot } = await import("./mirror-api");
     const model = await getMirrorSnapshot();
+    const snapshotRequestCount = fetchMock.mock.calls.length;
     const documents = await listMirrorDocuments({
       browseMode: "tag",
       selectedTagPaths: ["topic"],
@@ -135,7 +136,157 @@ describe("mirror API cache", () => {
     expect(model.revision).toBe("rev-1");
     expect(documents.items.map((item) => item.path)).toEqual(["docs/a.md"]);
     expect(files.items.map((item) => item.path)).toEqual(["docs/a.md"]);
+    expect(fetchMock).toHaveBeenCalledTimes(snapshotRequestCount);
     expect((await loadMirrorCache("http://primary.test")).source).toBe("cache");
+  });
+
+  it.each([404, 500])("falls back to the legacy library APIs when the mirror snapshot route returns %s", async (status) => {
+    const snapshot = createSnapshot();
+    fetchMock.mockImplementation(async (url) => {
+      const target = String(url);
+      if (target.endsWith("/api/library/mirror/snapshot")) {
+        return new Response(JSON.stringify({ detail: "route unavailable" }), { status });
+      }
+      if (target.endsWith("/api/library/snapshot")) {
+        return new Response(JSON.stringify(snapshot.snapshot));
+      }
+      if (target.endsWith("/api/library/config")) {
+        return new Response(JSON.stringify(snapshot.config));
+      }
+      if (target.includes("/api/library/tags")) {
+        return new Response(JSON.stringify({ items: snapshot.tagDetails }));
+      }
+      if (target.includes("/api/library/documents?")) {
+        return new Response(JSON.stringify({
+          total: snapshot.documents.length,
+          offset: 0,
+          limit: 500,
+          items: snapshot.documents,
+        }));
+      }
+      throw new Error(`unexpected request: ${target}`);
+    });
+
+    const { getMirrorSnapshot } = await import("./mirror-api");
+    const model = await getMirrorSnapshot();
+
+    expect(model.revision).toMatch(/^legacy-/);
+    expect(model.documents).toEqual(snapshot.documents);
+    expect(model.tagDetails).toEqual(snapshot.tagDetails);
+    expect(model.config.canWrite).toBe(false);
+  });
+
+  it("applies a revision-based delta to the cached mirror snapshot", async () => {
+    const snapshot = createSnapshot();
+    await saveMirrorCache("http://primary.test", {
+      snapshot,
+      pendingMutations: [],
+      syncResults: [],
+      source: "primary",
+      lastSyncedAt: "2026-10-30T00:00:00.000Z",
+      lastError: null,
+    });
+    const nextDocument = {
+      ...snapshot.documents[0],
+      documentId: "docs/b.md",
+      path: "docs/b.md",
+      title: "B",
+    };
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      version: 1,
+      kind: "delta",
+      baseRevision: snapshot.revision,
+      revision: "rev-2",
+      generatedAt: "2026-10-31T00:00:00.000Z",
+      config: snapshot.config,
+      snapshot: { ...snapshot.snapshot, documentCount: 2 },
+      documentUpserts: [nextDocument],
+      deletedDocumentIds: [],
+      tagDetailUpserts: [],
+      deletedTagIds: [],
+      documentTagBindingUpserts: [],
+      deletedDocumentTagBindingIds: [],
+      folderTagBindingUpserts: [],
+      deletedFolderTagPaths: [],
+    })));
+
+    const { getMirrorSnapshot } = await import("./mirror-api");
+    const next = await getMirrorSnapshot();
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain("sinceRevision=rev-1");
+    expect(next.revision).toBe("rev-2");
+    expect(next.documents.map((item) => item.documentId)).toEqual(["docs/a.md", "docs/b.md"]);
+    expect(next.snapshot.documentCount).toBe(2);
+  });
+
+  it("reuses the local snapshot when the primary reports the revision is unchanged", async () => {
+    const snapshot = createSnapshot();
+    await saveMirrorCache("http://primary.test", {
+      snapshot,
+      pendingMutations: [],
+      syncResults: [],
+      source: "cache",
+      lastSyncedAt: "2026-10-30T00:00:00.000Z",
+      lastError: "offline",
+    });
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      version: 1,
+      kind: "unchanged",
+      revision: snapshot.revision,
+      generatedAt: "2026-10-31T00:00:00.000Z",
+    })));
+
+    const { getMirrorSnapshot } = await import("./mirror-api");
+    const result = await getMirrorSnapshot();
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain("sinceRevision=rev-1");
+    expect(result.documents).toEqual(snapshot.documents);
+    expect(result.revision).toBe(snapshot.revision);
+    await expect(loadMirrorCache("http://primary.test")).resolves.toMatchObject({
+      source: "primary",
+      lastError: null,
+    });
+  });
+
+  it("falls back to paged library reads when a primary snapshot response stalls", async () => {
+    const snapshot = createSnapshot();
+    fetchMock.mockImplementation((url, init) => {
+      const target = String(url);
+      if (target.endsWith("/api/library/mirror/snapshot")) {
+        return new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        });
+      }
+      if (target.endsWith("/api/library/snapshot")) {
+        return Promise.resolve(new Response(JSON.stringify(snapshot.snapshot)));
+      }
+      if (target.endsWith("/api/library/config")) {
+        return Promise.resolve(new Response(JSON.stringify(snapshot.config)));
+      }
+      if (target.includes("/api/library/tags")) {
+        return Promise.resolve(new Response(JSON.stringify({ items: snapshot.tagDetails })));
+      }
+      if (target.includes("/api/library/documents?")) {
+        return Promise.resolve(new Response(JSON.stringify({
+          total: snapshot.documents.length,
+          offset: 0,
+          limit: 500,
+          items: snapshot.documents,
+        })));
+      }
+      return Promise.reject(new Error(`unexpected request: ${target}`));
+    });
+
+    vi.useFakeTimers();
+    try {
+      const { getMirrorSnapshot } = await import("./mirror-api");
+      const result = getMirrorSnapshot();
+      await vi.advanceTimersByTimeAsync(15_000);
+
+      expect((await result).documents).toEqual(snapshot.documents);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("queues offline tag changes and applies optimistic local filtering", async () => {

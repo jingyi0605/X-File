@@ -9,6 +9,8 @@ import {
   type LibraryMirrorMutation,
   type LibraryMirrorMutationBatchResult,
   type LibraryMirrorMutationResult,
+  type LibraryMirrorSnapshotDelta,
+  type LibraryMirrorSnapshotUnchanged,
   type LibraryMirrorSnapshot,
 } from "@x-file/shared";
 
@@ -16,6 +18,8 @@ import { LibraryService } from "./library-service.js";
 import { TagService } from "./tag-service.js";
 
 export class LibraryMirrorService {
+  private previousSnapshot: LibraryMirrorSnapshot | null = null;
+
   constructor(
     private readonly libraryService: LibraryService,
     private readonly tagService: TagService,
@@ -52,6 +56,68 @@ export class LibraryMirrorService {
     };
   }
 
+  getSnapshotSince(
+    revision: string | null,
+  ): LibraryMirrorSnapshot | LibraryMirrorSnapshotDelta | LibraryMirrorSnapshotUnchanged {
+    const current = this.getSnapshot();
+    const previous = this.previousSnapshot;
+    this.previousSnapshot = current;
+
+    if (revision && revision === current.revision) {
+      return {
+        version: 1,
+        kind: "unchanged",
+        revision: current.revision,
+        generatedAt: current.generatedAt,
+      } satisfies LibraryMirrorSnapshotUnchanged;
+    }
+
+    if (!revision || previous?.revision !== revision) {
+      return current;
+    }
+
+    const documents = diffRecords(previous.documents, current.documents, (item) => item.documentId);
+    const tagDetails = diffRecords(previous.tagDetails, current.tagDetails, (item) => item.id);
+    const documentTagBindings = diffRecords(
+      previous.documentTagBindings,
+      current.documentTagBindings,
+      (item) => item.documentId,
+    );
+    const folderTagBindings = diffRecords(
+      previous.folderTagBindings,
+      current.folderTagBindings,
+      (item) => item.folderPath,
+    );
+    const deltaRecordCount = documents.upserts.length + documents.deleted.length
+      + tagDetails.upserts.length + tagDetails.deleted.length
+      + documentTagBindings.upserts.length + documentTagBindings.deleted.length
+      + folderTagBindings.upserts.length + folderTagBindings.deleted.length;
+    const currentRecordCount = current.documents.length + current.tagDetails.length
+      + current.documentTagBindings.length + current.folderTagBindings.length;
+
+    if (deltaRecordCount >= 100 && deltaRecordCount / Math.max(1, currentRecordCount) >= 0.4) {
+      return current;
+    }
+
+    return {
+      version: 1,
+      kind: "delta",
+      baseRevision: previous.revision,
+      revision: current.revision,
+      generatedAt: current.generatedAt,
+      config: current.config,
+      snapshot: current.snapshot,
+      documentUpserts: documents.upserts,
+      deletedDocumentIds: documents.deleted,
+      tagDetailUpserts: tagDetails.upserts,
+      deletedTagIds: tagDetails.deleted,
+      documentTagBindingUpserts: documentTagBindings.upserts,
+      deletedDocumentTagBindingIds: documentTagBindings.deleted,
+      folderTagBindingUpserts: folderTagBindings.upserts,
+      deletedFolderTagPaths: folderTagBindings.deleted,
+    } satisfies LibraryMirrorSnapshotDelta;
+  }
+
   applyMutations(mutations: LibraryMirrorMutation[]): LibraryMirrorMutationBatchResult {
     const results = mutations.map((mutation) => this.applyMutation(mutation));
     return {
@@ -80,6 +146,26 @@ export class LibraryMirrorService {
     this.mutationStore.write(mutation.mutationId, result);
     return result;
   }
+}
+
+function diffRecords<T>(
+  previous: T[],
+  current: T[],
+  getKey: (item: T) => string,
+): { upserts: T[]; deleted: string[] } {
+  const previousByKey = new Map(previous.map((item) => [getKey(item), item]));
+  const currentByKey = new Map(current.map((item) => [getKey(item), item]));
+  return {
+    upserts: current.filter((item) => {
+      const oldValue = previousByKey.get(getKey(item));
+      return oldValue === undefined || !recordsEqual(oldValue, item);
+    }),
+    deleted: [...previousByKey.keys()].filter((key) => !currentByKey.has(key)),
+  };
+}
+
+function recordsEqual(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 class LibraryMirrorMutationStore {

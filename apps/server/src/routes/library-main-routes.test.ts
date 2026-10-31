@@ -58,6 +58,12 @@ test("文档库主路由、标签路由和 server state 都已注册", async () 
     assert.equal(Array.isArray(mirrorSnapshot.json().documents), true);
     assert.equal(Array.isArray(mirrorSnapshot.json().tagDetails), true);
     assert.equal(typeof mirrorSnapshot.json().revision, "string");
+    const unchangedMirrorSnapshot = await app.inject({
+      method: "GET",
+      url: `/api/library/mirror/snapshot?sinceRevision=${mirrorSnapshot.json().revision}`,
+    });
+    assert.equal(unchangedMirrorSnapshot.statusCode, 200);
+    assert.equal(unchangedMirrorSnapshot.json().kind, "unchanged");
 
     const createdTag = await app.inject({
       method: "POST",

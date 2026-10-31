@@ -1,5 +1,6 @@
 import { t } from "../i18n";
 import { getActiveApiBaseUrl } from "../runtime/runtime-config";
+import { getRuntimeConfigSnapshot } from "../runtime/runtime-config-store";
 import { getHttpAuthSessionToken } from "./http-auth-session";
 
 export class ApiClientError extends Error {
@@ -16,26 +17,54 @@ export class ApiClientError extends Error {
   }
 }
 
+export interface ApiDownloadProgress {
+  loadedBytes: number;
+  totalBytes: number | null;
+}
+
+export interface ApiRequestOptions extends RequestInit {
+  onDownloadProgress?: (progress: ApiDownloadProgress) => void;
+}
+
 export async function apiRequest<T>(
   path: string,
-  options: RequestInit = {}
+  options: ApiRequestOptions = {}
 ): Promise<T> {
   let response: Response;
   const apiUrl = resolveApiUrl(path);
   const sessionToken = getHttpAuthSessionToken(apiUrl);
+  const { onDownloadProgress, ...requestOptions } = options;
 
   try {
     response = await fetch(apiUrl, {
-      ...options,
+      ...requestOptions,
       credentials: sessionToken ? "omit" : "include",
       headers: {
         ...(sessionToken ? { "x-file-session": sessionToken } : {}),
-        ...(options.body ? { "content-type": "application/json" } : {}),
-        ...options.headers
+        ...(requestOptions.body ? { "content-type": "application/json" } : {}),
+        ...requestOptions.headers
       }
     });
   } catch (error) {
-    throw new ApiClientError(path, 0, error instanceof Error ? error.message : t("apiNetworkFailed"));
+    if (shouldUseMirrorDevLocalApi(apiUrl)) {
+      try {
+        response = await fetchMirrorDevLocalApi(path, requestOptions);
+      } catch {
+        throw new ApiClientError(path, 0, error instanceof Error ? error.message : t("apiNetworkFailed"));
+      }
+    } else {
+      throw new ApiClientError(path, 0, error instanceof Error ? error.message : t("apiNetworkFailed"));
+    }
+  }
+
+  if (!response.ok) {
+    if (response.status === 401 && shouldUseMirrorDevLocalApi(apiUrl)) {
+      try {
+        response = await fetchMirrorDevLocalApi(path, requestOptions);
+      } catch {
+        // 保留原始远端 401，避免开发态回退失败时隐藏真正的认证问题。
+      }
+    }
   }
 
   if (!response.ok) {
@@ -44,6 +73,26 @@ export async function apiRequest<T>(
 
   if (response.status === 204) {
     return undefined as T;
+  }
+
+  if (onDownloadProgress && response.body) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    const textChunks: string[] = [];
+    const contentLength = Number(response.headers.get("content-length"));
+    const totalBytes = Number.isFinite(contentLength) && contentLength > 0 ? contentLength : null;
+    let loadedBytes = 0;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      textChunks.push(decoder.decode(value, { stream: true }));
+      loadedBytes += value.byteLength;
+      onDownloadProgress({ loadedBytes, totalBytes });
+    }
+
+    textChunks.push(decoder.decode());
+    return JSON.parse(textChunks.join("")) as T;
   }
 
   return response.json() as Promise<T>;
@@ -76,6 +125,45 @@ export function resolveApiUrl(path: string): string {
   }
 
   return new URL(path, runtimeBase).toString();
+}
+
+function shouldUseMirrorDevLocalApi(apiUrl: string): boolean {
+  if (!import.meta.env.DEV || getRuntimeConfigSnapshot().config.mode !== "mirror") {
+    return false;
+  }
+
+  try {
+    const remote = new URL(apiUrl);
+    const page = new URL(window.location.href);
+    return (
+      remote.hostname !== "127.0.0.1"
+      && remote.hostname !== "localhost"
+      && (
+        page.port === "17322"
+        || page.hostname === "tauri.localhost"
+        || page.protocol === "tauri:"
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function fetchMirrorDevLocalApi(
+  path: string,
+  options: RequestInit,
+): Promise<Response> {
+  const apiUrl = `http://127.0.0.1:17321${path}`;
+  const sessionToken = getHttpAuthSessionToken(apiUrl);
+  return fetch(apiUrl, {
+    ...options,
+    credentials: sessionToken ? "omit" : "include",
+    headers: {
+      ...(sessionToken ? { "x-file-session": sessionToken } : {}),
+      ...(options.body ? { "content-type": "application/json" } : {}),
+      ...options.headers,
+    },
+  });
 }
 
 function jsonBody(value: unknown): BodyInit {

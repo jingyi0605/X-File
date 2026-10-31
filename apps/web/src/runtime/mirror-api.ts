@@ -1,4 +1,5 @@
 import type {
+  LibraryConfig,
   LibraryDocumentList,
   LibraryDocumentRecord,
   LibraryDocumentTagDetails,
@@ -9,17 +10,26 @@ import type {
   LibraryMirrorMutationBatchResult,
   LibraryMirrorMutationStatus,
   LibraryMirrorSnapshot,
+  LibraryMirrorSnapshotDelta,
+  LibraryMirrorSnapshotUnchanged,
+  LibrarySnapshot,
   LibraryTagDetailWithRules,
   LibraryTagNode,
 } from "@x-file/shared";
 
-import { apiRequest, postJson } from "../api/http";
+import { ApiClientError, apiRequest, postJson } from "../api/http";
 import { getRuntimeConfigSnapshot } from "./runtime-config-store";
 import {
   loadMirrorCache,
+  markMirrorCacheSynced,
   saveMirrorCache,
   type MirrorCacheState,
 } from "./mirror-cache";
+import { updateMirrorSyncProgress } from "./mirror-sync-progress";
+
+const MIRROR_SNAPSHOT_TIMEOUT_MS = 15_000;
+const LEGACY_DOCUMENT_PAGE_SIZE = 500;
+const LEGACY_DOCUMENT_PAGE_CONCURRENCY = 8;
 
 export class MirrorUnavailableError extends Error {
   readonly code = "MIRROR_SNAPSHOT_UNAVAILABLE";
@@ -36,14 +46,28 @@ export function isMirrorRuntime(): boolean {
 
 export async function getMirrorSnapshot(): Promise<LibraryMirrorSnapshot> {
   const baseUrl = getMirrorBaseUrl();
+  updateMirrorSyncProgress({
+    phase: "connecting",
+    transport: "snapshot",
+    receivedDocuments: 0,
+    totalDocuments: null,
+    receivedBytes: 0,
+    totalBytes: null,
+  });
   const cached = await loadMirrorCache(baseUrl);
   try {
-    const remote = await apiRequest<LibraryMirrorSnapshot>("/api/library/mirror/snapshot");
+    const remote = await fetchRemoteMirrorSnapshot(cached.snapshot);
     const queued = cached.pendingMutations;
+    if (queued.length === 0 && cached.snapshot?.revision === remote.revision) {
+      await markMirrorCacheSynced(baseUrl);
+      updateMirrorSyncProgress({ phase: "complete" });
+      return remote;
+    }
+    updateMirrorSyncProgress({ phase: "saving" });
     await saveMirrorCache(baseUrl, {
       snapshot: remote,
       pendingMutations: queued,
-        syncResults: cached.syncResults,
+      syncResults: cached.syncResults,
       source: "primary",
       lastSyncedAt: new Date().toISOString(),
       lastError: null,
@@ -51,6 +75,7 @@ export async function getMirrorSnapshot(): Promise<LibraryMirrorSnapshot> {
     if (queued.length > 0) {
       await flushMirrorMutations(baseUrl, queued);
       const refreshed = await apiRequest<LibraryMirrorSnapshot>("/api/library/mirror/snapshot");
+      updateMirrorSyncProgress({ phase: "saving" });
       await saveMirrorCache(baseUrl, {
         snapshot: refreshed,
         pendingMutations: [],
@@ -59,11 +84,14 @@ export async function getMirrorSnapshot(): Promise<LibraryMirrorSnapshot> {
         lastSyncedAt: new Date().toISOString(),
         lastError: null,
       });
+      updateMirrorSyncProgress({ phase: "complete" });
       return refreshed;
     }
+    updateMirrorSyncProgress({ phase: "complete" });
     return remote;
   } catch (error) {
     if (!cached.snapshot) {
+      updateMirrorSyncProgress({ phase: "failed" });
       throw new MirrorUnavailableError(
         error instanceof Error ? `${error.message}；请先连接主端完成首次同步` : undefined,
       );
@@ -74,8 +102,208 @@ export async function getMirrorSnapshot(): Promise<LibraryMirrorSnapshot> {
       lastError: error instanceof Error ? error.message : "主端不可用",
     };
     await saveMirrorCache(baseUrl, offline);
+    updateMirrorSyncProgress({ phase: "complete" });
     return materializeSnapshot(offline);
   }
+}
+
+async function fetchRemoteMirrorSnapshot(
+  cached: LibraryMirrorSnapshot | null,
+): Promise<LibraryMirrorSnapshot> {
+  updateMirrorSyncProgress({ phase: "receiving", transport: "snapshot" });
+  try {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), MIRROR_SNAPSHOT_TIMEOUT_MS);
+    try {
+      return await fetchRemoteMirrorSnapshotPayload(cached, controller.signal);
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  } catch (error) {
+    if (
+      error instanceof ApiClientError
+      && error.status !== 0
+      && error.status !== 404
+      && error.status !== 405
+      && error.status < 500
+    ) {
+      throw error;
+    }
+
+    return fetchLegacyMirrorSnapshot();
+  }
+}
+
+async function fetchRemoteMirrorSnapshotPayload(
+  cached: LibraryMirrorSnapshot | null,
+  signal: AbortSignal,
+): Promise<LibraryMirrorSnapshot> {
+  const search = new URLSearchParams();
+  if (cached) search.set("sinceRevision", cached.revision);
+  const suffix = search.size > 0 ? `?${search.toString()}` : "";
+  const remote = await apiRequest<
+    LibraryMirrorSnapshot | LibraryMirrorSnapshotDelta | LibraryMirrorSnapshotUnchanged
+  >(`/api/library/mirror/snapshot${suffix}`, {
+        signal,
+        onDownloadProgress: ({ loadedBytes, totalBytes }) => updateMirrorSyncProgress({
+          phase: "receiving",
+          receivedBytes: loadedBytes,
+          totalBytes,
+        }),
+      });
+
+  if (isUnchangedMirrorSnapshot(remote)) {
+    if (!cached || cached.revision !== remote.revision) {
+      throw new Error("主端返回了无法匹配本地缓存的镜像版本");
+    }
+    return { ...cached, generatedAt: remote.generatedAt };
+  }
+
+  if (isMirrorSnapshotDelta(remote)) {
+    if (!cached || cached.revision !== remote.baseRevision) {
+      return fetchRemoteMirrorSnapshotPayload(null, signal);
+    }
+    return applyMirrorSnapshotDelta(cached, remote);
+  }
+
+  return remote;
+}
+
+function isMirrorSnapshotDelta(
+  value: LibraryMirrorSnapshot | LibraryMirrorSnapshotDelta | LibraryMirrorSnapshotUnchanged,
+): value is LibraryMirrorSnapshotDelta {
+  return "kind" in value && value.kind === "delta";
+}
+
+function isUnchangedMirrorSnapshot(
+  value: LibraryMirrorSnapshot | LibraryMirrorSnapshotDelta | LibraryMirrorSnapshotUnchanged,
+): value is LibraryMirrorSnapshotUnchanged {
+  return "kind" in value && value.kind === "unchanged";
+}
+
+function applyMirrorSnapshotDelta(
+  cached: LibraryMirrorSnapshot,
+  delta: LibraryMirrorSnapshotDelta,
+): LibraryMirrorSnapshot {
+  return {
+    version: 1,
+    revision: delta.revision,
+    generatedAt: delta.generatedAt,
+    config: delta.config,
+    snapshot: delta.snapshot,
+    documents: applyRecordChanges(cached.documents, delta.documentUpserts, delta.deletedDocumentIds, (item) => item.documentId),
+    tagDetails: applyRecordChanges(cached.tagDetails, delta.tagDetailUpserts, delta.deletedTagIds, (item) => item.id),
+    documentTagBindings: applyRecordChanges(
+      cached.documentTagBindings,
+      delta.documentTagBindingUpserts,
+      delta.deletedDocumentTagBindingIds,
+      (item) => item.documentId,
+    ),
+    folderTagBindings: applyRecordChanges(
+      cached.folderTagBindings,
+      delta.folderTagBindingUpserts,
+      delta.deletedFolderTagPaths,
+      (item) => item.folderPath,
+    ),
+  };
+}
+
+function applyRecordChanges<T>(
+  current: T[],
+  upserts: T[],
+  deletedKeys: string[],
+  getKey: (item: T) => string,
+): T[] {
+  const next = new Map(current.map((item) => [getKey(item), item]));
+  for (const key of deletedKeys) next.delete(key);
+  for (const item of upserts) next.set(getKey(item), item);
+  return [...next.values()];
+}
+
+async function fetchLegacyMirrorSnapshot(): Promise<LibraryMirrorSnapshot> {
+  updateMirrorSyncProgress({
+    phase: "receiving",
+    transport: "legacy",
+    receivedDocuments: 0,
+    totalDocuments: null,
+    receivedBytes: 0,
+    totalBytes: null,
+  });
+  const [snapshot, config, tagPayload] = await Promise.all([
+    apiRequest<LibrarySnapshot>("/api/library/snapshot"),
+    apiRequest<LibraryConfig>("/api/library/config"),
+    apiRequest<unknown>("/api/library/tags?includeDisabled=true"),
+  ]);
+  const documents = await fetchLegacyMirrorDocuments();
+  const tagDetails = normalizeLegacyTagDetails(tagPayload);
+  const generatedAt = new Date().toISOString();
+
+  return {
+    version: 1,
+    revision: `legacy-${hashText(JSON.stringify({ snapshot, config, documents, tagDetails }))}`,
+    generatedAt,
+    config: { ...config, canWrite: false },
+    snapshot: {
+      ...snapshot,
+      tags: tagDetails.map(mapTagToNode),
+    },
+    documents,
+    tagDetails,
+    documentTagBindings: [],
+    folderTagBindings: [],
+  };
+}
+
+async function fetchLegacyMirrorDocuments(): Promise<LibraryDocumentRecord[]> {
+  const firstPage = await fetchLegacyMirrorDocumentPage(0);
+  let receivedDocuments = firstPage.items.length;
+  updateMirrorSyncProgress({
+    phase: "receiving",
+    transport: "legacy",
+    receivedDocuments,
+    totalDocuments: firstPage.total,
+    receivedBytes: 0,
+    totalBytes: null,
+  });
+  const offsets = Array.from(
+    { length: Math.ceil((firstPage.total - firstPage.items.length) / LEGACY_DOCUMENT_PAGE_SIZE) },
+    (_, index) => firstPage.items.length + index * LEGACY_DOCUMENT_PAGE_SIZE,
+  );
+  const remainingPages: LibraryDocumentRecord[][] = [];
+
+  for (let index = 0; index < offsets.length; index += LEGACY_DOCUMENT_PAGE_CONCURRENCY) {
+    const batch = offsets.slice(index, index + LEGACY_DOCUMENT_PAGE_CONCURRENCY);
+    remainingPages.push(...await Promise.all(batch.map(async (offset) => {
+      const items = (await fetchLegacyMirrorDocumentPage(offset)).items;
+      receivedDocuments += items.length;
+      updateMirrorSyncProgress({ receivedDocuments });
+      return items;
+    })));
+  }
+
+  return firstPage.items.concat(...remainingPages);
+}
+
+async function fetchLegacyMirrorDocumentPage(offset: number): Promise<LibraryDocumentList> {
+  const search = new URLSearchParams({
+    browseMode: "tag",
+    searchScope: "all",
+    searchMode: "all",
+    offset: String(offset),
+    limit: String(LEGACY_DOCUMENT_PAGE_SIZE),
+  });
+  return apiRequest<LibraryDocumentList>(`/api/library/documents?${search.toString()}`);
+}
+
+function normalizeLegacyTagDetails(value: unknown): LibraryTagDetailWithRules[] {
+  if (Array.isArray(value)) {
+    return value as LibraryTagDetailWithRules[];
+  }
+  if (!value || typeof value !== "object") {
+    return [];
+  }
+  const items = (value as { items?: unknown }).items;
+  return Array.isArray(items) ? items as LibraryTagDetailWithRules[] : [];
 }
 
 export async function listMirrorTags(): Promise<LibraryTagNode[]> {
@@ -431,6 +659,11 @@ function normalizeMutationPayload(
 }
 
 async function getUsableSnapshot(): Promise<LibraryMirrorSnapshot> {
+  const cached = await loadMirrorCache(getMirrorBaseUrl());
+  if (cached.snapshot) {
+    return materializeSnapshot(cached);
+  }
+
   try {
     return await getMirrorSnapshot();
   } catch (error) {
