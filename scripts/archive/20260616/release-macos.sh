@@ -100,6 +100,11 @@ cleanup_stale_macos_dmg_state() {
   local dmg_path="$1"
   local volume_name="$2"
   local mount_point="/Volumes/$volume_name"
+  while IFS= read -r mounted_device; do
+    [[ -z "$mounted_device" ]] && continue
+    log_warn "卸载残留 macOS 卷：$mounted_device"
+    detach_macos_hdi_device "$mounted_device"
+  done < <(mount | awk '$3 ~ /^\/Volumes\/X-File([[:space:]]|$)/ {print $1}' || true)
   while IFS= read -r dev; do
     [[ -z "$dev" ]] && continue
     log_warn "卸载残留 DMG 设备：$dev"
