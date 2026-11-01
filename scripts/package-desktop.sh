@@ -101,10 +101,19 @@ package_macos() {
 
   # Universal 构建完成后，DMG 只需要 bundle 产物；删除 Rust 编译中间文件，
   # 为签名、公证和 DMG 重建释放 runner 磁盘空间。
-  rm -rf \
-    "$ROOT_DIR/apps/desktop/src-tauri/target/${MACOS_TARGET}/release/build" \
-    "$ROOT_DIR/apps/desktop/src-tauri/target/${MACOS_TARGET}/release/deps" \
-    "$ROOT_DIR/apps/desktop/src-tauri/target/${MACOS_TARGET}/release/incremental"
+  target_root="$ROOT_DIR/apps/desktop/src-tauri/target"
+  bundle_dir="$target_root/${MACOS_TARGET}/release/bundle"
+  find "$target_root" -mindepth 1 -maxdepth 1 \
+    ! -name "$MACOS_TARGET" \
+    ! -name "release" \
+    -exec rm -rf {} +
+  find "$target_root/${MACOS_TARGET}/release" -mindepth 1 -maxdepth 1 \
+    ! -name "bundle" \
+    -exec rm -rf {} +
+  find "$target_root/release" -mindepth 1 -maxdepth 1 \
+    ! -name "macos-release" \
+    -exec rm -rf {} + 2>/dev/null || true
+  test -d "$bundle_dir/macos"
 
   if [[ -n "${APPLE_SIGN_IDENTITY:-}" && "${X_FILE_AUTO_RELEASE_MACOS:-1}" != "0" ]]; then
     sign_and_notarize_macos
