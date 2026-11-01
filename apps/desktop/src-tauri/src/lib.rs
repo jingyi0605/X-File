@@ -2917,7 +2917,6 @@ fn set_main_window_initialization_mode(
 }
 
 fn show_main_window(app: &AppHandle) {
-    let _ = app.show();
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         let saved_geometry = app
             .try_state::<Mutex<DesktopState>>()
