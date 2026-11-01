@@ -99,6 +99,13 @@ package_macos() {
   # 只让 Tauri 负责生成 .app。DMG 改为后置用 hdiutil 生成，避开 Finder AppleScript 超时。
   pnpm --dir apps/desktop exec tauri build --bundles app --target "$MACOS_TARGET"
 
+  # Universal 构建完成后，DMG 只需要 bundle 产物；删除 Rust 编译中间文件，
+  # 为签名、公证和 DMG 重建释放 runner 磁盘空间。
+  rm -rf \
+    "$ROOT_DIR/apps/desktop/src-tauri/target/${MACOS_TARGET}/release/build" \
+    "$ROOT_DIR/apps/desktop/src-tauri/target/${MACOS_TARGET}/release/deps" \
+    "$ROOT_DIR/apps/desktop/src-tauri/target/${MACOS_TARGET}/release/incremental"
+
   if [[ -n "${APPLE_SIGN_IDENTITY:-}" && "${X_FILE_AUTO_RELEASE_MACOS:-1}" != "0" ]]; then
     sign_and_notarize_macos
   else
