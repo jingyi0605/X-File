@@ -344,7 +344,7 @@ function runArtifactChecks() {
     if (countFiles(debDir, ".deb") === 0) {
       failures.push(`Linux 构建没有产出 deb：${debDir}`);
     }
-    if (countFiles(rpmDir, ".rpm") === 0) {
+    if (!version.includes("-") && countFiles(rpmDir, ".rpm") === 0) {
       failures.push(`Linux 构建没有产出 rpm：${rpmDir}`);
     }
 

@@ -17,7 +17,6 @@ done
 
 MACOS_TARGET="${X_FILE_MACOS_TARGET:-universal-apple-darwin}"
 LINUX_TARGET="${X_FILE_LINUX_TARGET:-}"
-LINUX_BUNDLES="${X_FILE_LINUX_BUNDLES:-appimage,deb,rpm}"
 
 run_verify_desktop() {
   pnpm --dir "$ROOT_DIR" run verify:desktop -- "$@"
@@ -169,8 +168,19 @@ linux_target() {
   rustc -vV | sed -n 's/^host: //p'
 }
 
+linux_bundles() {
+  if [[ -n "${X_FILE_LINUX_BUNDLES:-}" ]]; then
+    echo "$X_FILE_LINUX_BUNDLES"
+  elif grep -q -- '-' "$ROOT_DIR/VERSION"; then
+    echo "appimage,deb"
+  else
+    echo "appimage,deb,rpm"
+  fi
+}
+
 package_linux() {
   local target
+  local bundles
 
   echo "执行 Linux 打包..."
   if [[ "$SKIP_PREFLIGHT" != "1" ]]; then
@@ -187,6 +197,7 @@ package_linux() {
   fi
 
   target="$(linux_target)"
+  bundles="$(linux_bundles)"
   [[ -n "$target" ]] || {
     echo "无法确定 Linux Rust target。"
     exit 1
@@ -197,7 +208,7 @@ package_linux() {
     exit 1
   fi
 
-  pnpm --dir apps/desktop exec tauri build --bundles "$LINUX_BUNDLES" --target "$target"
+  pnpm --dir apps/desktop exec tauri build --bundles "$bundles" --target "$target"
   run_verify_desktop --platform linux --mode artifacts
 }
 

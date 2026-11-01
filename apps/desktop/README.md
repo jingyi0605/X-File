@@ -51,7 +51,7 @@ pnpm --filter @x-file/desktop build
 ## 打包边界
 
 - 根目录统一打包入口是 `bash scripts/package-desktop.sh [macos|windows|linux]`。
-- Linux 入口是 `bash scripts/package-desktop.sh linux`，默认生成 AppImage、deb 和 rpm。
+- Linux 入口是 `bash scripts/package-desktop.sh linux`；稳定版默认生成 AppImage、deb 和 rpm，预发布版默认生成 AppImage 和 deb（RPM 不接受带连字符的预发布版本号）。
 - `pnpm --filter @x-file/desktop tauri:build` 仍是底层 Tauri 命令，但不再作为仓库公开流程入口。
 - `pnpm --filter @x-file/desktop release:check` 会调用根目录 `scripts/verify-desktop.mjs --mode preflight` 检查 Tauri updater 配置结构。
 - 真实发布前必须执行 `node ../../scripts/verify-desktop.mjs --platform <平台> --mode preflight --require-real-secrets`，并配置真实 updater 私钥、公钥。国内更新清单地址是可选配置；未配置时使用 GitHub 官方源。

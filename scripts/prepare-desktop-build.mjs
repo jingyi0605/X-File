@@ -4,13 +4,13 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+const pnpm = "pnpm";
 
 function run(args) {
   const result = spawnSync(pnpm, args, {
     cwd: rootDir,
     stdio: "inherit",
-    shell: false,
+    shell: process.platform === "win32",
   });
 
   if (result.error) {

@@ -166,10 +166,20 @@ linux_target() {
   fi
 }
 
+linux_bundles() {
+  if [[ -n "${X_FILE_LINUX_BUNDLES:-}" ]]; then
+    echo "$X_FILE_LINUX_BUNDLES"
+  elif grep -q -- '-' "$ROOT_DIR/VERSION"; then
+    echo "appimage,deb"
+  else
+    echo "appimage,deb,rpm"
+  fi
+}
+
 verify_linux_artifacts() {
   local target="$1"
   local bundle_root="$ROOT_DIR/apps/desktop/src-tauri/target/$target/release/bundle"
-  local bundles="${X_FILE_LINUX_BUNDLES:-appimage,deb,rpm}"
+  local bundles="$(linux_bundles)"
   local bundle
   local extension
   local found
@@ -206,7 +216,7 @@ package_linux() {
 
   target="$(linux_target)"
   [[ -n "$target" ]] || die "无法确定 Linux Rust target，请设置 X_FILE_LINUX_TARGET。"
-  bundles="${X_FILE_LINUX_BUNDLES:-appimage,deb,rpm}"
+  bundles="$(linux_bundles)"
 
   if [[ "$DRY_RUN" == "0" ]]; then
     if ! rustup target list --installed | grep -Fx "$target" >/dev/null; then
