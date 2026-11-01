@@ -9,7 +9,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 TAURI_DIR="$REPO_DIR/apps/desktop/src-tauri"
 MACOS_RELEASE_DIR="$TAURI_DIR/target/release/macos-release"
 MACOS_TARGET="${X_FILE_MACOS_TARGET:-universal-apple-darwin}"
