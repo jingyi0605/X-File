@@ -97,6 +97,14 @@ jobs:
           security default-keychain -d user -s "$keychain_path"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
           security find-identity -v -p codesigning "$keychain_path"
+      - name: 清理 macOS runner 空间
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$HOME/Library/Developer/Xcode/DerivedData"
+          rm -rf "$HOME/Library/Developer/CoreSimulator/Caches"
+          brew cleanup -s || true
+          df -h /
       - name: 构建 macOS universal 安装包
         env:
           APPLE_SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
