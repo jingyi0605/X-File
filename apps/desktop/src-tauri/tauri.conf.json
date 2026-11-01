@@ -1,12 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "X-File",
-  "version": "0.1.0-beta.6",
+  "version": "0.1.0-beta.7",
   "identifier": "top.codingns.xfile",
   "build": {
     "beforeDevCommand": "bash -lc 'for p in ./scripts/dev-desktop-stack.sh ../scripts/dev-desktop-stack.sh ../../scripts/dev-desktop-stack.sh ../../../scripts/dev-desktop-stack.sh; do if [ -f \"$p\" ]; then exec bash \"$p\"; fi; done; echo \"dev-desktop-stack.sh not found from $(pwd)\" >&2; exit 1'",
     "devUrl": "http://127.0.0.1:17320",
-    "beforeBuildCommand": "node ../../../scripts/prepare-desktop-build.mjs",
+    "beforeBuildCommand": "node ../../scripts/prepare-desktop-build.mjs",
     "frontendDist": "../../web/dist"
   },
   "app": {
