@@ -233,9 +233,13 @@ main() {
     exit 1
   fi
   sign_macos_dmg "$release_dmg_path"
-  notarize_macos_file "$release_dmg_path"
-  staple_macos_artifact "$release_dmg_path"
-  validate_notarized_macos_release "$release_app_path" "$release_dmg_path"
+  if [[ "${X_FILE_SKIP_NOTARIZATION:-0}" == "1" ]]; then
+    log_warn "测试模式跳过 Apple notarization；.app 和 DMG 已完成 Developer ID 签名。"
+  else
+    notarize_macos_file "$release_dmg_path"
+    staple_macos_artifact "$release_dmg_path"
+    validate_notarized_macos_release "$release_app_path" "$release_dmg_path"
+  fi
 
   log_success "X-File macOS 发布流程完成！"
   log_info "产物："
