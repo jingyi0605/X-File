@@ -36,7 +36,7 @@ env:
 jobs:
   build-macos-universal:
     name: macos-universal-release
-    runs-on: macos-latest
+    runs-on: macos-15-intel
     environment: release
     permissions:
       contents: read
