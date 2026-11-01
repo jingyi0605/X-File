@@ -111,7 +111,7 @@ async function checkVersion(tag) {
 
   for (const relativePath of cargoTargets) {
     const source = await readFile(path.join(rootDir, relativePath), "utf8");
-    const actual = source.match(/\[package\][\s\S]*?\nversion = "([^"]+)"/)?.[1];
+    const actual = source.match(/\[package\][\s\S]*?\r?\nversion = "([^"]+)"/)?.[1];
     if (actual !== version) {
       mismatches.push(`${relativePath}: ${actual ?? "<missing>"}`);
     }
@@ -123,7 +123,7 @@ async function checkVersion(tag) {
     }
     const source = await readFile(path.join(rootDir, target.relativePath), "utf8");
     const pattern = new RegExp(
-      `\\[\\[package\\]\\]\\nname = "${escapeRegExp(target.packageName)}"\\nversion = "([^"]+)"`,
+      `\\[\\[package\\]\\]\\r?\\nname = "${escapeRegExp(target.packageName)}"\\r?\\nversion = "([^"]+)"`,
     );
     const actual = source.match(pattern)?.[1];
     if (actual !== version) {
@@ -168,7 +168,7 @@ async function syncCargoVersion(relativePath, version) {
   const filePath = path.join(rootDir, relativePath);
   const source = await readFile(filePath, "utf8");
   const nextSource = source.replace(
-    /(\[package\][\s\S]*?\nversion = ")([^"]+)(")/,
+    /(\[package\][\s\S]*?\r?\nversion = ")([^"]+)(")/,
     `$1${version}$3`,
   );
   if (nextSource === source) {
@@ -188,7 +188,7 @@ async function syncCargoLockVersion(relativePath, packageName, version) {
   const source = await readFile(filePath, "utf8");
   const nextSource = source.replace(
     new RegExp(
-      `(\\[\\[package\\]\\]\\nname = "${escapeRegExp(packageName)}"\\nversion = ")([^"]+)(")`,
+      `(\\[\\[package\\]\\]\\r?\\nname = "${escapeRegExp(packageName)}"\\r?\\nversion = ")([^"]+)(")`,
     ),
     `$1${version}$3`,
   );

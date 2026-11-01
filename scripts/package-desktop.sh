@@ -192,7 +192,7 @@ package_linux() {
     exit 1
   }
 
-  if ! rustup target list --installed | rg -Fx "$target" >/dev/null; then
+  if ! rustup target list --installed | grep -Fx "$target" >/dev/null; then
     echo "Rust target 未安装：$target。请先执行 rustup target add $target。" >&2
     exit 1
   fi
