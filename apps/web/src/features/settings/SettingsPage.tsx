@@ -50,6 +50,7 @@ import {
 interface SettingsPageProps {
   onSaved?: () => void;
   onClose?: () => void;
+  initialTab?: SettingsTabId;
 }
 
 interface BindingFormState {
@@ -93,7 +94,7 @@ interface LibraryBackupImportModalState {
   file: File | null;
 }
 
-type SettingsTabId = "appearance" | "library" | "integration" | "network" | "updates";
+export type SettingsTabId = "appearance" | "library" | "integration" | "network" | "updates";
 type ExtensionTabId = "all" | "text-code" | "office-table" | "image" | "audio" | "video" | "other";
 
 const LIBRARY_PRESET_EXTENSIONS = DEFAULT_LIBRARY_ALLOWED_EXTENSIONS;
@@ -162,8 +163,8 @@ const SETTINGS_TABS: Array<{
   }
 ];
 
-export function SettingsPage({ onSaved, onClose }: SettingsPageProps) {
-  const [activeTab, setActiveTab] = useState<SettingsTabId>("appearance");
+export function SettingsPage({ onSaved, onClose, initialTab = "appearance" }: SettingsPageProps) {
+  const [activeTab, setActiveTab] = useState<SettingsTabId>(initialTab);
   const [binding, setBinding] = useState<LibraryBinding | null>(null);
   const [libraryConfig, setLibraryConfig] = useState<LibraryConfig | null>(null);
   const [libraryIndexStatus, setLibraryIndexStatus] = useState<LibraryIndexStatus | null>(null);

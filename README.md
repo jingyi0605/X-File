@@ -144,40 +144,51 @@ GET /api/integration/status
 
 ## 桌面打包与发布
 
-X-File 用 Tauri 2 打包为 macOS（universal `.app` / `.dmg`）和 Windows（NSIS `.exe` / MSI）应用，通过 GitHub Releases + `tauri-plugin-updater` 提供 dev / stable 双更新通道。整体链路参考父项目 CodingNS。
+X-File 用 Tauri 2 打包为 macOS universal、Windows x86_64 和 Linux x86_64 应用，通过 GitHub Releases + 可配置的国内 HTTPS 镜像 + `tauri-plugin-updater` 提供 stable / beta 双更新通道。更新源按“国内镜像优先、GitHub 官方源回退”顺序访问，所有安装包仍使用同一套 updater 签名校验。
 
 关键文件：
 
 - `apps/desktop/src-tauri/tauri.conf.json`：bundle 目标、updater 公钥与 endpoint。
-- `apps/desktop/src-tauri/src/updater.rs`：检查 / 下载 / 安装更新，按通道（stable / dev）选择 endpoint。
+- `apps/desktop/src-tauri/src/updater.rs`：检查 / 下载 / 安装更新，按通道选择镜像优先、官方源回退的 endpoint。
 - `apps/desktop/src-tauri/src/lib.rs`：注册 updater 命令（`check_for_update` / `download_update` / `install_update` / `get_release_channel` / `set_release_channel` / `open_external_url`）。
 - `scripts/verify-desktop.mjs`：默认执行完整桌面打包验证；也支持单独跑前置检查或产物检查。
 - `scripts/package-desktop.sh`：统一做 macOS / Windows 桌面打包。
-- `scripts/sync-version.mjs`：以根 `VERSION` 为唯一真源同步全仓版本号。
+- `scripts/version.mjs`：以根 `VERSION` 为唯一真源，提供版本设置、同步和一致性检查。
+- `scripts/sync-version.mjs`：旧版本同步入口，保留兼容。
 - `scripts/archive/20260616/`：归档的历史脚本和临时工具脚本。
   - 包含原 `build-macos.sh`、`build-windows.sh`、`release-macos.sh`、`check-desktop-release-secrets.mjs`、`prepare-bundled-server.mjs` 以及临时工具脚本。
-- `.github/workflows/desktop-release.yml`：tag 触发的跨平台打包发布 CI。
+- `.github/workflows/desktop-release.yml`：手动或 tag 触发的三平台打包发布 CI。
 - `.github/workflows/ci.yml`：PR 类型检查 + 测试 + 构建。
 
 ### 版本管理
 
-版本号统一来自根目录 `VERSION` 文件（semver）。改版本后执行：
+版本号统一来自根目录 `VERSION` 文件（SemVer）。推荐使用统一命令：
 
 ```bash
-# 改 VERSION（例如 0.2.0 或 0.2.0-beta.1），再同步
-pnpm version:sync   # 同步到 package.json / tauri.conf.json / Cargo.toml / Cargo.lock
+# 设置版本并同步到所有受管理文件
+pnpm version:set -- 0.2.0-beta.1
+
+# 只同步已经修改的 VERSION
+pnpm version:sync
+
+# 检查 package、Tauri、Cargo、Cargo.lock 是否一致
+pnpm version:check
+
+# 检查 tag 是否与 VERSION 一致
+pnpm version:check -- --tag v0.2.0-beta.1
 ```
 
 ### 发布流程
 
-1. 改 `VERSION`，跑 `pnpm version:sync`，提交。
-2. 打 tag：`git tag v<VERSION>`（如 `v0.2.0` 或 `v0.2.0-beta.1`），推送。
-3. `desktop-release.yml` 自动触发：macOS universal 签名公证 + Windows 打包 + 生成 `latest.json` + 上传到 GitHub Release。
-4. 通道由版本号决定：
+1. 执行 `pnpm version:set -- <版本>`，提交版本同步文件。
+2. 推送 `v<VERSION>` tag，或在 GitHub Actions 中手动运行 `desktop-build-and-release`。
+3. 手动运行时选择构建来源；打开“创建或更新 GitHub Release”即可一次构建并发布 macOS、Windows、Linux 三个平台。
+4. 发布流程先完成所有平台构建、updater 签名和产物校验，再生成 `latest.json`、`latest-cn.json`、`release-manifest.json` 并上传 Release。
+5. 通道由版本号决定：
    - **stable**（`VERSION` 不含 `-`，如 `0.2.0`）：产物上传到版本 tag release，GitHub `releases/latest` 自动指向。客户端 stable 通道查 `releases/latest/download/latest.json`。
    - **beta**（`VERSION` 含 `-`，如 `0.2.0-beta.1`）：版本 tag release 标记为 prerelease，同时维护滚动 release `beta-latest`（含 `latest.json` 指针）。客户端 beta 通道查 `releases/download/beta-latest/latest.json`。
 
-### 必需的 secrets
+### 必需的 secrets 和 Variables
 
 在仓库 Settings → Secrets（或 `release` environment）配置：
 
@@ -190,7 +201,9 @@ Tauri updater 签名：
 
 - `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`：minisign 私钥，签更新包。
 - `X_FILE_UPDATER_PUBLIC_KEY`（secret）：公钥，值必须与 `tauri.conf.json` 的 `plugins.updater.pubkey` 一致。
-- `X_FILE_UPDATER_ENDPOINT`（vars）：stable URL 占位（双通道下运行时按通道选，仅校验用）。
+- `X_FILE_UPDATER_ENDPOINT_STABLE`（可选 Variable）：国内 stable `latest-cn.json` 完整 HTTPS 地址。
+- `X_FILE_UPDATER_ENDPOINT_BETA`（可选 Variable）：国内 beta `latest-cn.json` 完整 HTTPS 地址。
+- `X_FILE_UPDATER_ASSET_BASE_URL`（可选 Variable）：国内安装包镜像基础地址。可包含 `{tag}`，例如 `https://cdn.example.com/x-file/{tag}`；清单会把安装包 URL 写成该地址下的文件名。
 
 Windows 代码签名默认不做（沿用父项目现状），仅保留 Tauri updater 的 minisign 签名保证自动更新可验签。
 
@@ -206,9 +219,15 @@ Windows self-hosted 实机构建入口（手动，保留用于实机调试）：
 .github/workflows/x-file-windows-build.yml
 ```
 
+### 中国大陆网络配置
+
+国内镜像必须提供 HTTPS，并同步同一版本的 `latest-cn.json`、`release-manifest.json`、安装包和 `.sig` 文件。发布流程同时生成 `latest.json`（官方资产 URL）和 `latest-cn.json`（国内资产 URL），这样国内源请求失败时，客户端回退到 GitHub 官方源仍然使用官方资产地址。更新清单可以放在国内 CDN 或对象存储上，客户端启动时先请求 `X_FILE_UPDATER_ENDPOINT_STABLE` / `X_FILE_UPDATER_ENDPOINT_BETA`，失败后自动请求 GitHub 官方源。镜像只改变传输路径，不改变 Tauri updater 公钥和签名验证。
+
+未配置国内 Variables 时，应用仍直接使用 GitHub 官方源；配置后不需要重新设计客户端更新协议，只需让镜像保持文件名和清单字段不变。
+
 ## 当前边界
 
-- 已建立 dev/stable 双更新通道（GitHub Releases + Tauri updater）和 tag 触发的跨平台发布 CI；macOS 签名公证复用 Apple Developer ID 证书，Windows 不做 authenticode 签名（首次运行有 SmartScreen 警告）。
+- 已建立 stable/beta 双更新通道（国内镜像优先 + GitHub Releases 回退 + Tauri updater）和手动/tag 触发的三平台发布 CI；桌面应用启动后会按通道定期后台检查更新，发现新版本时提示用户进入更新面板安装；macOS 签名公证复用 Apple Developer ID 证书，Windows 不做 authenticode 签名（首次运行有 SmartScreen 警告）。
 - 不主动启动长期 dev server。
 - 已实现基础系统托盘菜单；不实现开机自启和 deep link 注册。
 - 文档库索引不依赖 Node 或 SQLite。独立 Web/HTTP 功能的 Node 依赖由对应模块维护，不能假设用户机器一定有 Node。

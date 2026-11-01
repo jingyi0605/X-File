@@ -397,14 +397,19 @@ fn build_updater(
   app: &AppHandle,
   channel: &str,
 ) -> Result<tauri_plugin_updater::Updater, String> {
-  let endpoint = resolve_updater_endpoint(channel);
+  let endpoints = resolve_updater_endpoints(channel);
   let builder = app
     .updater_builder()
-    .endpoints(vec![
-      endpoint
-        .parse()
-        .map_err(|error| format!("解析 updater endpoint 失败: {error}"))?,
-    ])
+    .endpoints(
+      endpoints
+        .into_iter()
+        .map(|endpoint| {
+          endpoint
+            .parse()
+            .map_err(|error| format!("解析 updater endpoint 失败：{error}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?,
+    )
     .map_err(|error| format!("配置 updater endpoint 失败: {error}"))?;
 
   // pubkey 不显式注入：沿用 tauri.conf.json 的 plugins.updater.pubkey（X-File 已写入真实公钥）。
@@ -416,13 +421,70 @@ fn build_updater(
     .map_err(|error| format!("初始化桌面 updater 失败: {error}"))
 }
 
-/// 双通道 endpoint 分叉。这是 X-File 相对父项目的核心增强：
-/// 父项目此处 `let _ = channel;` 永远返回 stable URL，只有单通道；
-/// X-File 按 channel 选 stable（GitHub 原生 latest）或 beta（beta-latest 滚动 tag）。
-fn resolve_updater_endpoint(channel: &str) -> String {
-  match channel {
-    "beta" => BETA_UPDATER_MANIFEST_URL.to_string(),
-    _ => STABLE_UPDATER_MANIFEST_URL.to_string(),
+/// 按通道返回更新源，国内镜像（如果在构建时配置）优先，GitHub 官方源回退。
+///
+/// 镜像地址通过构建环境注入，应用运行时不读取环境变量，避免用户机器上的
+/// 环境差异改变更新信任边界。所有 endpoint 仍然使用同一份 updater 公钥验签。
+fn resolve_updater_endpoints(channel: &str) -> Vec<String> {
+  let stable = option_env!("X_FILE_UPDATER_ENDPOINT_STABLE");
+  let beta = option_env!("X_FILE_UPDATER_ENDPOINT_BETA");
+  let legacy = option_env!("X_FILE_UPDATER_ENDPOINT");
+  resolve_updater_endpoints_with_config(channel, stable, beta, legacy)
+}
+
+fn resolve_updater_endpoints_with_config(
+  channel: &str,
+  stable: Option<&str>,
+  beta: Option<&str>,
+  legacy: Option<&str>,
+) -> Vec<String> {
+  let configured = match channel {
+    "beta" => beta.or(legacy),
+    _ => stable.or(legacy),
+  };
+  let official = match channel {
+    "beta" => BETA_UPDATER_MANIFEST_URL,
+    _ => STABLE_UPDATER_MANIFEST_URL,
+  };
+  let mut endpoints = Vec::with_capacity(2);
+  if let Some(endpoint) = configured.filter(|value| !value.trim().is_empty()) {
+    endpoints.push(endpoint.trim_end_matches('/').to_string());
+  }
+  if !endpoints.iter().any(|endpoint| endpoint == official) {
+    endpoints.push(official.to_string());
+  }
+  endpoints
+}
+
+#[cfg(test)]
+mod tests {
+  use super::resolve_updater_endpoints_with_config;
+
+  #[test]
+  fn domestic_endpoint_is_prioritized_before_official_endpoint() {
+    let endpoints = resolve_updater_endpoints_with_config(
+      "stable",
+      Some("https://mirror.example/stable/latest.json"),
+      None,
+      None,
+    );
+
+    assert_eq!(endpoints[0], "https://mirror.example/stable/latest.json");
+    assert_eq!(endpoints.len(), 2);
+    assert!(endpoints[1].starts_with("https://github.com/"));
+  }
+
+  #[test]
+  fn beta_uses_beta_mirror_and_deduplicates_official_endpoint() {
+    let official = "https://github.com/jingyi0605/X-File/releases/download/beta-latest/latest.json";
+    let endpoints = resolve_updater_endpoints_with_config(
+      "beta",
+      None,
+      Some(official),
+      None,
+    );
+
+    assert_eq!(endpoints, vec![official.to_string()]);
   }
 }
 

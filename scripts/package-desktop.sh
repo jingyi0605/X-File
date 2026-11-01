@@ -16,6 +16,8 @@ for arg in "$@"; do
 done
 
 MACOS_TARGET="${X_FILE_MACOS_TARGET:-universal-apple-darwin}"
+LINUX_TARGET="${X_FILE_LINUX_TARGET:-}"
+LINUX_BUNDLES="${X_FILE_LINUX_BUNDLES:-appimage,deb,rpm}"
 
 run_verify_desktop() {
   pnpm --dir "$ROOT_DIR" run verify:desktop -- "$@"
@@ -26,6 +28,10 @@ is_windows_env() {
     MINGW*|MSYS*|CYGWIN*) return 0 ;;
     *) [[ "${OS:-}" == "Windows_NT" ]] ;;
   esac
+}
+
+is_linux_env() {
+  [[ "$(uname -s)" == "Linux" ]]
 }
 
 find_built_macos_app() {
@@ -154,10 +160,53 @@ package_windows() {
   pnpm --filter @x-file/desktop build
 }
 
+linux_target() {
+  if [[ -n "$LINUX_TARGET" ]]; then
+    echo "$LINUX_TARGET"
+    return 0
+  fi
+
+  rustc -vV | sed -n 's/^host: //p'
+}
+
+package_linux() {
+  local target
+
+  echo "执行 Linux 打包..."
+  if [[ "$SKIP_PREFLIGHT" != "1" ]]; then
+    run_verify_desktop --platform linux --mode preflight
+  fi
+
+  if [[ "${X_FILE_REQUIRE_RELEASE_SECRETS:-0}" == "1" ]]; then
+    run_verify_desktop --platform linux --mode preflight --require-real-secrets
+  fi
+
+  if ! is_linux_env; then
+    echo "Linux 打包必须在 Linux runner 上执行。"
+    exit 1
+  fi
+
+  target="$(linux_target)"
+  [[ -n "$target" ]] || {
+    echo "无法确定 Linux Rust target。"
+    exit 1
+  }
+
+  if ! rustup target list --installed | rg -Fx "$target" >/dev/null; then
+    echo "Rust target 未安装：$target。请先执行 rustup target add $target。" >&2
+    exit 1
+  fi
+
+  pnpm --dir apps/desktop exec tauri build --bundles "$LINUX_BUNDLES" --target "$target"
+  run_verify_desktop --platform linux --mode artifacts
+}
+
 case "$TARGET_PLATFORM" in
   auto)
     if is_windows_env; then
       package_windows
+    elif is_linux_env; then
+      package_linux
     else
       package_macos
     fi
@@ -168,13 +217,16 @@ case "$TARGET_PLATFORM" in
   windows)
     package_windows
     ;;
+  linux)
+    package_linux
+    ;;
   all)
-    package_macos
-    package_windows
+    echo "请使用 scripts/package-all-platforms.sh 执行跨平台打包。"
+    exit 1
     ;;
   *)
     echo "未知平台：$TARGET_PLATFORM"
-    echo "用法：bash scripts/package-desktop.sh [macos|windows|all|auto]"
+    echo "用法：bash scripts/package-desktop.sh [macos|windows|linux|auto]"
     exit 1
     ;;
 esac

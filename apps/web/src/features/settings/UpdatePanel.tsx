@@ -51,6 +51,7 @@ export function UpdatePanel() {
   const [checking, setChecking] = useState(false);
   const [state, setState] = useState<DesktopReleaseState | null>(null);
   const [downloading, setDownloading] = useState(false);
+  const [downloadPercent, setDownloadPercent] = useState<number | null>(null);
   const [installing, setInstalling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
@@ -61,23 +62,26 @@ export function UpdatePanel() {
       return;
     }
     void (async () => {
+      let nextChannel: Channel = "stable";
       try {
         const { invoke } = await import("@tauri-apps/api/core");
         const saved = await invoke<string>("get_release_channel");
-        setChannel(saved === "beta" ? "beta" : "stable");
+        nextChannel = saved === "beta" ? "beta" : "stable";
       } catch {
         // 读取失败回退 stable，静默处理。
       }
+      setChannel(nextChannel);
+      void handleCheck(nextChannel);
     })();
   }, [desktop]);
 
-  async function handleCheck() {
+  async function handleCheck(targetChannel = channel) {
     setError(null);
     setInfo(null);
     setChecking(true);
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      const result = await invoke<DesktopReleaseState>("check_for_update", { channel });
+      const result = await invoke<DesktopReleaseState>("check_for_update", { channel: targetChannel });
       setState(result);
       if (!result.hasUpdate) {
         setInfo(t("settingsUpdatesUpToDate"));
@@ -93,12 +97,14 @@ export function UpdatePanel() {
     setError(null);
     setInfo(null);
     setDownloading(true);
+    setDownloadPercent(0);
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const result = await invoke<UpdateDownloadResult>("download_update", { channel });
       if (!result.ok) {
         throw new Error(result.detail ?? "download failed");
       }
+      setDownloadPercent(result.progress?.percent ?? null);
       setDownloading(false);
       setInstalling(true);
       // install_update 成功后应用会退出并重启；若未退出，提示重启。
@@ -109,6 +115,7 @@ export function UpdatePanel() {
     } finally {
       setDownloading(false);
       setInstalling(false);
+      setDownloadPercent(null);
     }
   }
 
@@ -222,6 +229,13 @@ export function UpdatePanel() {
 
       {info ? <div className="inline-success">{info}</div> : null}
       {error ? <div className="inline-alert">{error}</div> : null}
+      {downloading ? (
+        <div className="inline-note">
+          {downloadPercent === null
+            ? t("settingsUpdatesDownloading")
+            : t("settingsUpdatesDownloadingProgress", { percent: downloadPercent })}
+        </div>
+      ) : null}
 
       {hasUpdate && manifest ? (
         <>

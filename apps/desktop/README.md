@@ -1,6 +1,6 @@
 # X-File 桌面壳
 
-这个目录是 X-File 第一版 Tauri 2 桌面壳。它能做 TypeScript build 和 `cargo check`，也能作为后续安装包入口；第一版已实现系统托盘菜单、关闭窗口隐藏主窗口、Tauri updater 插件接入、updater 签名配置和后端子进程托管入口。真实自动更新和 Windows 实机构建还需要外部 secrets 与 runner 验证。
+这个目录是 X-File Tauri 2 桌面壳。它支持 TypeScript build、`cargo check`、macOS universal、Windows x86_64 和 Linux x86_64 打包，并通过 Tauri updater 提供签名更新。国内 HTTPS 镜像可以作为更新首选源，GitHub Releases 作为回退源。
 
 ## 启动关系
 
@@ -50,11 +50,12 @@ pnpm --filter @x-file/desktop build
 
 ## 打包边界
 
-- 根目录统一打包入口是 `bash scripts/package-desktop.sh [macos|windows]`。
+- 根目录统一打包入口是 `bash scripts/package-desktop.sh [macos|windows|linux]`。
+- Linux 入口是 `bash scripts/package-desktop.sh linux`，默认生成 AppImage、deb 和 rpm。
 - `pnpm --filter @x-file/desktop tauri:build` 仍是底层 Tauri 命令，但不再作为仓库公开流程入口。
 - `pnpm --filter @x-file/desktop release:check` 会调用根目录 `scripts/verify-desktop.mjs --mode preflight` 检查 Tauri updater 配置结构。
-- 真实发布前必须执行 `node ../../scripts/verify-desktop.mjs --platform windows --mode preflight --require-real-secrets`，并配置真实 updater 私钥、公钥和更新地址。Windows 代码签名证书是可选项，不影响 Tauri updater 正常验签更新。
-- 当前已接入自动更新插件和 updater 签名配置，不声称已经完成真实自动更新、安装包代码签名或 Windows 实机构建验证。
+- 真实发布前必须执行 `node ../../scripts/verify-desktop.mjs --platform <平台> --mode preflight --require-real-secrets`，并配置真实 updater 私钥、公钥。国内更新清单地址是可选配置；未配置时使用 GitHub 官方源。
+- 当前 updater 支持 stable/beta 双通道、签名下载、安装重启和国内镜像优先回退；Windows 代码签名证书是可选项，不影响 Tauri updater 正常验签更新。
 - 外部后端托管入口依赖调用方提供的 Node 运行时；正式包不携带 Node runtime 或内置助手插件。
 - `scripts/archive/20260616/prepare-bundled-server.mjs` 会清理旧 Node 资源与内置助手插件，并写出 `apps/desktop/src-tauri/resources/x-file-resource-boundary.json`，用于记录主包资源边界和宿主查找优先级。
 

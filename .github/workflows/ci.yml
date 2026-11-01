@@ -50,6 +50,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: 版本一致性检查
+        run: |
+          pnpm version:check
+          pnpm test:version
+
       - name: 构建共享包（为 typecheck 提供 workspace 类型声明）
         # server 的 typecheck 依赖 @x-file/shared / @x-file/indexer 的 dist 类型声明，
         # 必须先构建它们，否则全新 CI 环境会报 Cannot find module。

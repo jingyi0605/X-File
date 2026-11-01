@@ -12214,6 +12214,88 @@ input[type="range"] {
   animation: settings-toast-in var(--transition-fast) both;
 }
 
+.update-available-toast {
+  position: fixed;
+  top: calc(var(--startup-toolbar-height) + var(--space-5));
+  inset-inline-end: var(--space-7);
+  z-index: var(--toast-z-index);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-3);
+  width: min(560px, calc(100vw - 2 * var(--space-7)));
+  padding: var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--accent) 36%, var(--glass-control-border));
+  border-radius: calc(var(--radius-control) + 4px);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 14%, transparent), transparent 64%),
+    color-mix(in srgb, var(--glass-control-surface) 94%, var(--accent) 6%);
+  box-shadow: var(--glass-panel-shadow);
+  color: var(--text-primary);
+  backdrop-filter: blur(18px) saturate(150%);
+  animation: settings-toast-in var(--transition-fast) both;
+}
+
+.update-available-toast-icon {
+  display: inline-grid;
+  width: var(--control-height-sm);
+  height: var(--control-height-sm);
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.update-available-toast-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.update-available-toast-copy strong {
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.update-available-toast-copy span {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.update-available-toast-actions {
+  grid-column: 2;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.update-available-toast-dismiss {
+  display: inline-grid;
+  width: var(--control-height-sm);
+  height: var(--control-height-sm);
+  min-height: var(--control-height-sm);
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.update-available-toast-dismiss:hover,
+.update-available-toast-dismiss:focus-visible {
+  border-color: var(--glass-control-border);
+  background: var(--panel-hover);
+  color: var(--text-primary);
+}
+
 .mirror-warning-toast {
   position: fixed;
   top: calc(var(--startup-toolbar-height) + var(--space-5));

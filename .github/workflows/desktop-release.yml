@@ -1,12 +1,22 @@
 name: desktop-build-and-release
 
-# X-File 桌面打包 + 发布 CI。
-# 参考 CodingNS .github/workflows/desktop-release.yml（去掉 Android，工具链对齐 X-File，新增 beta 通道）。
-# 触发：push tag v*（如 v0.1.0 / v0.1.0-beta.1）或手动 workflow_dispatch。
-# 通道由 VERSION 文件的 semver prerelease 后缀决定：含 -（如 -dev.1）→ beta 通道；不含 → stable 通道。
+# X-File 桌面跨平台打包与发布。
+# 手动运行时要求仓库中的 VERSION 已经提交并通过 version:check；发布按钮只负责构建、聚合和创建 Release。
+# 国内更新源通过仓库 Variables 配置，未配置时保留 GitHub 官方源。
 
 on:
   workflow_dispatch:
+    inputs:
+      ref:
+        description: "构建来源分支、tag 或提交"
+        required: true
+        default: "main"
+        type: string
+      publish_release:
+        description: "构建成功后创建或更新 GitHub Release"
+        required: true
+        default: true
+        type: boolean
   push:
     tags:
       - "v*"
@@ -14,6 +24,9 @@ on:
 env:
   NODE_VERSION: "20"
   PNPM_VERSION: "9.15.4"
+  X_FILE_UPDATER_ENDPOINT_STABLE: ${{ vars.X_FILE_UPDATER_ENDPOINT_STABLE }}
+  X_FILE_UPDATER_ENDPOINT_BETA: ${{ vars.X_FILE_UPDATER_ENDPOINT_BETA }}
+  X_FILE_UPDATER_ASSET_BASE_URL: ${{ vars.X_FILE_UPDATER_ASSET_BASE_URL }}
 
 jobs:
   build-macos-universal:
@@ -22,37 +35,39 @@ jobs:
     environment: release
     permissions:
       contents: read
-
     steps:
-      - name: Checkout
+      - name: 检出代码
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
 
-      - name: Setup pnpm
+      - name: 安装 pnpm 和 Node.js
         uses: pnpm/action-setup@v4
         with:
           version: ${{ env.PNPM_VERSION }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
-
-      - name: Setup Rust stable
+      - name: 安装 Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
-
-      - name: Cache Rust artifacts
+      - name: 缓存 Rust 构建
         uses: swatinem/rust-cache@v2
         with:
           workspaces: "./apps/desktop/src-tauri -> target"
-
-      - name: Install workspace dependencies
-        shell: bash
+      - name: 安装依赖
         run: pnpm install --frozen-lockfile
-
+      - name: 检查版本
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            node scripts/version.mjs check --tag "$GITHUB_REF_NAME"
+          else
+            pnpm version:check
+          fi
       - name: 导入 Apple 签名证书
         env:
           APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
@@ -61,46 +76,28 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          if [[ -z "${APPLE_CERTIFICATE_P12_BASE64}" || -z "${APPLE_CERTIFICATE_PASSWORD}" || -z "${APPLE_KEYCHAIN_PASSWORD}" ]]; then
-            echo "缺少 macOS 签名 secrets，请检查 APPLE_CERTIFICATE_P12_BASE64 / APPLE_CERTIFICATE_PASSWORD / APPLE_KEYCHAIN_PASSWORD" >&2
+          [[ -n "$APPLE_CERTIFICATE_P12_BASE64" && -n "$APPLE_CERTIFICATE_PASSWORD" && -n "$APPLE_KEYCHAIN_PASSWORD" ]] || {
+            echo "缺少 Apple 签名证书 secrets" >&2
             exit 1
-          fi
-
-          CERT_PATH="$RUNNER_TEMP/x-file-signing-cert.p12"
-          KEYCHAIN_PATH="$RUNNER_TEMP/x-file-signing.keychain-db"
-          export CERT_PATH
-
+          }
+          cert_path="$RUNNER_TEMP/x-file-signing-cert.p12"
+          keychain_path="$RUNNER_TEMP/x-file-signing.keychain-db"
+          export cert_path
           python3 - <<'PY'
           import base64
           import os
           from pathlib import Path
-
-          Path(os.environ["CERT_PATH"]).write_bytes(
-              base64.b64decode(os.environ["APPLE_CERTIFICATE_P12_BASE64"])
-          )
+          Path(os.environ["cert_path"]).write_bytes(base64.b64decode(os.environ["APPLE_CERTIFICATE_P12_BASE64"]))
           PY
-
-          security create-keychain -p "${APPLE_KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
-          security set-keychain-settings -lut 21600 "${KEYCHAIN_PATH}"
-          security unlock-keychain -p "${APPLE_KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
-          security import "${CERT_PATH}" \
-            -k "${KEYCHAIN_PATH}" \
-            -P "${APPLE_CERTIFICATE_PASSWORD}" \
-            -f pkcs12 \
-            -T /usr/bin/codesign \
-            -T /usr/bin/security
-          security list-keychains -d user -s "${KEYCHAIN_PATH}" login.keychain-db
-          security default-keychain -d user -s "${KEYCHAIN_PATH}"
-          security set-key-partition-list \
-            -S apple-tool:,apple:,codesign: \
-            -s \
-            -k "${APPLE_KEYCHAIN_PASSWORD}" \
-            "${KEYCHAIN_PATH}"
-          security find-identity -v -p codesigning "${KEYCHAIN_PATH}"
-
-      - name: 构建并签名公证 macOS 安装包
-        # package-desktop.sh 统一收口 macOS 打包与签名公证流程。
+          security create-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
+          security import "$cert_path" -k "$keychain_path" -P "$APPLE_CERTIFICATE_PASSWORD" -f pkcs12 -T /usr/bin/codesign -T /usr/bin/security
+          security list-keychains -d user -s "$keychain_path" login.keychain-db
+          security default-keychain -d user -s "$keychain_path"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
+          security find-identity -v -p codesigning "$keychain_path"
+      - name: 构建 macOS universal 安装包
         env:
           APPLE_SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -109,123 +106,69 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           X_FILE_UPDATER_PUBLIC_KEY: ${{ secrets.X_FILE_UPDATER_PUBLIC_KEY }}
-          X_FILE_UPDATER_ENDPOINT: ${{ vars.X_FILE_UPDATER_ENDPOINT }}
           X_FILE_REQUIRE_RELEASE_SECRETS: "1"
         shell: bash
         run: bash scripts/package-desktop.sh macos
-
-      - name: 验证 macOS 发布 DMG
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          dmg_path="apps/desktop/src-tauri/target/release/macos-release/X-File.dmg"
-          mount_dir="$RUNNER_TEMP/x-file-release-dmg"
-          expected_version="$(tr -d '[:space:]' < VERSION)"
-
-          if [[ -z "$expected_version" ]]; then
-            echo "VERSION 文件为空，无法校验 DMG 版本" >&2
-            exit 1
-          fi
-
-          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
-            tag_version="${GITHUB_REF_NAME#v}"
-            if [[ "$tag_version" != "$expected_version" ]]; then
-              echo "Git tag 与仓库版本不一致：tag=$tag_version version=$expected_version" >&2
-              exit 1
-            fi
-          fi
-
-          rm -rf "$mount_dir"
-          mkdir -p "$mount_dir"
-
-          hdiutil attach "$dmg_path" -mountpoint "$mount_dir" -nobrowse
-          trap 'hdiutil detach "$mount_dir" -quiet || true' EXIT
-
-          if [[ ! -d "$mount_dir/X-File.app" ]]; then
-            echo "DMG 中缺少 X-File.app" >&2
-            exit 1
-          fi
-
-          codesign --verify --deep --strict --verbose=2 "$mount_dir/X-File.app"
-
-          actual_version="$(
-            /usr/libexec/PlistBuddy \
-              -c "Print :CFBundleShortVersionString" \
-              "$mount_dir/X-File.app/Contents/Info.plist"
-          )"
-
-          if [[ "$actual_version" != "$expected_version" ]]; then
-            echo "DMG 中应用版本不匹配：expected=$expected_version actual=$actual_version" >&2
-            exit 1
-          fi
-
-          echo "DMG 校验通过：version=$actual_version"
-
-      - name: Upload macOS release artifacts
+      - name: 上传 macOS 产物
         uses: actions/upload-artifact@v4
         with:
           name: desktop-macos-universal
           if-no-files-found: error
           path: |
             apps/desktop/src-tauri/target/release/macos-release/X-File.dmg
-            apps/desktop/src-tauri/target/release/macos-release/X-File.app
             apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
             apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.sig
 
-  build-windows:
-    name: windows-installers
+  build-windows-x86_64:
+    name: windows-x86_64-release
     runs-on: windows-latest
     environment: release
     permissions:
       contents: read
-
     steps:
-      - name: Checkout
+      - name: 检出代码
         uses: actions/checkout@v4
-
-      - name: Setup pnpm
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
+      - name: 安装 pnpm 和 Node.js
         uses: pnpm/action-setup@v4
         with:
           version: ${{ env.PNPM_VERSION }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
-
-      - name: Setup Rust stable
+      - name: 安装 Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
-
-      - name: Cache Rust artifacts
+      - name: 缓存 Rust 构建
         uses: swatinem/rust-cache@v2
         with:
           workspaces: "./apps/desktop/src-tauri -> target"
-
-      - name: Install workspace dependencies
-        shell: bash
+      - name: 安装依赖
         run: pnpm install --frozen-lockfile
-
-      - name: Build Windows installers
-        # package-desktop.sh 检测到 Windows 环境后按 VERSION prerelease 后缀切 bundles：
-        # 预发布版（含 -）只产 NSIS exe；稳定版产 MSI + NSIS。
+      - name: 检查版本
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            node scripts/version.mjs check --tag "$GITHUB_REF_NAME"
+          else
+            pnpm version:check
+          fi
+      - name: 构建 Windows 安装包
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           X_FILE_UPDATER_PUBLIC_KEY: ${{ secrets.X_FILE_UPDATER_PUBLIC_KEY }}
-          X_FILE_UPDATER_ENDPOINT: ${{ vars.X_FILE_UPDATER_ENDPOINT }}
           X_FILE_REQUIRE_RELEASE_SECRETS: "1"
         shell: bash
         run: bash scripts/package-desktop.sh windows
-
-      - name: Upload Windows artifacts
+      - name: 上传 Windows 产物
         uses: actions/upload-artifact@v4
         with:
-          name: desktop-windows
+          name: desktop-windows-x86_64
           if-no-files-found: error
           path: |
             apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
@@ -233,62 +176,125 @@ jobs:
             apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.sig
             apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.sig
 
-      - name: 校验 Windows 产物符合版本通道
+  build-linux-x86_64:
+    name: linux-x86_64-release
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
+      - name: 安装 Linux 打包依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - name: 安装 pnpm 和 Node.js
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+      - name: 缓存 Rust 构建
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./apps/desktop/src-tauri -> target"
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+      - name: 检查版本
         shell: bash
-        run: pnpm run verify:desktop -- --platform windows --mode artifacts
+        run: |
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            pnpm version:check -- --tag "$GITHUB_REF_NAME"
+          else
+            pnpm version:check
+          fi
+      - name: 构建 Linux 安装包
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          X_FILE_UPDATER_PUBLIC_KEY: ${{ secrets.X_FILE_UPDATER_PUBLIC_KEY }}
+          X_FILE_LINUX_TARGET: x86_64-unknown-linux-gnu
+          X_FILE_REQUIRE_RELEASE_SECRETS: "1"
+        shell: bash
+        run: bash scripts/package-desktop.sh linux
+      - name: 上传 Linux 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-linux-x86_64
+          if-no-files-found: error
+          path: |
+            apps/desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*
+            apps/desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
+            apps/desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/rpm/*.rpm
 
   publish-release:
     name: publish-release
-    if: startsWith(github.ref, 'refs/tags/')
+    if: ${{ startsWith(github.ref, 'refs/tags/') || inputs.publish_release == true }}
     needs:
       - build-macos-universal
-      - build-windows
+      - build-windows-x86_64
+      - build-linux-x86_64
     runs-on: ubuntu-latest
     permissions:
       contents: write
-
+    environment: release
     steps:
-      - name: Checkout
+      - name: 检出代码
         uses: actions/checkout@v4
-
-      - name: Download bundle artifacts
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
+      - name: 安装 Python 依赖
+        run: python3 --version
+      - name: 下载三平台产物
         uses: actions/download-artifact@v4
         with:
           path: release-assets
-
-      - name: Create or update GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
+      - name: 检查版本
         shell: bash
         run: |
-          set -euo pipefail
-
-          tag_name="${GITHUB_REF_NAME}"
           version="$(tr -d '[:space:]' < VERSION)"
-          is_prerelease="false"
-          if [[ "$version" == *-* ]]; then
-            is_prerelease="true"
-          fi
-
-          if ! gh release view "${tag_name}" --repo "${GH_REPO}" >/dev/null 2>&1; then
-            gh release create "${tag_name}" \
-              --repo "${GH_REPO}" \
-              --title "${tag_name}" \
-              --notes "X-File ${tag_name} 桌面发布产物。" \
-              --prerelease="${is_prerelease}"
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            node scripts/version.mjs check --tag "$GITHUB_REF_NAME"
           else
-            gh release edit "${tag_name}" --repo "${GH_REPO}" --prerelease="${is_prerelease}"
+            node scripts/version.mjs check
           fi
-
-      - name: 生成桌面 updater latest.json
-        # 聚合各平台 .sig 签名内容 + 版本 tag 的 release asset URL，产出 Tauri updater 格式 manifest。
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          if [[ "$version" == *-* ]]; then
+            echo "IS_PRERELEASE=true" >> "$GITHUB_ENV"
+          else
+            echo "IS_PRERELEASE=false" >> "$GITHUB_ENV"
+          fi
+      - name: 创建或更新 GitHub Release 并生成更新清单
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
+          ASSET_BASE_URL: ${{ env.X_FILE_UPDATER_ASSET_BASE_URL }}
         shell: bash
         run: |
           set -euo pipefail
+          tag_name="${GITHUB_REF_NAME}"
+          if [[ "${GITHUB_REF_TYPE:-}" != "tag" ]]; then
+            tag_name="v${VERSION}"
+          fi
+          release_target="$(git rev-parse HEAD)"
+          echo "RELEASE_TAG=$tag_name" >> "$GITHUB_ENV"
+          echo "RELEASE_TARGET=$release_target" >> "$GITHUB_ENV"
+
+          if ! gh release view "$tag_name" --repo "$GH_REPO" >/dev/null 2>&1; then
+            gh release create "$tag_name" --repo "$GH_REPO" --target "$release_target" --title "$tag_name" --notes "X-File $tag_name 桌面发布产物。" --prerelease="$IS_PRERELEASE"
+          else
+            gh release edit "$tag_name" --repo "$GH_REPO" --prerelease="$IS_PRERELEASE"
+          fi
 
           python3 - <<'PY'
           import json
@@ -296,111 +302,72 @@ jobs:
           import subprocess
           from pathlib import Path
 
+          root = Path("release-assets")
           repo = os.environ["GH_REPO"]
-          tag_name = os.environ["GITHUB_REF_NAME"]
-          release_assets = Path("release-assets")
+          tag = os.environ["RELEASE_TAG"]
+          asset_base = os.environ.get("ASSET_BASE_URL", "").strip().rstrip("/")
 
-          mac_updates = sorted(release_assets.rglob("*.app.tar.gz"))
-          mac_sigs = sorted(release_assets.rglob("*.app.tar.gz.sig"))
-          win_updates = [
-              path for path in sorted(release_assets.rglob("*.exe"))
-              if not path.name.endswith(".sig")
-          ]
-          win_sigs = sorted(release_assets.rglob("*.exe.sig"))
+          def first(patterns):
+              for pattern in patterns:
+                  matches = sorted(root.rglob(pattern))
+                  if matches:
+                      return matches[0]
+              raise SystemExit(f"缺少发布文件：{patterns}")
 
-          if not mac_updates or not mac_sigs or not win_updates or not win_sigs:
-              raise SystemExit("缺少桌面 updater 产物，无法生成 latest.json")
+          def github_url(path):
+              return f"https://github.com/{repo}/releases/download/{tag}/{path.name}"
 
-          release_info = json.loads(
-              subprocess.check_output(
-                  [
-                      "gh",
-                      "release",
-                      "view",
-                      tag_name,
-                      "--repo",
-                      repo,
-                      "--json",
-                      "body,publishedAt",
-                  ],
-                  text=True,
-              )
-          )
+          def mirror_url(path):
+              if not asset_base:
+                  return github_url(path)
+              base = asset_base.replace("{tag}", tag)
+              return f"{base}/{path.name}"
 
-          version = tag_name[1:] if tag_name.startswith("v") else tag_name
-
-          def asset_url(path: Path) -> str:
-              return f"https://github.com/{repo}/releases/download/{tag_name}/{path.name}"
-
-          manifest = {
-              "version": version,
+          mac = first(["*.app.tar.gz"])
+          mac_sig = first(["*.app.tar.gz.sig"])
+          win = first(["*.exe"])
+          win_sig = first(["*.exe.sig"])
+          linux = first(["*.AppImage.tar.gz", "*.AppImage"])
+          linux_sig = first(["*.AppImage.tar.gz.sig", "*.AppImage.sig"])
+          release_info = json.loads(subprocess.check_output(["gh", "release", "view", tag, "--repo", repo, "--json", "body,publishedAt"], text=True))
+          base_manifest = {
+              "version": os.environ["VERSION"],
               "notes": release_info.get("body") or "",
               "pub_date": release_info.get("publishedAt"),
               "platforms": {
-                  "macos-universal": {
-                      "signature": mac_sigs[0].read_text(encoding="utf-8").strip(),
-                      "url": asset_url(mac_updates[0]),
-                  },
-                  "windows-x86_64": {
-                      "signature": win_sigs[0].read_text(encoding="utf-8").strip(),
-                      "url": asset_url(win_updates[0]),
-                  },
+                  "macos-universal": {"signature": mac_sig.read_text(encoding="utf-8").strip()},
+                  "windows-x86_64": {"signature": win_sig.read_text(encoding="utf-8").strip()},
+                  "linux-x86_64": {"signature": linux_sig.read_text(encoding="utf-8").strip()},
               },
           }
-
-          (release_assets / "latest.json").write_text(
-              json.dumps(manifest, ensure_ascii=False, indent=2),
-              encoding="utf-8",
-          )
-          print("latest.json 生成完成")
+          official_manifest = json.loads(json.dumps(base_manifest))
+          mirror_manifest = json.loads(json.dumps(base_manifest))
+          for name, artifact in [("macos-universal", mac), ("windows-x86_64", win), ("linux-x86_64", linux)]:
+              official_manifest["platforms"][name]["url"] = github_url(artifact)
+              mirror_manifest["platforms"][name]["url"] = mirror_url(artifact)
+          (root / "latest.json").write_text(json.dumps(official_manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          (root / "latest-cn.json").write_text(json.dumps(mirror_manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          (root / "release-manifest.json").write_text(json.dumps({"version": os.environ["VERSION"], "tag": tag, "manifest": official_manifest, "mirrorManifest": mirror_manifest}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          print("latest.json、latest-cn.json 和 release-manifest.json 生成完成")
           PY
-
-      - name: 上传 Release 资产到版本 tag
+      - name: 上传版本 Release 资产
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
-          tag_name="${GITHUB_REF_NAME}"
-
-          mapfile -d "" files < <(
-            find release-assets -type f \
-              \( -name "*.dmg" -o -name "*.msi" -o -name "*.exe" -o -name "*.sig" -o -name "*.tar.gz" -o -name "latest.json" \) \
-              -print0
-          )
-
-          if [ "${#files[@]}" -eq 0 ]; then
-            echo "No release files were found." >&2
-            exit 1
-          fi
-
-          gh release upload "${tag_name}" "${files[@]}" --repo "${GH_REPO}" --clobber
-
-      - name: 维护 beta 通道滚动 release（beta-latest）
-        # beta 版时：维护 beta-latest 滚动 release，上传 latest.json 作为指针。
-        # beta 通道客户端查 releases/download/beta-latest/latest.json，其中的 url 指向版本 tag 的安装包。
-        # stable 版时：GitHub releases/latest 自动指向最新正式版，无需维护 beta-latest。
+          mapfile -d "" files < <(find release-assets -type f \( -name "*.dmg" -o -name "*.msi" -o -name "*.exe" -o -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" -o -name "*.tar.gz" -o -name "*.sig" -o -name "*.json" \) -print0)
+          [[ "${#files[@]}" -gt 0 ]] || { echo "没有可上传的 Release 资产" >&2; exit 1; }
+          gh release upload "$RELEASE_TAG" "${files[@]}" --repo "$GH_REPO" --clobber
+      - name: 更新 beta-latest 指针
+        if: ${{ env.IS_PRERELEASE == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
-          version="$(tr -d '[:space:]' < VERSION)"
-
-          if [[ "$version" != *-* ]]; then
-            echo "稳定版 ${version}：GitHub releases/latest 自动指向，无需维护 beta-latest。"
-            exit 0
-          fi
-
-          echo "开发版 ${version}：维护 beta-latest 滚动 release。"
-          gh release delete beta-latest --yes --cleanup-tag --repo "${GH_REPO}" || true
-          gh release create beta-latest \
-            --target "$GITHUB_SHA" \
-            --prerelease \
-            --title "开发版（最新）" \
-            --notes "X-File 最新开发版自动更新清单指针。安装包在对应版本 tag 的 release 下。" \
-            --repo "${GH_REPO}"
-          gh release upload beta-latest release-assets/latest.json --repo "${GH_REPO}" --clobber
-          echo "beta-latest 已更新，beta 通道客户端将查到版本 ${version}。"
+          gh release delete beta-latest --yes --cleanup-tag --repo "$GH_REPO" || true
+          gh release create beta-latest --target "$RELEASE_TARGET" --prerelease --title "开发版（最新）" --notes "X-File 最新开发版更新清单指针。" --repo "$GH_REPO"
+          gh release upload beta-latest release-assets/latest.json release-assets/latest-cn.json release-assets/release-manifest.json --repo "$GH_REPO" --clobber

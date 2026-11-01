@@ -5,7 +5,11 @@ import { fetchHealthWithTransport, type HealthResponse } from "./api/health";
 import { toApiErrorMessage } from "./api/http";
 import { LibraryPage, type WorkbenchPlatformData } from "./features/library/LibraryPage";
 import { DetachedPreviewPage } from "./features/library/DetachedPreviewPage";
-import { SettingsPage } from "./features/settings/SettingsPage";
+import { SettingsPage, type SettingsTabId } from "./features/settings/SettingsPage";
+import {
+  DesktopUpdateNotice,
+  useDesktopUpdateNotice,
+} from "./features/settings/DesktopUpdateNotice";
 import { t } from "./i18n";
 import { usePreferencesSelector } from "./preferences/preferences-store";
 import {
@@ -40,6 +44,7 @@ interface DevHealthDebugState {
 export function App() {
   const [section, setSection] = useState<AppSection>("library");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTabId>("appearance");
   const [libraryReloadKey, setLibraryReloadKey] = useState(0);
   const [health, setHealth] = useState<HealthState>({ status: "checking" });
   const [healthDebug, setHealthDebug] = useState<DevHealthDebugState>({
@@ -50,6 +55,7 @@ export function App() {
   const [httpAuth, setHttpAuth] = useState<HttpAuthState>({ status: "checking" });
   const [authRetryKey, setAuthRetryKey] = useState(0);
   const platformData = useWorkbenchPlatformData();
+  const updateNotice = useDesktopUpdateNotice();
   usePreferencesSelector((state) => state.profile.language);
   const runtimeConfig = useRuntimeConfigSelector((state) => state.config);
 
@@ -150,7 +156,10 @@ export function App() {
       <>
         <LibraryPage
           key={libraryReloadKey}
-          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenSettings={() => {
+            setSettingsInitialTab("appearance");
+            setSettingsOpen(true);
+          }}
           platformData={platformData}
           runtimeConfig={runtimeConfig}
         />
@@ -158,6 +167,18 @@ export function App() {
           <SettingsPage
             onSaved={() => setLibraryReloadKey((current) => current + 1)}
             onClose={() => setSettingsOpen(false)}
+            initialTab={settingsInitialTab}
+          />
+        ) : null}
+        {updateNotice.notice ? (
+          <DesktopUpdateNotice
+            notice={updateNotice.notice}
+            onOpenSettings={() => {
+              updateNotice.dismiss();
+              setSettingsInitialTab("updates");
+              setSettingsOpen(true);
+            }}
+            onDismiss={updateNotice.dismiss}
           />
         ) : null}
       </>

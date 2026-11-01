@@ -39,6 +39,7 @@ finish();
 
 function runCommonChecks() {
   logStep("检查 VERSION 与 tauri.conf.json");
+  runVersionChecks();
 
   const versionPath = path.join(rootDir, "VERSION");
   if (!existsSync(versionPath)) {
@@ -95,6 +96,14 @@ function runCommonChecks() {
   }
 
   checkBundledResourceMapping(config);
+}
+
+function runVersionChecks() {
+  const args = ["scripts/version.mjs", "check"];
+  if (process.env.GITHUB_REF_TYPE === "tag" && process.env.GITHUB_REF_NAME) {
+    args.push("--tag", process.env.GITHUB_REF_NAME);
+  }
+  runScript(process.execPath, args, "检查全仓版本一致性");
 }
 
 function checkBundledResourceMapping(config) {
@@ -189,9 +198,12 @@ function runReleaseChecks() {
     ["TAURI_SIGNING_PRIVATE_KEY", "Tauri updater 私钥，用来生成更新包签名"],
     ["TAURI_SIGNING_PRIVATE_KEY_PASSWORD", "Tauri updater 私钥密码；如果私钥无密码，也要显式配置为空字符串"],
     ["X_FILE_UPDATER_PUBLIC_KEY", "Tauri updater 公钥，必须和 tauri.conf.json 的 plugins.updater.pubkey 一致"],
-    ["X_FILE_UPDATER_ENDPOINT", "真实更新清单地址，需要和 tauri.conf.json 的 updater endpoint 对齐"],
   ];
-  const optional = [];
+  const optional = [
+    ["X_FILE_UPDATER_ENDPOINT_STABLE", "中国大陆 stable 更新清单地址；未配置时使用 GitHub 官方源"],
+    ["X_FILE_UPDATER_ENDPOINT_BETA", "中国大陆 beta 更新清单地址；未配置时使用 GitHub 官方源"],
+    ["X_FILE_UPDATER_ASSET_BASE_URL", "中国大陆安装包镜像基础地址；清单生成时可用 {tag} 占位符"],
+  ];
 
   if (isWindowsPlatform(platform)) {
     optional.push(
@@ -225,13 +237,15 @@ function runReleaseChecks() {
     failures.push("X_FILE_UPDATER_PUBLIC_KEY 和 tauri.conf.json 的 plugins.updater.pubkey 不一致。");
   }
 
-  const configuredEndpoint = updater?.endpoints?.[0];
-  if (
-    process.env.X_FILE_UPDATER_ENDPOINT &&
-    configuredEndpoint &&
-    configuredEndpoint !== process.env.X_FILE_UPDATER_ENDPOINT
-  ) {
-    warnings.push("X_FILE_UPDATER_ENDPOINT 和 tauri.conf.json 的第一个 updater endpoint 不一致（双通道下仅作提醒）。");
+  const configuredEndpoints = [
+    process.env.X_FILE_UPDATER_ENDPOINT_STABLE,
+    process.env.X_FILE_UPDATER_ENDPOINT_BETA,
+    process.env.X_FILE_UPDATER_ENDPOINT,
+  ].filter(Boolean);
+  for (const endpoint of configuredEndpoints) {
+    if (!String(endpoint).startsWith("https://")) {
+      failures.push(`国内 updater endpoint 必须使用 HTTPS：${endpoint}`);
+    }
   }
 }
 
@@ -308,6 +322,45 @@ function runArtifactChecks() {
       }
     } else if (msiCount === 0) {
       failures.push(`稳定版 ${version} 必须产出 MSI。`);
+    }
+    return;
+  }
+
+  if (isLinuxPlatform(platform)) {
+    const target = process.env.X_FILE_LINUX_TARGET || detectLinuxTarget();
+    const bundleRoot = path.join(
+      rootDir,
+      "apps/desktop/src-tauri/target",
+      target,
+      "release/bundle",
+    );
+    const appImageDir = path.join(bundleRoot, "appimage");
+    const debDir = path.join(bundleRoot, "deb");
+    const rpmDir = path.join(bundleRoot, "rpm");
+
+    if (countFiles(appImageDir, ".AppImage") === 0) {
+      failures.push(`Linux 构建没有产出 AppImage：${appImageDir}`);
+    }
+    if (countFiles(debDir, ".deb") === 0) {
+      failures.push(`Linux 构建没有产出 deb：${debDir}`);
+    }
+    if (countFiles(rpmDir, ".rpm") === 0) {
+      failures.push(`Linux 构建没有产出 rpm：${rpmDir}`);
+    }
+
+    const updaterArtifact = findFirstMatching(
+      appImageDir,
+      (name) => name.endsWith(".AppImage.tar.gz") || name.endsWith(".AppImage"),
+    );
+    const updaterSignature = findFirstMatching(
+      appImageDir,
+      (name) => name.endsWith(".AppImage.tar.gz.sig") || name.endsWith(".AppImage.sig"),
+    );
+    if (!updaterArtifact) {
+      failures.push(`Linux 构建没有产出 AppImage updater 文件：${appImageDir}`);
+    }
+    if (!updaterSignature) {
+      failures.push(`Linux 构建没有产出 AppImage updater 签名：${appImageDir}`);
     }
   }
 }
@@ -390,6 +443,11 @@ function isMacosPlatform(value) {
   return normalized === "darwin" || normalized === "macos" || normalized.startsWith("macos-");
 }
 
+function isLinuxPlatform(value) {
+  const normalized = String(value).toLowerCase();
+  return normalized === "linux" || normalized.startsWith("linux-");
+}
+
 function isWindowsHost() {
   return process.platform === "win32" || process.env.OS === "Windows_NT";
 }
@@ -406,6 +464,28 @@ function findFirstExisting(dirPath, suffix) {
     return null;
   }
   return readdirSync(dirPath).find((name) => name.endsWith(suffix)) ?? null;
+}
+
+function findFirstMatching(dirPath, predicate) {
+  if (!existsSync(dirPath)) {
+    return null;
+  }
+  return readdirSync(dirPath).find(predicate) ?? null;
+}
+
+function detectLinuxTarget() {
+  if (process.platform !== "linux") {
+    return "x86_64-unknown-linux-gnu";
+  }
+  try {
+    return execFileSync("rustc", ["-vV"], { encoding: "utf8" })
+      .split("\n")
+      .find((line) => line.startsWith("host: "))
+      ?.slice("host: ".length)
+      .trim() ?? "x86_64-unknown-linux-gnu";
+  } catch {
+    return "x86_64-unknown-linux-gnu";
+  }
 }
 
 function collectMatchingFiles(dirPath, pattern) {
