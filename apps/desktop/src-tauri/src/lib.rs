@@ -7115,7 +7115,11 @@ async fn install_update(
     channel: String,
     state: State<'_, updater::DownloadedDesktopUpdateState>,
 ) -> Result<updater::UpdateInstallResult, String> {
-    Ok(updater::install_update(&app, state.inner(), &channel).await)
+    let result = updater::install_update(&app, state.inner(), &channel).await;
+    if result.ok {
+        app.request_restart();
+    }
+    Ok(result)
 }
 
 #[tauri::command]

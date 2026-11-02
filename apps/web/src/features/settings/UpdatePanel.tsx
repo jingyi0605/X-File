@@ -107,8 +107,10 @@ export function UpdatePanel() {
       setDownloadPercent(result.progress?.percent ?? null);
       setDownloading(false);
       setInstalling(true);
-      // install_update 成功后应用会退出并重启；若未退出，提示重启。
-      await invoke("install_update", { channel });
+      const installResult = await invoke<{ ok: boolean; detail: string | null }>("install_update", { channel });
+      if (!installResult.ok) {
+        throw new Error(installResult.detail ?? "update installation failed");
+      }
       setInfo(t("settingsUpdatesRestartHint"));
     } catch (err) {
       setError(describeError(err, t("settingsUpdatesCheckError")));
