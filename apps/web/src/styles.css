@@ -4205,6 +4205,10 @@ mark {
   color: var(--text-primary);
 }
 
+.settings-current strong.settings-current-latest {
+  color: var(--success);
+}
+
 .server-host-field {
   display: grid;
   gap: var(--space-2);

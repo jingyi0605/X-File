@@ -83,9 +83,6 @@ export function UpdatePanel() {
       const { invoke } = await import("@tauri-apps/api/core");
       const result = await invoke<DesktopReleaseState>("check_for_update", { channel: targetChannel });
       setState(result);
-      if (!result.hasUpdate) {
-        setInfo(t("settingsUpdatesUpToDate"));
-      }
     } catch (err) {
       setError(`${t("settingsUpdatesCheckError")} ${describeError(err, "")}`.trim());
     } finally {
@@ -161,6 +158,8 @@ export function UpdatePanel() {
   const hasUpdate = state?.hasUpdate ?? false;
   const manifest = state?.manifest;
   const currentVersion = state?.currentVersion ?? state?.runtimeInfo?.version ?? "—";
+  const latestVersion = manifest?.version
+    ?? (state && !state.hasUpdate ? t("settingsUpdatesUpToDate") : "—");
   const busy = checking || downloading || installing;
 
   return (
@@ -199,7 +198,7 @@ export function UpdatePanel() {
           </div>
           <div className="settings-current">
             <span>{t("settingsUpdatesLatestVersion")}</span>
-            <strong>{manifest?.version ?? "—"}</strong>
+            <strong className={state ? "settings-current-latest" : undefined}>{latestVersion}</strong>
           </div>
           {manifest?.publishedAt ? (
             <div className="settings-current">
