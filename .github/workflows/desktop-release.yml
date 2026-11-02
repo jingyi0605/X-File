@@ -66,7 +66,7 @@ jobs:
           if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
             node scripts/version.mjs check --tag "$GITHUB_REF_NAME"
           else
-            pnpm version:check
+            node scripts/version.mjs check
           fi
       - name: 导入 Apple 签名证书
         env:
@@ -163,7 +163,7 @@ jobs:
           if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
             node scripts/version.mjs check --tag "$GITHUB_REF_NAME"
           else
-            pnpm version:check
+            node scripts/version.mjs check
           fi
       - name: 构建 Windows 安装包
         env:
@@ -222,9 +222,9 @@ jobs:
         shell: bash
         run: |
           if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
-            pnpm version:check -- --tag "$GITHUB_REF_NAME"
+            node scripts/version.mjs check --tag "$GITHUB_REF_NAME"
           else
-            pnpm version:check
+            node scripts/version.mjs check
           fi
       - name: 构建 Linux 安装包
         env:
