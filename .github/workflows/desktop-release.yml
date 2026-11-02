@@ -282,6 +282,51 @@ jobs:
           else
             echo "IS_PRERELEASE=false" >> "$GITHUB_ENV"
           fi
+      - name: 标准化发布资产文件名
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${VERSION}"
+          mac_base="X-File_${version}_universal"
+
+          find_one() {
+            local pattern="$1"
+            find release-assets -type f -name "$pattern" -print -quit
+          }
+
+          rename_asset() {
+            local source="$1"
+            local target_name="$2"
+            [[ -n "$source" ]] || {
+              echo "缺少需要标准化的发布文件：$target_name" >&2
+              exit 1
+            }
+            local target_dir
+            target_dir="$(dirname "$source")"
+            local target="$target_dir/$target_name"
+            [[ ! -e "$target" ]] || {
+              echo "目标发布文件已存在：$target" >&2
+              exit 1
+            }
+            mv "$source" "$target"
+            echo "发布资产：$source -> $target"
+          }
+
+          rename_asset "$(find_one 'X-File.dmg')" "$mac_base.dmg"
+          rename_asset "$(find_one 'X-File.app.tar.gz')" "$mac_base.app.tar.gz"
+          rename_asset "$(find_one 'X-File.app.tar.gz.sig')" "$mac_base.app.tar.gz.sig"
+
+          while IFS= read -r -d '' file; do
+            name="$(basename "$file")"
+            case "$name" in
+              *.dmg|*.msi|*.exe|*.deb|*.rpm|*.AppImage|*.tar.gz)
+                [[ "$name" == *"$version"* ]] || {
+                  echo "可分发资产文件名缺少版本号 ${version}：$name" >&2
+                  exit 1
+                }
+                ;;
+            esac
+          done < <(find release-assets -type f -print0)
       - name: 创建或更新 GitHub Release 并生成更新清单
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -337,9 +382,13 @@ jobs:
           win_sig = first(["*.exe.sig"])
           linux = first(["*.AppImage.tar.gz", "*.AppImage"])
           linux_sig = first(["*.AppImage.tar.gz.sig", "*.AppImage.sig"])
+          version = os.environ["VERSION"]
+          for artifact in (mac, win, linux):
+              if version not in artifact.name:
+                  raise SystemExit(f"发布资产文件名缺少版本号 {version}：{artifact.name}")
           release_info = json.loads(subprocess.check_output(["gh", "release", "view", tag, "--repo", repo, "--json", "body,publishedAt"], text=True))
           base_manifest = {
-              "version": os.environ["VERSION"],
+              "version": version,
               "notes": release_info.get("body") or "",
               "pub_date": release_info.get("publishedAt"),
               "platforms": {
@@ -355,7 +404,7 @@ jobs:
               mirror_manifest["platforms"][name]["url"] = mirror_url(artifact)
           (root / "latest.json").write_text(json.dumps(official_manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
           (root / "latest-cn.json").write_text(json.dumps(mirror_manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-          (root / "release-manifest.json").write_text(json.dumps({"version": os.environ["VERSION"], "tag": tag, "manifest": official_manifest, "mirrorManifest": mirror_manifest}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          (root / "release-manifest.json").write_text(json.dumps({"version": version, "tag": tag, "manifest": official_manifest, "mirrorManifest": mirror_manifest}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
           print("latest.json、latest-cn.json 和 release-manifest.json 生成完成")
           PY
       - name: 上传版本 Release 资产
