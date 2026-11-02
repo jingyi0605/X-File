@@ -32,6 +32,7 @@ import { InterfaceIcon } from "../../shared/InterfaceIcon";
 import { DesktopModal, ModalActions } from "../../shared/modal";
 import { UpdatePanel } from "./UpdatePanel";
 import { AgentIntegrationSettings } from "./AgentIntegrationSettings";
+import { ExtensionTemplateWizard } from "./ExtensionTemplateWizard";
 import { SettingsModule } from "./SettingsModule";
 import { getRuntimeConfigSnapshot, updateRuntimeConfig } from "../../runtime/runtime-config-store";
 import {
@@ -188,6 +189,7 @@ export function SettingsPage({ onSaved, onClose, initialTab = "appearance" }: Se
     manualExtension: "",
   });
   const [activeExtensionTab, setActiveExtensionTab] = useState<ExtensionTabId>("all");
+  const [extensionTemplateWizardOpen, setExtensionTemplateWizardOpen] = useState(false);
   const [serverForm, setServerForm] = useState<ServerFormState>({
     enabled: false,
     persistent: false,
@@ -572,6 +574,17 @@ export function SettingsPage({ onSaved, onClose, initialTab = "appearance" }: Se
     setError(null);
   }
 
+  function applyExtensionTemplate(extensions: string[]): void {
+    setConfigForm((current) => ({
+      ...current,
+      allowedExtensions: sortAllowedExtensions(extensions),
+    }));
+    setActiveExtensionTab("all");
+    setExtensionTemplateWizardOpen(false);
+    setError(null);
+    setMessage(t("settingsExtensionTemplateApplied"));
+  }
+
   function openResetApplicationModal(): void {
     setResetApplicationModal({
       open: true,
@@ -863,9 +876,18 @@ export function SettingsPage({ onSaved, onClose, initialTab = "appearance" }: Se
                 />
               </label>
               <section className="affairs-extension-picker" aria-labelledby="settings-allowed-extensions-label">
-                <span id="settings-allowed-extensions-label" className="affairs-extension-picker-label">
-                  {t("settingsAllowedExtensions")}
-                </span>
+                <div className="affairs-extension-picker-heading">
+                  <span id="settings-allowed-extensions-label" className="affairs-extension-picker-label">
+                    {t("settingsAllowedExtensions")}
+                  </span>
+                  <button
+                    type="button"
+                    className="secondary-button settings-extension-template-trigger"
+                    onClick={() => setExtensionTemplateWizardOpen(true)}
+                  >
+                    {t("settingsExtensionTemplateOpen")}
+                  </button>
+                </div>
                 <div className="affairs-extension-tabs" role="tablist" aria-label={t("settingsAllowedExtensions")}>
                   {EXTENSION_TAB_DEFINITIONS.map((tab) => (
                     <button
@@ -1151,6 +1173,11 @@ export function SettingsPage({ onSaved, onClose, initialTab = "appearance" }: Se
           onClose={closeBackupImportModal}
           onSubmit={() => void confirmLibraryBackupImport()}
         />
+        <ExtensionTemplateWizard
+          open={extensionTemplateWizardOpen}
+          onApply={applyExtensionTemplate}
+          onClose={() => setExtensionTemplateWizardOpen(false)}
+        />
         <SettingsToast message={message} />
       </>
     );
@@ -1207,6 +1234,11 @@ export function SettingsPage({ onSaved, onClose, initialTab = "appearance" }: Se
         submitting={backupWorking}
         onClose={closeBackupImportModal}
         onSubmit={() => void confirmLibraryBackupImport()}
+      />
+      <ExtensionTemplateWizard
+        open={extensionTemplateWizardOpen}
+        onApply={applyExtensionTemplate}
+        onClose={() => setExtensionTemplateWizardOpen(false)}
       />
       <SettingsToast message={message} />
     </>

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -117,6 +117,59 @@ describe("SettingsPage 文档库索引配置迁移行为", () => {
     await userEvent.type(screen.getByPlaceholderText(".epub"), ".epub");
     await userEvent.click(screen.getByRole("button", { name: "添加扩展名" }));
     expect(screen.getByRole("button", { name: ".epub 自定义" })).toBeInTheDocument();
+  });
+
+  it("扩展名向导按行业和工作性质生成模板，并只回填当前表单", async () => {
+    const { SettingsPage } = await import("../SettingsPage");
+    render(<SettingsPage />);
+
+    await userEvent.click(await screen.findByRole("tab", { name: /资料库/ }));
+    await userEvent.click(screen.getByRole("button", { name: "快速选模板" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "快速索引模板" });
+    const industryGroup = within(dialog).getByRole("group", { name: "选择行业" });
+    const workGroup = within(dialog).getByRole("group", { name: "选择工作性质" });
+    expect(within(industryGroup).getAllByRole("checkbox")).toHaveLength(12);
+    expect(within(workGroup).getAllByRole("checkbox")).toHaveLength(16);
+    await userEvent.click(within(industryGroup).getByRole("checkbox", { name: /互联网/ }));
+    await userEvent.click(within(industryGroup).getByRole("checkbox", { name: /政府机关/ }));
+    await userEvent.click(within(workGroup).getByRole("checkbox", { name: /程序员/ }));
+    await userEvent.click(within(workGroup).getByRole("checkbox", { name: /数据分析师/ }));
+    expect(within(industryGroup).getByRole("checkbox", { name: /互联网/ })).toHaveAttribute("aria-checked", "true");
+    expect(within(industryGroup).getByRole("checkbox", { name: /政府机关/ })).toHaveAttribute("aria-checked", "true");
+    expect(within(workGroup).getByRole("checkbox", { name: /程序员/ })).toHaveAttribute("aria-checked", "true");
+    expect(within(workGroup).getByRole("checkbox", { name: /数据分析师/ })).toHaveAttribute("aria-checked", "true");
+    await userEvent.click(within(dialog).getByRole("button", { name: ".ts" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "应用模板" }));
+
+    expect(screen.queryByRole("dialog", { name: "快速索引模板" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: ".json" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: ".ts" })).toHaveAttribute("aria-pressed", "false");
+    expect(libraryApiMock.saveLibraryConfig).not.toHaveBeenCalled();
+    expect(screen.getByText("索引模板已应用到当前表单，请保存索引设置。")).toBeInTheDocument();
+  });
+
+  it("重新打开扩展名向导时恢复上次的行业、工作性质和扩展名调整", async () => {
+    const { SettingsPage } = await import("../SettingsPage");
+    const firstRender = render(<SettingsPage />);
+
+    await userEvent.click(await screen.findByRole("tab", { name: /资料库/ }));
+    await userEvent.click(screen.getByRole("button", { name: "快速选模板" }));
+    const firstDialog = await screen.findByRole("dialog", { name: "快速索引模板" });
+    await userEvent.click(within(firstDialog).getByRole("checkbox", { name: /政府机关/ }));
+    await userEvent.click(within(firstDialog).getByRole("checkbox", { name: /设计师/ }));
+    await userEvent.click(within(firstDialog).getByRole("button", { name: ".jpg" }));
+    await userEvent.click(within(firstDialog).getByRole("button", { name: "关闭" }));
+    firstRender.unmount();
+
+    render(<SettingsPage />);
+    await userEvent.click(await screen.findByRole("tab", { name: /资料库/ }));
+    await userEvent.click(screen.getByRole("button", { name: "快速选模板" }));
+    const secondDialog = await screen.findByRole("dialog", { name: "快速索引模板" });
+
+    expect(within(secondDialog).getByRole("checkbox", { name: /政府机关/ })).toHaveAttribute("aria-checked", "true");
+    expect(within(secondDialog).getByRole("checkbox", { name: /设计师/ })).toHaveAttribute("aria-checked", "true");
+    expect(within(secondDialog).getByRole("button", { name: ".jpg" })).toHaveAttribute("aria-pressed", "false");
   });
 
   it("文档库设置可以切换文件夹单击打开方式并保存到配置", async () => {

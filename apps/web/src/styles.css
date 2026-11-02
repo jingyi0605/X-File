@@ -20,6 +20,7 @@
   --settings-textarea-min-height: calc(2 * var(--control-height-sm));
   --settings-module-title-size: 13px;
   --settings-module-description-size: 12px;
+  --settings-extension-template-preview-min-height: 108px;
   --library-task-center-width: 420px;
   --library-task-title-size: 12px;
   --library-task-category-size: calc(var(--library-task-title-size) - 1px);
@@ -2933,6 +2934,34 @@ mark {
   gap: 12px;
 }
 
+.library-init-extension-template-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  border: 1px solid var(--library-init-card-border);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--glass-tint) 72%, transparent);
+  padding: var(--space-3) var(--space-4);
+}
+
+.library-init-extension-template-copy {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-1);
+}
+
+.library-init-extension-template-copy strong {
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.library-init-extension-template-copy span {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .library-init-ready-card {
   display: grid;
   gap: 6px;
@@ -3152,6 +3181,11 @@ mark {
   .library-init-mode-grid,
   .library-init-path-row {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .library-init-extension-template-row {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .library-init-panel,
@@ -4085,10 +4119,103 @@ mark {
   gap: var(--space-3);
 }
 
+.affairs-extension-picker-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
 .affairs-extension-picker-label {
   color: var(--text-secondary);
   font-size: 12px;
   font-weight: 800;
+}
+
+.settings-extension-template-trigger {
+  flex: 0 0 auto;
+}
+
+.settings-extension-template-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  align-items: start;
+  gap: var(--space-4);
+}
+
+.settings-extension-template-choices {
+  display: grid;
+  align-content: start;
+  gap: var(--space-4);
+}
+
+.settings-extension-template-options {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: start;
+  gap: var(--space-1);
+}
+
+.settings-extension-template-option {
+  display: grid;
+  align-content: start;
+  justify-items: start;
+  min-width: 0;
+  min-height: var(--control-height-lg);
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--glass-control-border);
+  border-radius: var(--radius-control);
+  background: var(--glass-control-surface);
+  color: var(--text-secondary);
+  text-align: left;
+  box-shadow: var(--glass-control-shadow);
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.settings-extension-template-option:hover {
+  border-color: var(--app-button-border-hover);
+  background: var(--glass-control-hover);
+  color: var(--text-primary);
+}
+
+.settings-extension-template-option.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--glass-control-surface));
+  color: var(--text-primary);
+  box-shadow: var(--selection-glow);
+}
+
+.settings-extension-template-option strong {
+  color: inherit;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.settings-extension-template-option span,
+.settings-extension-template-hint,
+.settings-extension-template-count {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.settings-extension-template-preview {
+  min-height: var(--settings-extension-template-preview-min-height);
+  align-content: start;
+}
+
+.settings-extension-template-chip-list {
+  min-height: var(--settings-extension-template-preview-min-height);
+  align-content: start;
+}
+
+.settings-extension-template-chip-list .affairs-extension-chip {
+  cursor: pointer;
+}
+
+.settings-extension-template-hint {
+  margin: 0;
 }
 
 .affairs-extension-tabs {
@@ -12092,6 +12219,27 @@ input[type="range"] {
 
 .settings-modal-card > .desktop-modal-header {
   flex: 0 0 auto;
+}
+
+@media (max-width: 760px) {
+  .affairs-extension-picker-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .settings-extension-template-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-extension-template-options {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 440px) {
+  .settings-extension-template-options {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .settings-modal-body {
