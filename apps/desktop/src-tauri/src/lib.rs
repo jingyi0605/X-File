@@ -30,6 +30,8 @@ use notify::{Config as NotifyConfig, Event, RecommendedWatcher, RecursiveMode, W
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
+#[cfg(target_os = "macos")]
+use std::ffi::CStr;
 use std::env;
 use std::fs;
 use std::net::Ipv4Addr;
@@ -44,14 +46,21 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow, Window, WindowEve
 
 #[cfg(target_os = "macos")]
 use {
+    objc2::{
+        ffi,
+        runtime::{AnyClass, AnyObject, Imp, Sel},
+        MainThreadOnly,
+    },
+    objc2::rc::Retained,
     objc2::MainThreadMarker,
     objc2_app_kit::{
         NSAppearance, NSAppearanceCustomization, NSAppearanceNameVibrantDark,
-        NSAppearanceNameVibrantLight, NSAutoresizingMaskOptions, NSColor, NSView,
-        NSViewLayerContentsRedrawPolicy, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
-        NSVisualEffectState, NSVisualEffectView, NSWindow, NSWindowOrderingMode,
+        NSAppearanceNameVibrantLight, NSAutoresizingMaskOptions, NSColor, NSMenu, NSMenuItem,
+        NSView, NSViewLayerContentsRedrawPolicy, NSVisualEffectBlendingMode,
+        NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindow,
+        NSWindowOrderingMode,
     },
-    objc2_foundation::{NSPoint, NSRect, NSSize},
+    objc2_foundation::{NSPoint, NSRect, NSSize, NSString},
 };
 
 const MAIN_WINDOW_LABEL: &str = "main";
@@ -61,9 +70,14 @@ const MENU_ENABLE_PERSISTENCE: &str = "enable_persistence";
 const MENU_DISABLE_PERSISTENCE: &str = "disable_persistence";
 const MENU_START_BACKEND: &str = "start_backend";
 const MENU_STOP_BACKEND: &str = "stop_backend";
+const MENU_OPEN_SETTINGS: &str = "open_settings";
 const MENU_QUIT: &str = "quit";
 const LIBRARY_CONTEXT_MENU_ID_PREFIX: &str = "xfile_library_context:";
 const LIBRARY_CONTEXT_MENU_ACTION_EVENT: &str = "x-file-library-context-menu-action";
+const OPEN_SETTINGS_EVENT: &str = "x-file-open-settings";
+
+#[cfg(target_os = "macos")]
+static MACOS_APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
 
 #[cfg(target_os = "macos")]
 const MACOS_NATIVE_LEFT_SIDEBAR_WIDTH: f64 = 272.0;
@@ -2960,6 +2974,83 @@ fn quit_application(app: &AppHandle) {
     app.exit(0);
 }
 
+#[cfg(target_os = "macos")]
+extern "C-unwind" fn macos_open_settings(
+    _this: &AnyObject,
+    _selector: Sel,
+    _sender: &AnyObject,
+) {
+    if let Some(app) = MACOS_APP_HANDLE.get() {
+        let _ = app.emit(OPEN_SETTINGS_EVENT, ());
+    }
+}
+
+#[cfg(target_os = "macos")]
+extern "C-unwind" fn macos_application_dock_menu(
+    this: &AnyObject,
+    _selector: Sel,
+    _sender: &AnyObject,
+) -> Retained<NSMenu> {
+    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+    let menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str("X-File"));
+    let item = unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(
+            NSMenuItem::alloc(mtm),
+            &NSString::from_str("设置…"),
+            Some(Sel::register(CStr::from_bytes_with_nul_unchecked(
+                b"openXFileSettings:\0",
+            ))),
+            &NSString::from_str(""),
+        )
+    };
+    unsafe {
+        item.setTarget(Some(this));
+    }
+    menu.addItem(&item);
+    menu
+}
+
+#[cfg(target_os = "macos")]
+fn setup_macos_dock_menu(app: &AppHandle) -> tauri::Result<()> {
+    let _ = MACOS_APP_HANDLE.set(app.clone());
+    let Some(delegate_class) = (unsafe {
+        AnyClass::get(CStr::from_bytes_with_nul_unchecked(
+            b"TaoAppDelegateParent\0",
+        ))
+    }) else {
+        eprintln!("Tao macOS application delegate class was not found");
+        return Ok(());
+    };
+
+    unsafe {
+        let dock_menu_selector = Sel::register(CStr::from_bytes_with_nul_unchecked(
+            b"applicationDockMenu:\0",
+        ));
+        let settings_selector = Sel::register(CStr::from_bytes_with_nul_unchecked(
+            b"openXFileSettings:\0",
+        ));
+        ffi::class_addMethod(
+            delegate_class as *const AnyClass as *mut AnyClass,
+            dock_menu_selector,
+            std::mem::transmute::<
+                extern "C-unwind" fn(&AnyObject, Sel, &AnyObject) -> Retained<NSMenu>,
+                Imp,
+            >(macos_application_dock_menu),
+            b"@@:@\0".as_ptr().cast(),
+        );
+        ffi::class_addMethod(
+            delegate_class as *const AnyClass as *mut AnyClass,
+            settings_selector,
+            std::mem::transmute::<
+                extern "C-unwind" fn(&AnyObject, Sel, &AnyObject),
+                Imp,
+            >(macos_open_settings),
+            b"v@:@\0".as_ptr().cast(),
+        );
+    }
+    Ok(())
+}
+
 fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
     let id = event.id().as_ref();
     if let Some(action_id) = id.strip_prefix(LIBRARY_CONTEXT_MENU_ID_PREFIX) {
@@ -2998,9 +3089,33 @@ fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
                 state.backend.stop();
             }
         }
+        MENU_OPEN_SETTINGS => {
+            let _ = app.emit(OPEN_SETTINGS_EVENT, ());
+        }
         MENU_QUIT => quit_application(app),
         _ => {}
     }
+}
+
+fn build_application_menu<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> tauri::Result<Menu<R>> {
+    let menu = Menu::default(app)?;
+    #[cfg(target_os = "macos")]
+    let settings = MenuItemBuilder::with_id(MENU_OPEN_SETTINGS, "设置…").build(app)?;
+
+    #[cfg(target_os = "macos")]
+    for item in menu.items()? {
+        let Some(submenu) = item.as_submenu() else {
+            continue;
+        };
+        if submenu.text()? == app.package_info().name {
+            submenu.insert(&settings, 1)?;
+            break;
+        }
+    }
+
+    Ok(menu)
 }
 
 fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
@@ -7177,6 +7292,7 @@ fn try_run_library_worker_cli_from_args(args: &[String]) -> Result<String, Strin
 
 pub fn run() {
     tauri::Builder::default()
+        .menu(build_application_menu)
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Mutex::new(DesktopState::new()))
@@ -7200,6 +7316,7 @@ pub fn run() {
             }
             #[cfg(target_os = "macos")]
             {
+                setup_macos_dock_menu(app.handle())?;
                 configure_macos_window_chrome(app)?;
             }
             Ok(())
@@ -7286,6 +7403,14 @@ pub fn run() {
                     return;
                 };
 
+                #[cfg(target_os = "macos")]
+                if !state.is_quitting {
+                    api.prevent_close();
+                    let _ = window.hide();
+                    return;
+                }
+
+                #[cfg(not(target_os = "macos"))]
                 if state.backend_persistent && !state.is_quitting {
                     api.prevent_close();
                     let _ = window.hide();

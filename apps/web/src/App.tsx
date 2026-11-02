@@ -105,6 +105,37 @@ export function App() {
   }, [authRetryKey, runtimeConfig.mode, runtimeConfig.remoteApiBaseUrl]);
 
   useEffect(() => {
+    if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
+      return;
+    }
+
+    let active = true;
+    let unlisten: (() => void) | null = null;
+
+    void import("@tauri-apps/api/event")
+      .then(({ listen }) => listen("x-file-open-settings", () => {
+        if (!active) {
+          return;
+        }
+        setSection("library");
+        setSettingsInitialTab("appearance");
+        setSettingsOpen(true);
+      }))
+      .then((cleanup) => {
+        if (!active) {
+          void cleanup();
+          return;
+        }
+        unlisten = cleanup;
+      });
+
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
     if (!isRuntimeConfigured(runtimeConfig)) {
       setHealth({ status: "offline", error: t("runtimeMirrorApiRequired") });
       setHealthDebug({
