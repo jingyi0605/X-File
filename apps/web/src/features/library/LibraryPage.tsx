@@ -130,6 +130,7 @@ import {
 } from "./library-view-state";
 import { MirrorStatusNotice } from "./MirrorStatusNotice";
 import { MirrorSyncProgressPanel } from "./MirrorSyncProgressPanel";
+import { ExtensionTemplateWizard } from "../settings/ExtensionTemplateWizard";
 
 export interface WorkbenchPlatformData {
   runtimePlatform: "desktop" | "web";
@@ -2463,6 +2464,8 @@ function LibraryBindingPanel({
   const [wizardStep, setWizardStep] = useState<"mode" | "setup">(
     runtimeConfig.mode === "mirror" ? "setup" : "mode",
   );
+  const [extensionTemplateWizardOpen, setExtensionTemplateWizardOpen] = useState(false);
+  const [initializationAllowedExtensions, setInitializationAllowedExtensions] = useState<string[] | null>(null);
   const [mirrorSourceReady, setMirrorSourceReady] = useState(runtimeConfig.mode === "mirror" ? !library.requiresInitialization : false);
   const language = usePreferencesSelector((state) => state.profile.language);
   const { theme, setTheme } = useTheme();
@@ -2592,7 +2595,9 @@ function LibraryBindingPanel({
         remoteApiBaseUrl,
         localRootDir: mirrorLocalRootDir,
       });
-      await library.bindLibrary(nextRootDir);
+      await library.bindLibrary(nextRootDir, {
+        allowedExtensions: initializationAllowedExtensions ?? undefined,
+      });
       setRootDir("");
     } catch (err) {
       setError(toApiErrorMessage(err));
@@ -2686,6 +2691,13 @@ function LibraryBindingPanel({
     setModeDraft(nextMode);
     setError(null);
     setMessage(null);
+  }
+
+  function applyInitializationExtensionTemplate(extensions: string[]): void {
+    setInitializationAllowedExtensions(extensions);
+    setExtensionTemplateWizardOpen(false);
+    setError(null);
+    setMessage(t("libraryInitExtensionTemplateApplied", { count: extensions.length }));
   }
 
   function toggleTheme(): void {
@@ -2914,6 +2926,24 @@ function LibraryBindingPanel({
                   <p className="muted-copy">
                     {t("libraryInitDefaultRootHint", { rootDir: defaultRootDir || rootDir })}
                   </p>
+                  <div className="library-init-extension-template-row">
+                    <div className="library-init-extension-template-copy">
+                      <strong>{t("libraryInitExtensionTemplateTitle")}</strong>
+                      <span>
+                        {initializationAllowedExtensions
+                          ? t("libraryInitExtensionTemplateSelected", { count: initializationAllowedExtensions.length })
+                          : t("libraryInitExtensionTemplateDescription")}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={busy}
+                      onClick={() => setExtensionTemplateWizardOpen(true)}
+                    >
+                      {t("libraryInitExtensionTemplateOpen")}
+                    </button>
+                  </div>
                   <div className="button-row">
                     <button
                       type="submit"
@@ -2963,6 +2993,11 @@ function LibraryBindingPanel({
           </div>
         </div>
       </section>
+      <ExtensionTemplateWizard
+        open={extensionTemplateWizardOpen}
+        onApply={applyInitializationExtensionTemplate}
+        onClose={() => setExtensionTemplateWizardOpen(false)}
+      />
       <DesktopModal
         open={browserOpen}
         title={t("hostDirectoryBrowserTitle")}

@@ -22,6 +22,7 @@ import {
   listLibraryTags,
   operateLibraryFile,
   requestLibraryRefresh,
+  saveLibraryConfig,
   saveLibraryBinding,
   updateLibraryFavorites,
   type ListDocumentsQuery,
@@ -126,7 +127,7 @@ export interface LibraryState {
   selectedFolderEntries: Array<Extract<LibraryEntry, { kind: "folder" | "tag-directory" }>>;
   debug: LibraryDebugState;
   setViewState: (updater: LibraryViewState | ((current: LibraryViewState) => LibraryViewState)) => void;
-  bindLibrary: (rootDir: string) => Promise<LibraryBinding>;
+  bindLibrary: (rootDir: string, options?: { allowedExtensions?: string[] }) => Promise<LibraryBinding>;
   reload: () => Promise<void>;
   reloadDocuments: (reset?: boolean) => Promise<void>;
   loadMore: () => Promise<void>;
@@ -342,12 +343,18 @@ export function useLibraryState(): LibraryState {
     updateDebugChannel("watcher", "http", "native watcher 启动失败，当前未拿到原生监控状态");
   }
 
-  async function bindLibrary(rootDir: string): Promise<LibraryBinding> {
+  async function bindLibrary(
+    rootDir: string,
+    options?: { allowedExtensions?: string[] },
+  ): Promise<LibraryBinding> {
     setLoading(true);
     setError(null);
     try {
       const binding = await saveLibraryBinding({ rootDir, completeInitialization: true });
-      pendingInitialQuickSyncRef.current = true;
+      const config = options?.allowedExtensions?.length
+        ? await saveLibraryConfig({ allowedExtensions: options.allowedExtensions })
+        : null;
+      pendingInitialQuickSyncRef.current = !config?.applyConfigStatus;
       setSnapshot((current) => current ? { ...current, binding } : current);
       setViewState(readLibraryViewState(binding.libraryId));
       await syncNativeLibraryWatcher(binding.enabled ? binding.rootDir : null);

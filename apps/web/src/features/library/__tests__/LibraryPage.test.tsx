@@ -277,6 +277,47 @@ describe("LibraryPage 高风险交互", () => {
     });
   });
 
+  it("初始化页可以先应用索引模板，再建立文档库", async () => {
+    const defaultRootDir = "/Users/test/X-File";
+    let initialized = false;
+    const binding = createLibraryBinding({
+      rootDir: defaultRootDir,
+      initialized: true,
+      initializedAt: "2026-06-16T00:00:00.000Z",
+    });
+
+    libraryApiMock.getLibrarySnapshot.mockImplementation(async () =>
+      createLibrarySnapshot({
+        binding: initialized ? binding : null,
+        defaultRootDir,
+        requiresInitialization: !initialized,
+      }),
+    );
+    libraryApiMock.saveLibraryBinding.mockImplementation(async () => {
+      initialized = true;
+      return binding;
+    });
+
+    const { LibraryPage } = await import("../LibraryPage");
+    render(<LibraryPage onOpenSettings={vi.fn()} platformData={platformData} />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "继续配置本地模式" }));
+    await userEvent.click(screen.getByRole("button", { name: "快速选模板" }));
+    const dialog = await screen.findByRole("dialog", { name: "快速索引模板" });
+    await userEvent.click(within(dialog).getByRole("checkbox", { name: /政府机关/ }));
+    await userEvent.click(within(dialog).getByRole("checkbox", { name: /程序员/ }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "应用模板" }));
+    await userEvent.click(screen.getByRole("button", { name: "建立文档库" }));
+
+    await waitFor(() => {
+      expect(libraryApiMock.saveLibraryConfig).toHaveBeenCalledWith(
+        expect.objectContaining({
+          allowedExtensions: expect.arrayContaining([".json", ".ts"]),
+        }),
+      );
+    });
+  });
+
   it("文档名称显示真实文件名，而不是摘要标题", async () => {
     libraryApiMock.listLibraryDocuments.mockResolvedValue(
       createDocumentList([
