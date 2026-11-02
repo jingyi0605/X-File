@@ -202,14 +202,32 @@ notarize_macos_file() {
 staple_macos_artifact() {
   local path="$1"
   log_info "回写 notarization 票据：$path"
-  xcrun stapler staple -v "$path"
+  local attempt
+  for attempt in 1 2 3; do
+    if xcrun stapler staple -v "$path"; then
+      return 0
+    fi
+    log_warn "stapler 回写第 ${attempt} 次失败，稍后重试。"
+    [[ "$attempt" -lt 3 ]] && sleep 5
+  done
+  return 1
 }
 
 validate_notarized_macos_release() {
   local app_path="$1"
   local dmg_path="$2"
   log_info "执行最终 Gatekeeper 校验..."
-  xcrun stapler validate -v "$dmg_path"
+  local attempt
+  for attempt in 1 2 3; do
+    if xcrun stapler validate -v "$dmg_path"; then
+      break
+    fi
+    log_warn "stapler 验证第 ${attempt} 次失败，稍后重试。"
+    if [[ "$attempt" -eq 3 ]]; then
+      return 1
+    fi
+    sleep 5
+  done
   log_info "复核 .app 签名完整性..."
   codesign --verify --deep --strict --verbose=2 "$app_path"
   spctl --assess --type execute -vv "$app_path"
