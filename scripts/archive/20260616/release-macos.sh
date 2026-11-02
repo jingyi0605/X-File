@@ -120,6 +120,7 @@ cleanup_stale_macos_dmg_state() {
 create_macos_release_dmg() {
   local signed_app_path="$1"
   local app_name staging_dir tmp_dmg_dir dmg_path tmp_dmg_path volume_name attempt hdiutil_output
+  local staging_size_kib image_size_mib
   app_name="$(basename "$signed_app_path" .app)"
   dmg_path="$MACOS_RELEASE_DIR/${app_name}.dmg"
   volume_name="$app_name"
@@ -133,11 +134,18 @@ create_macos_release_dmg() {
     return 1
   fi
 
+  # hdiutil 的自动容量估算在 CI 上可能只按 .app 文件大小分配临时卷，
+  # 复制到卷内时会因文件系统元数据和目录开销不足而失败。
+  staging_size_kib="$(du -sk "$staging_dir" | awk '{print $1}')"
+  image_size_mib=$(( (staging_size_kib + 96 * 1024 + 1023) / 1024 ))
+  (( image_size_mib < 128 )) && image_size_mib=128
+
   log_info "重新生成用于发布的 DMG..."
+  log_info "DMG 临时卷容量：${image_size_mib} MiB（源目录：${staging_size_kib} KiB）"
   for attempt in 1 2; do
     cleanup_stale_macos_dmg_state "$dmg_path" "$volume_name"
     rm -f "$tmp_dmg_path"
-    if hdiutil_output="$(hdiutil create -volname "$volume_name" -srcfolder "$staging_dir" -ov -format UDZO "$tmp_dmg_path" 2>&1)"; then
+    if hdiutil_output="$(hdiutil create -size "${image_size_mib}m" -volname "$volume_name" -srcfolder "$staging_dir" -ov -format UDZO "$tmp_dmg_path" 2>&1)"; then
       break
     fi
     log_warn "第 ${attempt} 次 DMG 生成失败，清理后重试。"
