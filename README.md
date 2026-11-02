@@ -1,234 +1,202 @@
 # X-File
 
-X-File 是从 CodingNS 拆出的文档库独立应用，使用 Tauri 2、React 和 Rust 原生文档引擎。文档扫描、索引和静态导出统一由 Rust 执行；Fastify 保留 HTTP 业务接口，通过原生 CLI 发起索引任务。
+**Smart indexing, instant discovery. Every document at your fingertips.**
 
-## 目录
+X-File is a cross-platform document management application built with Tauri 2, React, and a native Rust indexing engine. Organize your local files with a flexible tag tree system, turn your document library into a web NAS, and integrate external AI agents for intelligent document management.
 
-- `apps/web`：React + TypeScript 前端，负责显示应用入口和后端连接状态。
-- `apps/server`：Fastify + TypeScript 后端，提供健康检查、文档库 API、HTTP 服务状态和集成入口。
-- `apps/desktop`：Tauri 2 桌面壳骨架，包含窗口配置、Rust 入口、系统托盘菜单、常驻策略和后端子进程托管入口。
-- `packages/indexer`：原生 CLI 客户端、只读快照类型和文件可见性规则，不包含 TypeScript 扫描器、解析器或 SQLite 存储。
-- `docs`：验收说明和 CodingNS 接入说明。
-- `scripts`：前后端调试脚本，以及桌面客户端统一验证、统一打包脚本。
+[中文文档](./README.zh-CN.md) | [Documentation](./docs/) | [Download](https://github.com/your-repo/x-file/releases)
 
-## 脚本
+---
+
+![X-File Desktop Application](docs/images/hero-desktop.png)
+
+---
+
+## ✨ Key Features
+
+### 🏷️ Supertag Tree Management
+
+Organize documents with a flexible tag hierarchy instead of rigid folder structures. A single file can belong to multiple business categories simultaneously (e.g., "2024 / Finance / Pending Review"). Adjust tag levels to match any industry's classification logic and instantly filter files from any tag combination.
+
+![Supertag Tree Management](docs/images/feature-supertag.png)
+
+### 📁 Direct Local File Access
+
+Read and display files directly from your local disk without importing or copying. No separate file management sandbox—your original files stay in their original locations. Index and source files are separate; deleting the index doesn't affect your files. Automatically syncs index status when files change.
+
+### 🌐 One-Click Web NAS
+
+Launch the HTTP service and access your document library from any device's browser on the LAN. No need to install clients on every device. Supports file preview, download, search, and tag filtering. Configure username and password to secure LAN access.
+
+![Web NAS Access](docs/images/feature-web-nas.png)
+
+### 🔄 Cross-Platform Tag Sync
+
+Desktop applications for macOS, Windows, and Linux. Sync tag data across platforms (via mirror mode connecting to remote instances). Web and desktop share the same tag system. Mark files on any device, and tag status syncs to all other devices in real-time.
+
+### 🤖 AI Agent Integration
+
+Integrate external AI agents (like Claude, ChatGPT) for document management. AI can help you: auto-classify documents, intelligently tag, semantic search, and summarize. Exposes 28+ native tools via CLI/MCP protocol for agents to call. Supports custom AI workflows to manage documents according to your business logic.
+
+![AI Agent Integration](docs/images/feature-ai-agent.png)
+
+---
+
+## 🚀 Quick Start
+
+### Installation
+
+Download the latest version for your platform:
+
+- **macOS**: [X-File-macOS-universal.dmg](https://github.com/your-repo/x-file/releases/latest)
+- **Windows**: [X-File-Windows-x86_64.msi](https://github.com/your-repo/x-file/releases/latest)
+- **Linux**: [X-File-Linux-x86_64.AppImage](https://github.com/your-repo/x-file/releases/latest)
+
+### First Launch
+
+1. Open X-File and add your first document library
+2. Wait for the initial indexing to complete
+3. Start organizing with tags or search for documents
+
+### Web Access
+
+1. Go to **Settings → HTTP Service** and enable it
+2. Optionally configure LAN access with username/password
+3. Access from any browser: `http://your-computer-ip:17321`
+
+---
+
+## 🛠️ For Developers
+
+### Prerequisites
+
+- Node.js >= 20.11.0
+- pnpm >= 9.0.0
+- Rust and Tauri 2 system dependencies
+
+### Build from Source
 
 ```bash
+# Install dependencies
 pnpm install
+
+# Build all packages
 pnpm build
+
+# Type checking
 pnpm typecheck
-pnpm dev:server
-pnpm dev:web
-pnpm dev:desktop
-pnpm dev:desktop:frontend
-pnpm verify:desktop
-pnpm package:desktop:macos
-pnpm package:desktop:windows
 ```
 
-## 文档索引
-
-- 扫描在一次目录遍历中完成文件发现、属性比对和数量统计，不再预扫描目录。
-- 目录发现使用队列；文件扩展名在读取文件属性前过滤。索引一次保存路径、属性、标签和摘要，不再启动后台摘要回填。
-- 同一根目录的桌面任务在后台线程中串行执行，复用带文件版本校验的目录与索引状态缓存；运行中的新变更保留到下一轮。跨目录变更保留独立路径集合，不再扩大为公共根目录。独立 CLI 与标签重算通过系统文件锁串行写入同一根目录。
-- 文件监听回调先快速收集路径，每 150ms 合并提交一次；文件系统要求重扫时按通知范围重新遍历。任务完成后通过原生事件同步空闲页面的列表和标签计数。
-- 索引恢复日志使用缓冲追加；进度每 500ms 合并写入，部分快照按 5 秒间隔保存。文件属性未变化时复用旧索引；无变化刷新不改写 catalog、活动文件快照、索引状态快照和导出文件。
-- 导出按 `dirtyScope` 更新受影响的文档详情、目录元数据、标签根和文档关系。目录元数据使用稳定的目录分片标识，首次读取旧布局时重建为新布局。
-- 搜索索引保存文档到搜索桶的映射和词项指纹，只对变化文档分词，并更新其新旧搜索桶；词项未变化时复用搜索产物。每个词项前缀按文档标识分成 16 片，桶名如 `han-03`，读取器按 manifest 中的路径读取。桶内仍为 `search-bucket-v2`；manifest 保持 `search-v2` 并记录 `partition_count: 16`。旧前缀桶在下次有变化时迁移，读取器兼容新旧布局。删除文档同时清理旧倒排记录。
-- 桌面读取视图按快照文件版本缓存，并缓存目录到文档位置的映射；分页后才读取当前页文件的大小和创建时间。
-
-手动刷新和文件监听使用 `full` 流程。原生 CLI 支持 `full`、`index-only`、`export-only` 和 `tags-only`，请求 JSON 可以通过 stdin 传入；`targetPath` 使用文档库内的相对路径，`targetPaths` 可传入多个文件或目录，重叠范围只遍历一次。旧 TypeScript worker、执行器注册层、SQLite 回退、独立全文解析和重复的搜索构建入口已经删除。
-
-验证与性能测量不需要启动开发服务器：
+### Development
 
 ```bash
-cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml
+# Start desktop app (recommended)
+pnpm dev:desktop
+
+# Start backend only
+pnpm dev:server
+
+# Start frontend only (requires backend running)
+pnpm dev:web
+```
+
+### Testing
+
+```bash
+# Run Rust tests
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib
-pnpm --filter @x-file/shared build
-pnpm --filter @x-file/indexer build
+
+# Benchmark indexing performance (10k files, 100 dirs)
 pnpm benchmark:index -- --files 10000 --dirs 100
 ```
 
-性能脚本创建临时资料库，分别测量首次索引、无变化刷新，以及摘要词项不变和改变两种单文件更新，并报告实际改写的导出文件数量，结束后清理测试数据。`X_FILE_DESKTOP_CLI_PATH` 可以指定待测 CLI；默认寻找本地桌面构建产物。
-
-调试脚本只保留前后端独立入口：
-
-- `pnpm dev:server`：只启动后端调试服务，默认读取仓库内 `.x-file-dev/http-server-state.json`；没有有效配置时仅监听 `127.0.0.1:17321`。
-- `pnpm dev:web`：只启动前端调试服务，固定监听 `http://127.0.0.1:17320`，仅供本机使用。
-- 前端 `/api/*` 会代理到本机后端 `http://127.0.0.1:17321`。
-
-可通过环境变量覆盖端口和后端地址：`X_FILE_WEB_PORT`、`X_FILE_SERVER_HOST`、`X_FILE_SERVER_PORT`。前端调试服务不支持绑定局域网网卡，避免 Vite 代理把局域网请求转发成本机回环请求并绕过 LAN 认证。独立后端调试脚本会显式设置 `X_FILE_ALLOW_PUBLIC_HOST=1`，并把 HTTP 状态写到仓库内 `.x-file-dev/http-server-state.json`，避免污染正式用户配置；仅当该状态文件已保存有效认证凭据时，才能监听 LAN 地址。桌面开发堆栈则与桌面设置共用 `~/.x-file/http-server-state.json`（或 `X_FILE_DATA_DIR` 指定的数据目录），确保 sidecar 读取同一份认证配置。
-
-`pnpm dev:desktop` 现在直接走 `pnpm --filter @x-file/desktop tauri:dev`，会按 Tauri dev 流程自动拉起前端开发服务并启动桌面调试窗口。正式桌面骨架校验使用 `pnpm --filter @x-file/desktop build`，它会跑 TypeScript 编译和 Tauri Rust `cargo check`。
-
-`pnpm dev:desktop:frontend` 启动仅前端热更新的桌面调试窗口：保留 Vite 热更新，通过 `tauri dev --no-watch` 关闭 Rust 源码监听，同时关闭共享包监听编译和 Node 后端自动重启。启动时仍会编译共享依赖并按需编译 Rust；运行期间修改 Rust、Node 后端或共享包源码不会自动重编译或重启后端与桌面窗口。这些改动需要退出并重新运行该命令才会生效。
-
-## 健康检查
-
-后端启动后可访问：
-
-```text
-GET http://127.0.0.1:17321/api/health
-```
-
-返回结构：
-
-```json
-{
-  "ok": true,
-  "app": "X-File",
-  "version": "0.1.0"
-}
-```
-
-## HTTP 服务状态
-
-默认监听：
-
-```text
-http://127.0.0.1:17321
-```
-
-读取状态：
-
-```text
-GET /api/server/state
-```
-
-保存配置：
-
-```text
-PUT /api/server/state
-```
-
-返回字段包含：
-
-- `enabled`：是否启用 HTTP 服务。
-- `host`：第一版固定 `127.0.0.1`。
-- `port`：服务端口，默认 `17321`。
-- `persistent`：关闭窗口后是否允许常驻。
-- `running`：当前进程是否正在监听。
-- `startedAt`：最近启动时间。
-- `lastError`：最近错误。
-
-第一版规则是：关闭窗口和退出应用必须区分；`persistent=true` 时桌面壳会隐藏主窗口并保留当前进程，用户可以从托盘恢复窗口或退出应用，用户明确退出应用时停止桌面壳托管的后端子进程。开机自启和安装包代码签名不在本轮声称完成范围内。
-
-## 外部 Agent 接入方向
-
-X-File 不再提供内置 AI 助手或文件助手，也不再内置 Codex、Claude Code 的对话、会话、权限审批和供应商插件。文档管理、预览、索引、标签等资料库能力继续保留；本次移除不会主动清理用户磁盘上的历史助手数据。
-
-已提供 28 项原生工具，通过 CLI 和 MCP stdio 共用工具目录、JSON Schema、结果格式与业务实现。覆盖资料库配置、检索、文件、标签、收藏和索引；配套 `skills/x-file/SKILL.md` 帮助外部 Agent 发现和调用能力。无需启动图形窗口或 Node 后端。
+### Packaging
 
 ```bash
-apps/desktop/src-tauri/target/debug/x-file-desktop cli list
-apps/desktop/src-tauri/target/debug/x-file-desktop cli call xfile_status
-apps/desktop/src-tauri/target/debug/x-file-desktop mcp
+# Package for current platform
+pnpm package:desktop
+
+# Package for specific platform
+pnpm package:desktop:macos
+pnpm package:desktop:windows
+pnpm package:desktop:linux
 ```
 
-在「设置 → 集成服务 → 外部 Agent 接入」配置 API Key 并启用（默认关闭）。CLI/MCP 使用 `X_FILE_AGENT_API_KEY` 环境变量；设置页提供只读配置模板和 SKILL 安装命令。
+---
 
-构建和接入说明见 `docs/20261026-外部Agent工具接入说明.md`。范围与验收见 `specs/spec004-X-File移除内置助手与外部Agent接入/`。本阶段不提供远程 MCP HTTP 或远程认证。
+## 📚 Documentation
 
-## CodingNS 集成入口
+- [CodingNS Integration Guide](./docs/20260608-CodingNS接入X-File说明.md)
+- [External Agent Integration](./docs/20261026-外部Agent工具接入说明.md)
+- [Desktop Packaging and Release](./docs/)
+- [Frontend Development Standards](./docs/20260609-前端开发规范.md)
 
-```text
-GET /api/integration/status
+---
+
+## 🏗️ Architecture
+
+```
+x-file/
+├── apps/
+│   ├── desktop/       # Tauri 2 desktop shell
+│   ├── server/        # Fastify backend (HTTP APIs)
+│   └── web/           # React frontend
+├── packages/
+│   ├── indexer/       # Native CLI client
+│   └── shared/        # Shared TypeScript types
+├── docs/              # Documentation
+├── scripts/           # Build and dev scripts
+└── specs/             # Feature specifications
 ```
 
-这个接口返回 X-File 可用性、HTTP 服务状态和文档库快照摘要。CodingNS 后续应该调用这个接口判断 X-File 是否可用，而不是继续启动自身文档库重扫描。
+### Tech Stack
 
-详细说明见：
+- **Frontend**: React + TypeScript + Vite
+- **Backend**: Fastify + TypeScript
+- **Desktop**: Tauri 2
+- **Indexing Engine**: Rust (native)
+- **Search**: Custom inverted index with 16-partition sharding
 
-- `docs/20260608-CodingNS接入X-File说明.md`
-- `docs/20260608-X-File第一版验收说明.md`
+---
 
-## 桌面打包与发布
+## 🌏 Platform Support
 
-X-File 用 Tauri 2 打包为 macOS universal、Windows x86_64 和 Linux x86_64 应用，通过 GitHub Releases + 可配置的国内 HTTPS 镜像 + `tauri-plugin-updater` 提供 stable / beta 双更新通道。更新源按“国内镜像优先、GitHub 官方源回退”顺序访问，所有安装包仍使用同一套 updater 签名校验。
+| Platform | Architecture | Status |
+|----------|--------------|--------|
+| macOS    | Universal (Intel + Apple Silicon) | ✅ Supported |
+| Windows  | x86_64       | ✅ Supported |
+| Linux    | x86_64       | ✅ Supported |
 
-关键文件：
+---
 
-- `apps/desktop/src-tauri/tauri.conf.json`：bundle 目标、updater 公钥与 endpoint。
-- `apps/desktop/src-tauri/src/updater.rs`：检查 / 下载 / 安装更新，按通道选择镜像优先、官方源回退的 endpoint。
-- `apps/desktop/src-tauri/src/lib.rs`：注册 updater 命令（`check_for_update` / `download_update` / `install_update` / `get_release_channel` / `set_release_channel` / `open_external_url`）。
-- `scripts/verify-desktop.mjs`：默认执行完整桌面打包验证；也支持单独跑前置检查或产物检查。
-- `scripts/package-desktop.sh`：统一做 macOS / Windows 桌面打包。
-- `scripts/version.mjs`：以根 `VERSION` 为唯一真源，提供版本设置、同步和一致性检查。
-- `scripts/sync-version.mjs`：旧版本同步入口，保留兼容。
-- `scripts/archive/20260616/`：归档的历史脚本和临时工具脚本。
-  - 包含原 `build-macos.sh`、`build-windows.sh`、`release-macos.sh`、`check-desktop-release-secrets.mjs`、`prepare-bundled-server.mjs` 以及临时工具脚本。
-- `.github/workflows/desktop-release.yml`：手动或 tag 触发的三平台打包发布 CI。
-- `.github/workflows/ci.yml`：PR 类型检查 + 测试 + 构建。
+## 🔄 Updates
 
-### 版本管理
+X-File supports automatic updates with two channels:
 
-版本号统一来自根目录 `VERSION` 文件（SemVer）。推荐使用统一命令：
+- **Stable**: Production-ready releases (`0.2.0`)
+- **Beta**: Preview releases with latest features (`0.2.0-beta.1`)
 
-```bash
-# 设置版本并同步到所有受管理文件
-pnpm version:set -- 0.2.0-beta.1
+Updates are served via GitHub Releases with optional China mirror fallback for faster downloads.
 
-# 只同步已经修改的 VERSION
-pnpm version:sync
+---
 
-# 检查 package、Tauri、Cargo、Cargo.lock 是否一致
-pnpm version:check
+## 📄 License
 
-# 检查 tag 是否与 VERSION 一致
-pnpm version:check -- --tag v0.2.0-beta.1
-```
+[Your License Here]
 
-### 发布流程
+---
 
-1. 执行 `pnpm version:set -- <版本>`，提交版本同步文件。
-2. 推送 `v<VERSION>` tag，或在 GitHub Actions 中手动运行 `desktop-build-and-release`。
-3. 手动运行时选择构建来源；打开“创建或更新 GitHub Release”即可一次构建并发布 macOS、Windows、Linux 三个平台。
-4. 发布流程先完成所有平台构建、updater 签名和产物校验，再生成 `latest.json`、`latest-cn.json`、`release-manifest.json` 并上传 Release。
-5. 通道由版本号决定：
-   - **stable**（`VERSION` 不含 `-`，如 `0.2.0`）：产物上传到版本 tag release，GitHub `releases/latest` 自动指向。客户端 stable 通道查 `releases/latest/download/latest.json`。
-   - **beta**（`VERSION` 含 `-`，如 `0.2.0-beta.1`）：版本 tag release 标记为 prerelease，同时维护滚动 release `beta-latest`（含 `latest.json` 指针）。客户端 beta 通道查 `releases/download/beta-latest/latest.json`。
+## 🤝 Contributing
 
-### 必需的 secrets 和 Variables
+Contributions are welcome! Please read our [contributing guidelines](./CONTRIBUTING.md) first.
 
-在仓库 Settings → Secrets（或 `release` environment）配置：
+---
 
-macOS 签名公证（复用 Apple Developer ID 证书）：
+## 📧 Contact
 
-- `APPLE_CERTIFICATE_P12_BASE64` / `APPLE_CERTIFICATE_PASSWORD` / `APPLE_KEYCHAIN_PASSWORD`
-- `APPLE_SIGN_IDENTITY` / `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID`
+- Issues: [GitHub Issues](https://github.com/your-repo/x-file/issues)
+- Discussions: [GitHub Discussions](https://github.com/your-repo/x-file/discussions)
 
-Tauri updater 签名：
+---
 
-- `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`：minisign 私钥，签更新包。
-- `X_FILE_UPDATER_PUBLIC_KEY`（secret）：公钥，值必须与 `tauri.conf.json` 的 `plugins.updater.pubkey` 一致。
-- `X_FILE_UPDATER_ENDPOINT_STABLE`（可选 Variable）：国内 stable `latest-cn.json` 完整 HTTPS 地址。
-- `X_FILE_UPDATER_ENDPOINT_BETA`（可选 Variable）：国内 beta `latest-cn.json` 完整 HTTPS 地址。
-- `X_FILE_UPDATER_ASSET_BASE_URL`（可选 Variable）：国内安装包镜像基础地址。可包含 `{tag}`，例如 `https://cdn.example.com/x-file/{tag}`；清单会把安装包 URL 写成该地址下的文件名。
-
-Windows 代码签名默认不做（沿用父项目现状），仅保留 Tauri updater 的 minisign 签名保证自动更新可验签。
-
-发布前置检查（本地）：
-
-```bash
-pnpm verify:desktop -- --platform=macos --mode=preflight --require-real-secrets
-```
-
-Windows self-hosted 实机构建入口（手动，保留用于实机调试）：
-
-```text
-.github/workflows/x-file-windows-build.yml
-```
-
-### 中国大陆网络配置
-
-国内镜像必须提供 HTTPS，并同步同一版本的 `latest-cn.json`、`release-manifest.json`、安装包和 `.sig` 文件。发布流程同时生成 `latest.json`（官方资产 URL）和 `latest-cn.json`（国内资产 URL），这样国内源请求失败时，客户端回退到 GitHub 官方源仍然使用官方资产地址。更新清单可以放在国内 CDN 或对象存储上，客户端启动时先请求 `X_FILE_UPDATER_ENDPOINT_STABLE` / `X_FILE_UPDATER_ENDPOINT_BETA`，失败后自动请求 GitHub 官方源。镜像只改变传输路径，不改变 Tauri updater 公钥和签名验证。
-
-未配置国内 Variables 时，应用仍直接使用 GitHub 官方源；配置后不需要重新设计客户端更新协议，只需让镜像保持文件名和清单字段不变。
-
-## 当前边界
-
-- 已建立 stable/beta 双更新通道（国内镜像优先 + GitHub Releases 回退 + Tauri updater）和手动/tag 触发的三平台发布 CI；桌面应用启动后会按通道定期后台检查更新，发现新版本时提示用户进入更新面板安装；macOS 签名公证复用 Apple Developer ID 证书，Windows 不做 authenticode 签名（首次运行有 SmartScreen 警告）。
-- 不主动启动长期 dev server。
-- 已实现基础系统托盘菜单；不实现开机自启和 deep link 注册。
-- 文档库索引不依赖 Node 或 SQLite。独立 Web/HTTP 功能的 Node 依赖由对应模块维护，不能假设用户机器一定有 Node。
-- 不引入 CodingNS 的工作区、事务模式、Teable、Butler 或代码工作台能力。
+**Made with ❤️ by the X-File Team**

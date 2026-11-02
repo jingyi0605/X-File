@@ -17,9 +17,16 @@ interface RuntimeConfigState {
 
 const STORAGE_KEY = "x-file.runtime.config";
 const DEFAULT_REMOTE_API_BASE_URL = "http://127.0.0.1:17321";
+const ENV_RUNTIME_MODE: XFileRuntimeMode | null =
+  import.meta.env.VITE_X_FILE_RUNTIME_MODE === "mirror" ? "mirror" : null;
+const ENV_REMOTE_API_BASE_URL =
+  typeof import.meta.env.VITE_X_FILE_API_BASE_URL === "string"
+    && import.meta.env.VITE_X_FILE_API_BASE_URL.trim()
+    ? import.meta.env.VITE_X_FILE_API_BASE_URL.trim()
+    : null;
 const DEFAULT_CONFIG: XFileRuntimeConfig = {
-  mode: "local",
-  remoteApiBaseUrl: DEFAULT_REMOTE_API_BASE_URL,
+  mode: ENV_RUNTIME_MODE ?? "local",
+  remoteApiBaseUrl: ENV_REMOTE_API_BASE_URL ?? DEFAULT_REMOTE_API_BASE_URL,
   localRootDir: "",
   updatedAt: new Date(0).toISOString()
 };
@@ -55,7 +62,11 @@ function readStoredConfig(): XFileRuntimeConfig {
     if (!raw) {
       return DEFAULT_CONFIG;
     }
-    return normalizeConfig(JSON.parse(raw) as Partial<XFileRuntimeConfig>);
+    return normalizeConfig({
+      ...(JSON.parse(raw) as Partial<XFileRuntimeConfig>),
+      ...(ENV_RUNTIME_MODE ? { mode: ENV_RUNTIME_MODE } : {}),
+      ...(ENV_REMOTE_API_BASE_URL ? { remoteApiBaseUrl: ENV_REMOTE_API_BASE_URL } : {}),
+    });
   } catch {
     return DEFAULT_CONFIG;
   }
