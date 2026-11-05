@@ -1,5 +1,7 @@
 # X-File
 
+[![Latest Release](https://img.shields.io/github/v/release/jingyi0605/X-File?label=release)](https://github.com/jingyi0605/X-File/releases/latest) [![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-blue)](https://github.com/jingyi0605/X-File/releases/latest) [![License: MIT](https://img.shields.io/github/license/jingyi0605/X-File)](./LICENSE)
+
 **Smart indexing, instant discovery. Every document at your fingertips.**
 
 X-File is a cross-platform document management application built with Tauri 2, React, and a native Rust indexing engine. Organize your local files with a flexible tag tree system, turn your document library into a web NAS, and integrate external AI agents for intelligent document management.
@@ -46,13 +48,15 @@ Integrate external AI agents (like Claude, ChatGPT) for document management. AI 
 
 ### Installation
 
-Current version: **v0.1.0**. For other versions, see [Releases](https://github.com/jingyi0605/X-File/releases).
+Download the installer for your platform from the **[latest release](https://github.com/jingyi0605/X-File/releases/latest)**.
 
-| Platform | Architecture | Download |
+| Platform | Architecture | Package |
 |---|---|---|
-| macOS | Universal (Intel + Apple Silicon) | [X-File_0.1.0_universal.dmg](https://github.com/jingyi0605/X-File/releases/download/v0.1.0/X-File_0.1.0_universal.dmg) |
-| Windows | x64 | [X-File_0.1.0_x64-setup.exe](https://github.com/jingyi0605/X-File/releases/download/v0.1.0/X-File_0.1.0_x64-setup.exe)<br>[X-File_0.1.0_x64_en-US.msi](https://github.com/jingyi0605/X-File/releases/download/v0.1.0/X-File_0.1.0_x64_en-US.msi) |
-| Linux | x86_64 | [X-File_0.1.0_amd64.AppImage](https://github.com/jingyi0605/X-File/releases/download/v0.1.0/X-File_0.1.0_amd64.AppImage)<br>[X-File_0.1.0_amd64.deb](https://github.com/jingyi0605/X-File/releases/download/v0.1.0/X-File_0.1.0_amd64.deb)<br>[X-File-0.1.0-1.x86_64.rpm](https://github.com/jingyi0605/X-File/releases/download/v0.1.0/X-File-0.1.0-1.x86_64.rpm) |
+| macOS | Universal (Intel + Apple Silicon) | `.dmg` |
+| Windows | x64 | `-setup.exe` (recommended) or `.msi` |
+| Linux | x86_64 | `.AppImage`, `.deb` or `.rpm` |
+
+Older versions and beta builds are listed on the [Releases](https://github.com/jingyi0605/X-File/releases) page.
 
 ### First Launch
 

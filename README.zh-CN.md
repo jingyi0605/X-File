@@ -1,5 +1,7 @@
 # X-File
 
+[![Latest Release](https://img.shields.io/github/v/release/jingyi0605/X-File?label=release)](https://github.com/jingyi0605/X-File/releases/latest) [![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-blue)](https://github.com/jingyi0605/X-File/releases/latest) [![License: MIT](https://img.shields.io/github/license/jingyi0605/X-File)](./LICENSE)
+
 **智能索引，即时发现。让每一份文档都触手可及。**
 
 X-File 是一个跨平台文档管理应用，使用 Tauri 2、React 和 Rust 原生索引引擎构建。通过灵活的标签树系统组织本地文件，将文档库变身 Web NAS，并集成外部 AI Agent 进行智能文档管理。
@@ -46,13 +48,15 @@ X-File 是一个跨平台文档管理应用，使用 Tauri 2、React 和 Rust �
 
 ### 安装
 
-当前版本：**v0.1.0**。其他版本见 [Releases](https://github.com/jingyi0605/X-File/releases)。
+前往 **[最新版本](https://github.com/jingyi0605/X-File/releases/latest)** 下载适合你平台的安装包。
 
-| 平台 | 架构 | 下载 |
+| 平台 | 架构 | 安装包 |
 |---|---|---|
-| macOS | Universal (Intel + Apple Silicon) | [X-File_0.1.0_universal.dmg](https://github.com/jingyi0605/X-File/releases/download/v0.1.0/X-File_0.1.0_universal.dmg) |
-| Windows | x64 | [X-File_0.1.0_x64-setup.exe](https://github.com/jingyi0605/X-File/releases/download/v0.1.0/X-File_0.1.0_x64-setup.exe)<br>[X-File_0.1.0_x64_en-US.msi](https://github.com/jingyi0605/X-File/releases/download/v0.1.0/X-File_0.1.0_x64_en-US.msi) |
-| Linux | x86_64 | [X-File_0.1.0_amd64.AppImage](https://github.com/jingyi0605/X-File/releases/download/v0.1.0/X-File_0.1.0_amd64.AppImage)<br>[X-File_0.1.0_amd64.deb](https://github.com/jingyi0605/X-File/releases/download/v0.1.0/X-File_0.1.0_amd64.deb)<br>[X-File-0.1.0-1.x86_64.rpm](https://github.com/jingyi0605/X-File/releases/download/v0.1.0/X-File-0.1.0-1.x86_64.rpm) |
+| macOS | Universal（Intel + Apple Silicon） | `.dmg` |
+| Windows | x64 | `-setup.exe`（推荐）或 `.msi` |
+| Linux | x86_64 | `.AppImage`、`.deb` 或 `.rpm` |
+
+历史版本和 Beta 版本见 [Releases](https://github.com/jingyi0605/X-File/releases) 页面。
 
 ### 首次启动
 
