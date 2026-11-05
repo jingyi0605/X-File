@@ -4,7 +4,7 @@
 
 X-File 是一个跨平台文档管理应用，使用 Tauri 2、React 和 Rust 原生索引引擎构建。通过灵活的标签树系统组织本地文件，将文档库变身 Web NAS，并集成外部 AI Agent 进行智能文档管理。
 
-[English](./README.md) | [文档](./docs/) | [下载](https://github.com/your-repo/x-file/releases)
+[English](./README.md) | [文档](./docs/) | [下载](https://github.com/jingyi0605/X-File/releases/latest)
 
 ---
 
@@ -46,11 +46,11 @@ X-File 是一个跨平台文档管理应用，使用 Tauri 2、React 和 Rust �
 
 ### 安装
 
-下载适合你平台的最新版本：
+从[最新版本](https://github.com/jingyi0605/X-File/releases/latest)下载适合你平台的安装包：
 
-- **macOS**: [X-File-macOS-universal.dmg](https://github.com/your-repo/x-file/releases/latest)
-- **Windows**: [X-File-Windows-x86_64.msi](https://github.com/your-repo/x-file/releases/latest)
-- **Linux**: [X-File-Linux-x86_64.AppImage](https://github.com/your-repo/x-file/releases/latest)
+- **macOS**（Universal）：`.dmg`
+- **Windows**（x64）：`-setup.exe` 或 `.msi`
+- **Linux**（x86_64）：`.AppImage`、`.deb` 或 `.rpm`
 
 ### 首次启动
 
@@ -180,22 +180,9 @@ X-File 支持自动更新，提供两个通道：
 
 ---
 
-## 📄 许可证
+## 🤝 反馈
 
-[在此填写许可证]
-
----
-
-## 🤝 贡献
-
-欢迎贡献！请先阅读我们的[贡献指南](./CONTRIBUTING.md)。
-
----
-
-## 📧 联系方式
-
-- Issues: [GitHub Issues](https://github.com/your-repo/x-file/issues)
-- Discussions: [GitHub Discussions](https://github.com/your-repo/x-file/discussions)
+问题反馈和功能建议请提交到 [GitHub Issues](https://github.com/jingyi0605/X-File/issues)。
 
 ---
 

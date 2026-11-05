@@ -4,7 +4,7 @@
 
 X-File is a cross-platform document management application built with Tauri 2, React, and a native Rust indexing engine. Organize your local files with a flexible tag tree system, turn your document library into a web NAS, and integrate external AI agents for intelligent document management.
 
-[中文文档](./README.zh-CN.md) | [Documentation](./docs/) | [Download](https://github.com/your-repo/x-file/releases)
+[中文文档](./README.zh-CN.md) | [Documentation](./docs/) | [Download](https://github.com/jingyi0605/X-File/releases/latest)
 
 ---
 
@@ -46,11 +46,11 @@ Integrate external AI agents (like Claude, ChatGPT) for document management. AI 
 
 ### Installation
 
-Download the latest version for your platform:
+Download the installer for your platform from the [latest release](https://github.com/jingyi0605/X-File/releases/latest):
 
-- **macOS**: [X-File-macOS-universal.dmg](https://github.com/your-repo/x-file/releases/latest)
-- **Windows**: [X-File-Windows-x86_64.msi](https://github.com/your-repo/x-file/releases/latest)
-- **Linux**: [X-File-Linux-x86_64.AppImage](https://github.com/your-repo/x-file/releases/latest)
+- **macOS** (Universal): `.dmg`
+- **Windows** (x64): `-setup.exe` or `.msi`
+- **Linux** (x86_64): `.AppImage`, `.deb` or `.rpm`
 
 ### First Launch
 
@@ -180,22 +180,9 @@ Updates are served via GitHub Releases with optional China mirror fallback for f
 
 ---
 
-## 📄 License
+## 🤝 Feedback
 
-[Your License Here]
-
----
-
-## 🤝 Contributing
-
-Contributions are welcome! Please read our [contributing guidelines](./CONTRIBUTING.md) first.
-
----
-
-## 📧 Contact
-
-- Issues: [GitHub Issues](https://github.com/your-repo/x-file/issues)
-- Discussions: [GitHub Discussions](https://github.com/your-repo/x-file/discussions)
+Bug reports and feature requests are welcome in [GitHub Issues](https://github.com/jingyi0605/X-File/issues).
 
 ---
 
