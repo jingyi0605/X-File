@@ -46,11 +46,13 @@ X-File 是一个跨平台文档管理应用，使用 Tauri 2、React 和 Rust �
 
 ### 安装
 
-从[最新版本](https://github.com/jingyi0605/X-File/releases/latest)下载适合你平台的安装包：
+当前版本：**v0.1.0**。其他版本见 [Releases](https://github.com/jingyi0605/X-File/releases)。
 
-- **macOS**（Universal）：`.dmg`
-- **Windows**（x64）：`-setup.exe` 或 `.msi`
-- **Linux**（x86_64）：`.AppImage`、`.deb` 或 `.rpm`
+| 平台 | 架构 | 下载 |
+|---|---|---|
+| macOS | Universal (Intel + Apple Silicon) | [X-File_0.1.0_universal.dmg](https://github.com/jingyi0605/X-File/releases/download/v0.1.0/X-File_0.1.0_universal.dmg) |
+| Windows | x64 | [X-File_0.1.0_x64-setup.exe](https://github.com/jingyi0605/X-File/releases/download/v0.1.0/X-File_0.1.0_x64-setup.exe)<br>[X-File_0.1.0_x64_en-US.msi](https://github.com/jingyi0605/X-File/releases/download/v0.1.0/X-File_0.1.0_x64_en-US.msi) |
+| Linux | x86_64 | [X-File_0.1.0_amd64.AppImage](https://github.com/jingyi0605/X-File/releases/download/v0.1.0/X-File_0.1.0_amd64.AppImage)<br>[X-File_0.1.0_amd64.deb](https://github.com/jingyi0605/X-File/releases/download/v0.1.0/X-File_0.1.0_amd64.deb)<br>[X-File-0.1.0-1.x86_64.rpm](https://github.com/jingyi0605/X-File/releases/download/v0.1.0/X-File-0.1.0-1.x86_64.rpm) |
 
 ### 首次启动
 
@@ -177,6 +179,12 @@ X-File 支持自动更新，提供两个通道：
 - **Beta**：预览版本，包含最新特性（如 `0.2.0-beta.1`）
 
 更新通过 GitHub Releases 分发，可选中国镜像回退以加速下载。
+
+---
+
+## 📄 许可证
+
+X-File 基于 [MIT 许可证](./LICENSE) 发布。
 
 ---
 

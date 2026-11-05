@@ -46,11 +46,13 @@ Integrate external AI agents (like Claude, ChatGPT) for document management. AI 
 
 ### Installation
 
-Download the installer for your platform from the [latest release](https://github.com/jingyi0605/X-File/releases/latest):
+Current version: **v0.1.0**. For other versions, see [Releases](https://github.com/jingyi0605/X-File/releases).
 
-- **macOS** (Universal): `.dmg`
-- **Windows** (x64): `-setup.exe` or `.msi`
-- **Linux** (x86_64): `.AppImage`, `.deb` or `.rpm`
+| Platform | Architecture | Download |
+|---|---|---|
+| macOS | Universal (Intel + Apple Silicon) | [X-File_0.1.0_universal.dmg](https://github.com/jingyi0605/X-File/releases/download/v0.1.0/X-File_0.1.0_universal.dmg) |
+| Windows | x64 | [X-File_0.1.0_x64-setup.exe](https://github.com/jingyi0605/X-File/releases/download/v0.1.0/X-File_0.1.0_x64-setup.exe)<br>[X-File_0.1.0_x64_en-US.msi](https://github.com/jingyi0605/X-File/releases/download/v0.1.0/X-File_0.1.0_x64_en-US.msi) |
+| Linux | x86_64 | [X-File_0.1.0_amd64.AppImage](https://github.com/jingyi0605/X-File/releases/download/v0.1.0/X-File_0.1.0_amd64.AppImage)<br>[X-File_0.1.0_amd64.deb](https://github.com/jingyi0605/X-File/releases/download/v0.1.0/X-File_0.1.0_amd64.deb)<br>[X-File-0.1.0-1.x86_64.rpm](https://github.com/jingyi0605/X-File/releases/download/v0.1.0/X-File-0.1.0-1.x86_64.rpm) |
 
 ### First Launch
 
@@ -177,6 +179,12 @@ X-File supports automatic updates with two channels:
 - **Beta**: Preview releases with latest features (`0.2.0-beta.1`)
 
 Updates are served via GitHub Releases with optional China mirror fallback for faster downloads.
+
+---
+
+## 📄 License
+
+X-File is released under the [MIT License](./LICENSE).
 
 ---
 
